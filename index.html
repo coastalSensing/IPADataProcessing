@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPA MIP Classifier Portal — AI (</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#f0f4f8;--panel:#ffffff;--panel2:#f5f8fb;--border:#dde4ed;--border2:#c8d4e0;
+  --accent:#0071b8;--accent2:#005a8e;--pos:#1a8c4e;--neg:#cc2233;--warn:#b07800;
+  --mixed:#5a50c8;--art:#c05000;--hydro:#0080b0;--metal:#b02040;
+  --text:#1a2533;--dim:#8099b0;--dim2:#607a90;--dim3:#3a5570;
+  --font-mono:'Space Mono',monospace;--font-ui:'Inter',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body,#root{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:13px;}
+body{overflow:hidden;}
+.app{display:grid;grid-template-rows:52px 1fr;height:100vh;}
+.topbar{background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:16px;z-index:100;}
+.topbar h1{font-family:var(--font-mono);font-size:13px;color:var(--accent);letter-spacing:.08em;white-space:nowrap;}
+.sep{width:1px;height:20px;background:var(--border2);}
+.main{display:grid;grid-template-columns:260px 1fr 320px;overflow:hidden;}
+.sidebar{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;}
+.content{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+.ai-panel{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+
+/* Sidebar */
+.upload-zone{border:1px dashed var(--border2);border-radius:4px;padding:16px 12px;text-align:center;cursor:pointer;transition:border-color .2s;}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);}
+.upload-zone .icon{font-size:20px;margin-bottom:6px;}
+.upload-zone p{font-size:11px;color:var(--dim2);line-height:1.5;}
+.upload-zone span{color:var(--accent);}
+.file-item{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
+.file-item:hover{background:var(--panel2);}
+.file-item.active{background:var(--panel2);border-color:var(--border2);}
+.file-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.file-name{font-size:11px;color:var(--dim3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.file-info{font-size:9px;color:var(--dim);font-family:var(--font-mono);}
+.sidebar-label{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim);padding:0 2px;}
+.btn{padding:7px 14px;border-radius:3px;border:none;cursor:pointer;font-family:var(--font-mono);font-size:11px;letter-spacing:.05em;transition:all .15s;white-space:nowrap;}
+.btn-primary{background:var(--accent);color:#000;font-weight:700;}
+.btn-primary:hover{background:#00a8c8;color:#000;}
+.btn-primary:disabled{opacity:.4;cursor:default;}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--dim3);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.btn-sm{padding:4px 10px;font-size:10px;}
+.btn-ai{background:linear-gradient(135deg,#0071b8,#00a8d0);color:#fff;font-weight:700;border:none;}
+.btn-ai:hover{opacity:.9;}
+.btn-ai:disabled{opacity:.35;cursor:default;}
+
+/* Stats */
+.statsbar{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:9px 11px;}
+.stat label{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim2);display:block;margin-bottom:3px;}
+.stat .val{font-family:var(--font-mono);font-size:15px;font-weight:700;color:var(--accent);}
+.stat .sub{font-family:var(--font-mono);font-size:9px;color:var(--dim);margin-top:2px;}
+
+/* Charts */
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.chart-panel{background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:10px 12px;}
+.chart-panel.full{grid-column:1/-1;}
+.chart-title{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim2);margin-bottom:7px;display:flex;justify-content:space-between;align-items:center;}
+canvas{display:block;width:100%;}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px;}
+.li{display:flex;align-items:center;gap:5px;font-family:var(--font-mono);font-size:9px;color:var(--dim2);}
+.ld{width:14px;height:2px;border-radius:1px;}
+
+/* Events table */
+.events-wrap{overflow-x:auto;}
+.events-table{width:100%;border-collapse:collapse;min-width:700px;}
+.events-table th{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);text-align:left;padding:6px 8px;border-bottom:1px solid var(--border2);white-space:nowrap;}
+.events-table td{padding:6px 8px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:11px;vertical-align:middle;}
+.events-table tr:hover td{background:var(--panel2);}
+.events-table tr.selected td{background:var(--panel2);border-bottom-color:var(--border2);}
+.badge{display:inline-block;padding:2px 7px;border-radius:2px;font-size:10px;font-weight:700;font-family:var(--font-mono);}
+.badge-hydro{background:rgba(0,113,184,.10);color:var(--hydro);}
+.badge-metal{background:rgba(176,32,64,.10);color:var(--metal);}
+.badge-mixed{background:rgba(90,80,200,.10);color:var(--mixed);}
+.badge-art{background:rgba(192,80,0,.10);color:var(--art);}
+.badge-weak{background:rgba(80,100,130,.10);color:var(--dim3);}
+.conf-bar{display:flex;align-items:center;gap:5px;}
+.conf-fill{height:4px;border-radius:2px;min-width:2px;}
+.conf-text{font-size:9px;color:var(--dim2);white-space:nowrap;}
+
+/* AI Panel */
+.ai-section-title{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim2);}
+.api-key-row{display:flex;gap:6px;}
+.api-key-input{flex:1;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:6px 9px;border-radius:3px;}
+.api-key-input:focus{outline:none;border-color:var(--accent);}
+.ai-response{background:var(--panel2);border:1px solid var(--border2);border-radius:3px;padding:10px 12px;flex:1;min-height:120px;}
+.ai-response p{font-size:12px;color:var(--dim3);line-height:1.7;white-space:pre-wrap;}
+.ai-response .thinking{color:var(--dim);font-style:italic;font-size:11px;}
+.ai-classification{background:var(--panel2);border:1px solid var(--border2);border-radius:3px;padding:10px 12px;}
+.ai-cls-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.ai-cls-label{font-size:10px;color:var(--dim2);font-family:var(--font-mono);}
+.ai-cls-val{font-size:14px;font-weight:600;font-family:var(--font-mono);}
+.ai-conf-val{font-family:var(--font-mono);font-size:12px;color:var(--dim3);}
+.training-entry{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:2px;background:var(--panel2);font-size:10px;font-family:var(--font-mono);}
+.training-entry .mat{font-weight:700;}
+.training-list{display:flex;flex-direction:column;gap:3px;max-height:160px;overflow-y:auto;}
+.confirm-row{display:flex;gap:6px;align-items:center;}
+.confirm-sel{flex:1;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:10px;padding:5px 8px;border-radius:3px;}
+.confirm-sel:focus{outline:none;border-color:var(--pos);}
+.confirm-btn{background:#1a8c4e;color:#000;border:none;padding:5px 10px;border-radius:3px;font-family:var(--font-mono);font-size:10px;cursor:pointer;font-weight:700;white-space:nowrap;}
+.confirm-btn:hover{opacity:.85;}
+
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:280px;color:var(--dim);gap:10px;}
+.empty .icon{font-size:32px;opacity:.3;}
+.empty p{font-family:var(--font-mono);font-size:11px;text-align:center;line-height:1.7;}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:#c0ccd8;border-radius:2px;}
+::-webkit-scrollbar-thumb:hover{background:var(--dim);}
+
+/* ── Collections ── */
+.coll-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.coll-list{display:flex;flex-direction:column;gap:3px;}
+.coll-item{border:1px solid var(--border);border-radius:3px;overflow:hidden;}
+.coll-item.active-coll{border-color:var(--accent);}
+.coll-title-row{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:pointer;background:var(--panel2);transition:background .15s;}
+.coll-title-row:hover{background:var(--border);}
+.coll-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+.coll-name{font-size:11px;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.coll-meta{font-size:9px;color:var(--dim2);font-family:var(--font-mono);white-space:nowrap;}
+.coll-files{padding:4px 8px 6px 24px;display:flex;flex-direction:column;gap:2px;background:var(--panel);}
+.coll-file-row{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:2px;cursor:pointer;font-size:10px;font-family:var(--font-mono);color:var(--dim3);}
+.coll-file-row:hover{background:var(--panel2);color:var(--text);}
+.coll-file-row.active{color:var(--accent);font-weight:700;}
+.coll-mat-pill{display:inline-block;padding:1px 5px;border-radius:10px;font-size:9px;font-family:var(--font-mono);margin-left:auto;white-space:nowrap;}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:999;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:6px;padding:24px;width:400px;box-shadow:0 8px 32px rgba(0,0,0,.18);}
+.modal h2{font-family:var(--font-mono);font-size:13px;color:var(--accent);margin-bottom:14px;}
+.modal label{font-family:var(--font-mono);font-size:10px;color:var(--dim2);display:block;margin-bottom:4px;margin-top:10px;}
+.modal input,.modal select{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 9px;border-radius:3px;}
+.modal input:focus,.modal select:focus{outline:none;border-color:var(--accent);}
+.modal .modal-btns{display:flex;gap:8px;margin-top:18px;justify-content:flex-end;}
+.color-swatches{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;}
+.swatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;transition:border-color .15s;}
+.swatch:hover,.swatch.sel{border-color:var(--text);}
+.tab-row{display:flex;border-bottom:1px solid var(--border);margin-bottom:10px;}
+.tab{padding:6px 14px;font-family:var(--font-mono);font-size:10px;cursor:pointer;color:var(--dim2);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s;text-transform:uppercase;letter-spacing:.06em;}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+.tab:hover:not(.active){color:var(--text);}
+.export-box{background:var(--panel2);border:1px solid var(--border);border-radius:3px;padding:10px;font-family:var(--font-mono);font-size:10px;color:var(--dim3);white-space:pre-wrap;max-height:120px;overflow-y:auto;}
+
+/* ── Map panel ── */
+.map-panel{background:var(--panel2);border:1px solid var(--border);border-radius:3px;position:relative;overflow:hidden;}
+.map-canvas{display:block;width:100%;cursor:crosshair;}
+.map-legend{position:absolute;bottom:8px;left:8px;background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:3px;padding:6px 10px;font-family:var(--font-mono);font-size:9px;line-height:1.8;}
+.map-controls{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;}
+.map-btn{background:rgba(255,255,255,.9);border:1px solid var(--border2);border-radius:3px;padding:4px 8px;cursor:pointer;font-size:11px;font-family:var(--font-mono);}
+.map-btn:hover{background:#fff;border-color:var(--accent);}
+.map-tooltip{position:absolute;background:rgba(255,255,255,.97);border:1px solid var(--border2);border-radius:3px;padding:6px 10px;font-family:var(--font-mono);font-size:10px;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);max-width:220px;line-height:1.6;}
+/* ── Lab output table ── */
+.lab-table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;}
+.lab-table th{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border2);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);white-space:nowrap;}
+.lab-table th:first-child{text-align:left;}
+.lab-table td{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border);color:var(--text);}
+.lab-table td:first-child{text-align:left;color:var(--dim3);}
+.lab-table tr:hover td{background:var(--panel2);}
+
+/* ── Map & run organizer additions ── */
+.map-wrap{position:relative;background:#e8eef4;border-radius:3px;border:1px solid var(--border);overflow:hidden;}
+.map-canvas{display:block;width:100%;cursor:crosshair;}
+.map-tip{position:absolute;background:rgba(255,255,255,.97);border:1px solid var(--border2);border-radius:3px;
+  padding:5px 9px;font-family:var(--font-mono);font-size:10px;pointer-events:none;
+  box-shadow:0 2px 6px rgba(0,0,0,.12);max-width:200px;line-height:1.55;z-index:20;}
+.map-toggles{display:flex;gap:6px;margin-bottom:8px;align-items:center;flex-wrap:wrap;}
+.tog{padding:4px 10px;border-radius:3px;border:1px solid var(--border2);background:var(--panel);
+  font-family:var(--font-mono);font-size:10px;cursor:pointer;color:var(--dim3);transition:all .15s;}
+.tog.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.tog:hover:not(.on){border-color:var(--accent);color:var(--accent);}
+.run-group{border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px;}
+.run-group-hdr{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel2);
+  cursor:pointer;font-family:var(--font-mono);font-size:10px;}
+.run-group-hdr:hover{background:var(--border);}
+.run-group-name{font-weight:700;color:var(--text);flex:1;}
+.run-group-body{padding:4px 6px;display:flex;flex-direction:column;gap:2px;}
+.run-entry{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:2px;
+  cursor:pointer;font-family:var(--font-mono);font-size:10px;color:var(--dim3);}
+.run-entry:hover{background:var(--panel2);color:var(--text);}
+.run-entry.active{background:var(--panel2);color:var(--accent);font-weight:700;}
+.run-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+.lab-tbl{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;}
+.lab-tbl th{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border2);
+  font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);white-space:nowrap;}
+.lab-tbl th:first-child{text-align:left;}
+.lab-tbl td{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border);color:var(--text);}
+.lab-tbl td:first-child{text-align:left;color:var(--dim3);}
+.lab-tbl tr:hover td{background:var(--panel2);}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;
+  align-items:center;justify-content:center;z-index:999;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:6px;
+  padding:22px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,.18);}
+.modal h3{font-family:var(--font-mono);font-size:12px;color:var(--accent);margin-bottom:12px;}
+.modal label{font-family:var(--font-mono);font-size:10px;color:var(--dim2);display:block;
+  margin-top:10px;margin-bottom:3px;}
+.modal input,.modal select{width:100%;background:var(--panel2);border:1px solid var(--border2);
+  color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 8px;border-radius:3px;}
+.modal input:focus,.modal select:focus{outline:none;border-color:var(--accent);}
+.modal-btns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;}
+.color-row{display:flex;gap:5px;margin-top:4px;flex-wrap:wrap;}
+.cswatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;}
+.cswatch:hover,.cswatch.sel{border-color:var(--text);}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useEffect,useCallback,useMemo}=React;
+
+// ── Supabase config ────────────────────────────────────────────────────────────
+var SUPA_URL='https://ztrtrymaqrrquxpcjcsp.supabase.co';
+var SUPA_KEY='sb_publishable_GliclnRAR4DK2rhPpv-DJw_di5zsiOe';
+
+function supaFetch(path,method,body){
+  var opts={method:method||'GET',
+    headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,
+              'Content-Type':'application/json','Prefer':'return=representation'}};
+  if(body)opts.body=JSON.stringify(body);
+  return fetch(SUPA_URL+'/rest/v1/'+path,opts).then(function(r){
+    if(!r.ok)return r.text().then(function(t){throw new Error(r.status+': '+t);});
+    return r.json();
+  });
+}
+
+function loadTrainingFromDB(){
+  return supaFetch('training_confirmations?select=*&order=confirmed_at.asc&limit=500')
+    .then(function(rows){
+      return rows.map(function(r){
+        return{
+          material:r.material,run:r.run_name,ts:r.confirmed_at,
+          fv:{dp1:r.dp_fund_mrad||0,dp3:r.dp_mid_mrad||0,dp_last:r.dp_high_mrad||0,
+              magPct:r.mag_pct||0,maxSNR:r.max_snr||0},
+          aiConf:r.ai_conf_pct||0,id:r.id
+        };
+      });
+    });
+}
+
+function saveTrainingToDB(entry,harms){
+  return supaFetch('training_confirmations','POST',{
+    material:entry.material,
+    run_name:entry.run,
+    xmt_hz:harms[0]===4?4:harms[0]===2?2:8,
+    dp_fund_mrad:entry.fv.dp1,
+    dp_mid_mrad:entry.fv.dp3,
+    dp_high_mrad:entry.fv.dp_last,
+    mag_pct:entry.fv.magPct,
+    max_snr:entry.fv.maxSNR,
+    fund_freq_hz:harms[0],
+    mid_freq_hz:harms[2],
+    high_freq_hz:harms[5],
+    ai_conf_pct:entry.aiConf||0,
+    notes:null
+  });
+}
+
+function deleteTrainingFromDB(id){
+  return supaFetch('training_confirmations?id=eq.'+id,'DELETE');
+}
+
+const HARM={2:[2,6,10,14,18,22],4:[4,12,20,28,36,44],8:[8,24,40,56,72,88]};
+function getHarms(xmt){return HARM[xmt]||HARM[4];}
+
+const MAT_COLORS={
+  'Hydrocarbon IP':'#0080b0','Class 3 Gas Oil':'#4070c0','Alaska Crude Oil':'#c07820',
+  'ITB Rebel Crude':'#1a8c4e','Metallic IP':'#b02040','Steel':'#cc2233',
+  'Ilmenite':'#a04010','Galvanized Steel':'#807030','Mixed':'#5a50c8',
+  'Asphalt':'#607060','Artifact':'#c05000','Weak/Inconclusive':'#708090','No anomaly':'#9090a0'
+};
+const MAT_OPTIONS=['Hydrocarbon IP','Class 3 Gas Oil','Alaska Crude Oil','ITB Rebel Crude',
+  'Metallic IP','Steel','Ilmenite','Galvanized Steel','Mixed','Asphalt','Artifact','Weak/Inconclusive'];
+const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
+  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
+const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
+  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
+
+// ── Parsers ────────────────────────────────────────────────────────────────────
+// header[9]='Lab' and empty coords -> lab file
+// header[9]=device ID, header[6]=NMEA lat -> field file
+function isLabFile(parts){return parts[9]==='Lab'||!parts[6];}
+
+// NMEA DDMM.MMMMM -> decimal degrees. West-coast lon negated.
+function nmeaDD(raw,isLon){
+  var v=parseFloat(raw);
+  if(isNaN(v))return null;
+  var deg=Math.floor(v/100),mins=v-deg*100,dd=deg+mins/60;
+  return isLon?-dd:dd;
+}
+
+// Packet size is always 33 lines: 1 header + 1 col-header + 31 data rows
+// col[0]=frequency_Hz, col[1]=ch1-0_delta_rad, col[9]=ch1_mag_counts
+// Only ch1 is recorded in lab — ch2-ch7 contain noise
+function parseAnyFile(text){
+  var lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  var pkts=[];
+  for(var i=0;i<lines.length;){
+    var raw=lines[i].replace(/^\uFEFF/,'');
+    if(!raw.startsWith('#,')){i++;continue;}
+    var p=raw.split(',');
+    var idx=parseInt(p[8]),xmt=parseInt(p[12]),ts=p[3],run=(p[2]||'').trim();
+    var lab=isLabFile(p);
+    var lat=lab?null:nmeaDD((p[6]||'').trim(),false);
+    var lon=lab?null:nmeaDD((p[7]||'').trim(),true);
+    if(!isNaN(idx)&&!isNaN(xmt)){
+      var freqs={};
+      for(var r=i+2;r<i+33&&r<lines.length;r++){
+        var dl=lines[r].trim();
+        if(!dl||dl.startsWith('#'))break;
+        var c=dl.split(',');
+        if(c.length<10)continue;
+        var freq=parseFloat(c[0]),dp=parseFloat(c[1]),mag=parseFloat(c[9]);
+        if(!isNaN(freq)&&!isNaN(dp)&&!isNaN(mag))freqs[freq]=[dp,mag];
+      }
+      if(Object.keys(freqs).length){
+        pkts.push({idx:idx,ts:ts,run:run,xmt:xmt,lat:lat,lon:lon,
+                   freqs:freqs,type:lab?'lab':'field'});
+      }
+    }
+    i+=33;
+  }
+  return pkts;
+}
+
+// ── Lab stats ──────────────────────────────────────────────────────────────────
+// Groups packets by xmt frequency (a single lab file may contain multiple xmt groups).
+// For each group: freq_Hz, ch1_delta_mean_rad, ch1_delta_std_rad (ddof=1), ch1_mag_mean_counts
+function computeLabStats(packets){
+  var byXmt={};
+  for(var pi=0;pi<packets.length;pi++){
+    var pk=packets[pi],x=pk.xmt;
+    if(!byXmt[x])byXmt[x]={};
+    var keys=Object.keys(pk.freqs);
+    for(var ki=0;ki<keys.length;ki++){
+      var f=parseFloat(keys[ki]),dp=pk.freqs[keys[ki]][0],mag=pk.freqs[keys[ki]][1];
+      if(!byXmt[x][f])byXmt[x][f]={dp:[],mag:[]};
+      byXmt[x][f].dp.push(dp);
+      byXmt[x][f].mag.push(mag);
+    }
+  }
+  var groups=Object.keys(byXmt).map(Number).sort(function(a,b){return a-b;});
+  return groups.map(function(xmt){
+    var fm=byXmt[xmt];
+    var freqKeys=Object.keys(fm).map(Number).sort(function(a,b){return a-b;});
+    var rows=freqKeys.map(function(freq){
+      var dps=fm[freq].dp,mags=fm[freq].mag,n=dps.length;
+      var sumDp=0;for(var i=0;i<n;i++)sumDp+=dps[i];
+      var meanDp=sumDp/n;
+      var ssq=0;for(var i=0;i<n;i++)ssq+=(dps[i]-meanDp)*(dps[i]-meanDp);
+      var stdDp=n>1?Math.sqrt(ssq/(n-1)):0;
+      var sumMag=0;for(var i=0;i<n;i++)sumMag+=mags[i];
+      var meanMag=sumMag/n;
+      return{freq:freq,meanDp:meanDp,stdDp:stdDp,meanMag:meanMag,n:n};
+    });
+    var firstFreq=freqKeys[0];
+    var nPkts=fm[firstFreq]?fm[firstFreq].dp.length:0;
+    return{xmt:xmt,nPkts:nPkts,rows:rows};
+  });
+}
+
+// ── Field analysis ─────────────────────────────────────────────────────────────
+function computeBG(packets,harms){
+  // Background computed at each harmonic independently using its own mean/std.
+  // Mask: packets where |dp| < 15 mrad at that frequency.
+  // Returns: per-harmonic bg map, plus fundamental mean/std for 3sigma display.
+  var bgMap={};
+  for(var h=0;h<harms.length;h++){
+    var f=harms[h];
+    var dps=packets.map(function(pk){var v=pk.freqs[f];return v?v[0]*1000:NaN;});
+    var bgV=dps.filter(function(v){return !isNaN(v)&&Math.abs(v)<15;});
+    if(bgV.length<3)bgV=dps.filter(function(v){return !isNaN(v);});
+    if(!bgV.length){bgMap[f]={mean:0,std:1};continue;}
+    var sum=bgV.reduce(function(a,b){return a+b;},0);
+    var mean=sum/bgV.length;
+    var ssq=bgV.reduce(function(a,b){return a+(b-mean)*(b-mean);},0);
+    var std=bgV.length>1?Math.sqrt(ssq/(bgV.length-1)):1;
+    bgMap[f]={mean:mean,std:std||1};
+  }
+  // Magnitude background at fundamental
+  var f0=harms[0];
+  var d1=packets.map(function(pk){var v=pk.freqs[f0];return v?v[0]*1000:NaN;});
+  var mask=d1.map(function(v){return !isNaN(v)&&Math.abs(v)<15;});
+  var mags=packets.map(function(pk){var v=pk.freqs[f0];return v?v[1]:NaN;});
+  var mBg=mags.filter(function(v,i){return mask[i]&&!isNaN(v);});
+  var magMean=mBg.length?mBg.reduce(function(a,b){return a+b;},0)/mBg.length:1;
+  // Expose fundamental stats at top level for display and threshold lines
+  var bg0=bgMap[f0]||{mean:0,std:1};
+  return{mean:bg0.mean,std:bg0.std,magMean:magMean,perHz:bgMap};
+}
+
+function detectAnomalies(packets,harms,bg){
+  // A packet is anomalous when the FUNDAMENTAL frequency exceeds 3sigma of the
+  // fundamental background. Higher harmonics use their own per-harmonic background
+  // for classification (see classifyRules) but NOT for initial event detection.
+  // This prevents persistent signals at higher harmonics (e.g. background hydrocarbon)
+  // from flagging every packet as anomalous and collapsing all events into one cluster.
+  var f0=harms[0];
+  var bg0=bg.perHz?bg.perHz[f0]:{mean:bg.mean,std:bg.std};
+  var anomalies=[];
+  for(var i=0;i<packets.length;i++){
+    var pk=packets[i];
+    var v0=pk.freqs[f0];
+    if(!v0)continue;
+    var snr=Math.abs(v0[0]*1000-bg0.mean)/bg0.std;
+    if(snr>=3.0)anomalies.push({i:i,pk:pk,snr:snr});
+  }
+  // Cluster: consecutive anomalous packets within 5 packet-index gap form one event.
+  // Gap of 5 accommodates ~5 seconds between packets at 4Hz xmt (~1 pkt/s).
+  var clusters=[],cur=[];
+  for(var j=0;j<anomalies.length;j++){
+    var a=anomalies[j];
+    if(!cur.length||a.pk.idx-cur[cur.length-1].pk.idx<=5){cur.push(a);}
+    else{clusters.push(cur);cur=[a];}
+  }
+  if(cur.length)clusters.push(cur);
+  return clusters;
+}
+
+function classifyRules(cluster,harms,bg){
+  var rep=cluster[0];
+  for(var i=1;i<cluster.length;i++){if(cluster[i].snr>rep.snr)rep=cluster[i];}
+  var pk=rep.pk,dp={};
+  for(var h=0;h<harms.length;h++){var v=pk.freqs[harms[h]];dp[harms[h]]=v?v[0]*1000:0;}
+  var mag0=pk.freqs[harms[0]];
+  var magPct=mag0?((mag0[1]-bg.magMean)/bg.magMean)*100:0;
+  // dp1dev: deviation of fundamental from fundamental background
+  var bg0=bg.perHz&&bg.perHz[harms[0]]?bg.perHz[harms[0]]:{mean:bg.mean,std:bg.std};
+  var dp1dev=dp[harms[0]]-bg0.mean;
+  // For each harmonic: compute signed deviation from that harmonic's own background.
+  // This correctly identifies e.g. a negative spike at 4Hz against ambient -2.7 mrad background.
+  var dpDev={};
+  for(var h=0;h<harms.length;h++){
+    var bgh=bg.perHz&&bg.perHz[harms[h]]?bg.perHz[harms[h]]:{mean:bg0.mean,std:bg0.std};
+    dpDev[harms[h]]=dp[harms[h]]-bgh.mean;
+  }
+  // posHigh: high harmonics (idx 2..5) deviate positively from their own background by >3 mrad
+  var posHigh=0;for(var h=2;h<harms.length;h++){if(dpDev[harms[h]]>3)posHigh++;}
+  // negLow: low harmonics (idx 0..2) deviate negatively from their own background by >5 mrad
+  var negLow=0;for(var h=0;h<3;h++){if(dpDev[harms[h]]<-5)negLow++;}
+  // Alternating polarity check on raw dp values (not deviations)
+  var altPol=(dp[harms[0]]*dp[harms[1]]<0&&dp[harms[1]]*dp[harms[2]]<0);
+  // maxSNR computed at fundamental (since detection is fundamental-only)
+  var maxSNR=rep.snr;
+  // Also compute highest SNR across all harmonics using per-harmonic background
+  var maxSNRall=maxSNR;
+  if(bg.perHz){
+    for(var h=0;h<harms.length;h++){
+      var bgh=bg.perHz[harms[h]];
+      if(!bgh)continue;
+      var snrh=Math.abs(dpDev[harms[h]])/bgh.std;
+      if(snrh>maxSNRall)maxSNRall=snrh;
+    }
+  }
+  var cls,confPct;
+  if(Math.abs(dp1dev)>150){cls='Artifact';confPct=99;}
+  else if(magPct<-30){cls='Artifact';confPct=99;}
+  else if(posHigh>=3&&Math.abs(dp1dev)<10&&maxSNRall>10){cls='Hydrocarbon IP';confPct=Math.min(95,80+maxSNRall/5);}
+  else if(posHigh>=2&&Math.abs(dp1dev)<12&&maxSNRall>5){cls='Hydrocarbon IP';confPct=Math.min(80,60+maxSNRall/4);}
+  else if(dp1dev<-8&&negLow>=2&&!altPol&&maxSNR>8){cls='Metallic IP';confPct=Math.min(92,75+maxSNR/8);}
+  else if(dp1dev<-5&&negLow>=1&&maxSNR>5){cls='Metallic IP';confPct=Math.min(75,55+maxSNR/6);}
+  else if(dp1dev<-5&&posHigh>=2){cls='Mixed';confPct=Math.min(70,55+maxSNR/8);}
+  else if(posHigh>=2&&maxSNRall>3){cls='Hydrocarbon IP';confPct=Math.min(60,40+maxSNRall/3);}
+  else{cls='Weak/Inconclusive';confPct=Math.min(35,15+maxSNR*3);}
+  return{cls:cls,confPct:Math.round(confPct),dp:dp,dpDev:dpDev,magPct:magPct,
+    maxSNR:maxSNR,maxSNRall:maxSNRall,
+    pktStart:cluster[0].pk.idx,pktEnd:cluster[cluster.length-1].pk.idx,
+    pktPeak:rep.pk.idx,ts:rep.pk.ts,nPkts:cluster.length,
+    lat:rep.pk.lat,lon:rep.pk.lon};
+}
+
+// ── Claude API ─────────────────────────────────────────────────────────────────
+async function classifyWithClaude(ev,harms,bg,training,apiKey){
+  var ctx='';
+  if(training.length){
+    ctx='\nCONFIRMED EXAMPLES:\n'+training.slice(-20).map(function(t){
+      return '- '+t.material+': dp'+harms[0]+'Hz='+t.fv.dp1.toFixed(2)+
+        ', dp'+harms[2]+'Hz='+t.fv.dp3.toFixed(2)+
+        ', dp'+harms[5]+'Hz='+t.fv.dp_last.toFixed(2)+
+        ', mag%='+t.fv.magPct.toFixed(1)+', SNR='+t.fv.maxSNR.toFixed(1);
+    }).join('\n');
+  }
+  var prompt='IPA MIP classifier. fund='+harms[0]+'Hz bg_mean='+bg.mean.toFixed(3)+
+    'mrad bg_std='+bg.std.toFixed(3)+'mrad\nEVENT:\n'+
+    harms.map(function(f){return '  d'+f+'Hz='+((ev.dp[f]||0).toFixed(3))+
+      'mrad SNR='+((Math.abs((ev.dp[f]||0)-bg.mean)/bg.std).toFixed(2));}).join('\n')+
+    '\n  mag%='+(ev.magPct||0).toFixed(2)+' nPkts='+ev.nPkts+' SNR='+ev.maxSNR.toFixed(2)+
+    ctx+'\nREF(r7): HydroIP=growing pos high harmonics near-zero fund. '+
+    'MetalIP=neg low harmonics mag decrease. Artifact=|dp|>100 or mag<-30%.\n'+
+    'JSON only: {"classification":"<label>","confidence_pct":<0-99>,"confidence_label":"<High|Medium|Low>","key_indicators":"<1 sentence>","reasoning":"<2-3 sentences>","caution":"<or null>"}';
+  var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
+      messages:[{role:'user',content:prompt}]})});
+  if(!r.ok)throw new Error('API '+r.status);
+  var d=await r.json();
+  var raw=(d.content&&d.content[0])?d.content[0].text:'';
+  return JSON.parse(raw.replace(/```json|```/g,'').trim());
+}
+
+// ── Canvas drawing ─────────────────────────────────────────────────────────────
+function drawChart(canvas,datasets,yr,opts){
+  opts=opts||{};
+  if(!canvas)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;
+  if(!W||!H)return;
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d');
+  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
+  var n=datasets[0]?datasets[0].data.length:0;
+  if(!n)return;
+  var yrSpan=yr[1]-yr[0]||1;
+  function xS(i){return PL+(i/(n-1||1))*cW;}
+  function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
+  for(var t=0;t<=4;t++){
+    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
+    ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
+    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
+  }
+  if(opts.xLabels){
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
+    var step=Math.max(1,Math.floor(n/5));
+    for(var xi=0;xi<n;xi+=step)ctx.fillText(opts.xLabels[xi]||'',xS(xi),H-2);
+  }
+  if(yr[0]<0&&yr[1]>0){
+    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
+  }
+  if(opts.bgEvents){
+    for(var ei=0;ei<opts.bgEvents.length;ei++){
+      var ev=opts.bgEvents[ei];
+      if(ev.i0<0)continue;
+      ctx.fillStyle=ev.color+'22';
+      ctx.fillRect(xS(ev.i0)-2,PT,Math.max(4,xS(ev.i1)-xS(ev.i0)+4),cH);
+    }
+  }
+  if(opts.threshLo!==undefined){
+    ctx.strokeStyle='rgba(176,32,64,.45)';ctx.lineWidth=1;ctx.setLineDash([5,3]);
+    if(opts.threshLo>yr[0]&&opts.threshLo<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshLo));ctx.lineTo(PL+cW,yS(opts.threshLo));ctx.stroke();}
+    if(opts.threshHi!==undefined&&opts.threshHi>yr[0]&&opts.threshHi<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshHi));ctx.lineTo(PL+cW,yS(opts.threshHi));ctx.stroke();}
+    ctx.setLineDash([]);
+  }
+  for(var di=0;di<datasets.length;di++){
+    var ds=datasets[di];
+    ctx.strokeStyle=ds.color;ctx.lineWidth=ds.width||1.3;
+    ctx.beginPath();var started=false;
+    for(var pi=0;pi<ds.data.length;pi++){
+      var pv=ds.data[pi];
+      if(isNaN(pv)){started=false;continue;}
+      var px=xS(pi),py=yS(Math.min(Math.max(pv,yr[0]),yr[1]));
+      if(started){ctx.lineTo(px,py);}else{ctx.moveTo(px,py);started=true;}
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
+}
+
+function drawSpectral(canvas,dpMap,harms,yr,color){
+  if(!canvas)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;
+  if(!W||!H)return;
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d');
+  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
+  var yrSpan=yr[1]-yr[0]||1;
+  function xS(i){return PL+(i/(harms.length-1||1))*cW;}
+  function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
+  for(var t=0;t<=4;t++){
+    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
+    ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
+    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
+  }
+  if(yr[0]<0&&yr[1]>0){
+    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
+  }
+  ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
+  for(var hi=0;hi<harms.length;hi++)ctx.fillText(harms[hi]+'Hz',xS(hi),H-2);
+  var pts=[];
+  for(var hi=0;hi<harms.length;hi++){
+    pts.push({x:xS(hi),y:yS(Math.min(Math.max(dpMap[harms[hi]]||0,yr[0]),yr[1]))});
+  }
+  var zero=yS(Math.max(yr[0],0));
+  ctx.fillStyle=color+'22';
+  ctx.beginPath();ctx.moveTo(pts[0].x,zero);
+  for(var pi=0;pi<pts.length;pi++)ctx.lineTo(pts[pi].x,pts[pi].y);
+  ctx.lineTo(pts[pts.length-1].x,zero);ctx.closePath();ctx.fill();
+  ctx.strokeStyle=color;ctx.lineWidth=2;
+  ctx.beginPath();
+  for(var pi=0;pi<pts.length;pi++){if(pi)ctx.lineTo(pts[pi].x,pts[pi].y);else ctx.moveTo(pts[pi].x,pts[pi].y);}
+  ctx.stroke();
+  ctx.fillStyle=color;
+  for(var pi=0;pi<pts.length;pi++){ctx.beginPath();ctx.arc(pts[pi].x,pts[pi].y,4,0,Math.PI*2);ctx.fill();}
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
+}
+
+// ── Map drawing ────────────────────────────────────────────────────────────────
+function drawMap(canvas,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults){
+  if(!canvas)return function(){return null;};
+  var W=canvas.clientWidth,H=canvas.clientHeight;
+  if(!W||!H)return function(){return null;};
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d');
+  ctx.fillStyle='#e8eef4';ctx.fillRect(0,0,W,H);
+
+  // Gather all field file coords
+  var allLat=[],allLon=[];
+  var fileTraces=[];
+  for(var fi=0;fi<files.length;fi++){
+    var f=files[fi];
+    if(f.type!=='field'){fileTraces.push([]);continue;}
+    var trace=[];
+    for(var pi=0;pi<f.packets.length;pi++){
+      var pk=f.packets[pi];
+      if(pk.lat!==null&&pk.lon!==null){
+        trace.push({lat:pk.lat,lon:pk.lon,idx:pk.idx,ts:pk.ts});
+        allLat.push(pk.lat);allLon.push(pk.lon);
+      }
+    }
+    fileTraces.push(trace);
+  }
+
+  if(!allLat.length){
+    ctx.fillStyle='#8099b0';ctx.font='12px monospace';ctx.textAlign='center';
+    ctx.fillText('No field coordinates found',W/2,H/2-8);
+    ctx.fillText('Load field _p.txt files to see map',W/2,H/2+10);
+    return function(){return null;};
+  }
+
+  var PAD=48;
+  var minLat=allLat.reduce(function(a,b){return a<b?a:b;});
+  var maxLat=allLat.reduce(function(a,b){return a>b?a:b;});
+  var minLon=allLon.reduce(function(a,b){return a<b?a:b;});
+  var maxLon=allLon.reduce(function(a,b){return a>b?a:b;});
+  var padLat=(maxLat-minLat)*0.10||0.0003;
+  var padLon=(maxLon-minLon)*0.10||0.0003;
+  var BL=minLat-padLat,TL=maxLat+padLat,BLon=minLon-padLon,TLon=maxLon+padLon;
+  var cW=W-PAD*2,cH=H-PAD*2;
+  function xS(lon){return PAD+(lon-BLon)/(TLon-BLon)*cW;}
+  function yS(lat){return H-PAD-(lat-BL)/(TL-BL)*cH;}
+
+  // Grid
+  ctx.strokeStyle='#d0d8e0';ctx.lineWidth=0.5;
+  for(var gi=0;gi<=4;gi++){
+    var glat=BL+gi*(TL-BL)/4,glon=BLon+gi*(TLon-BLon)/4;
+    ctx.beginPath();ctx.moveTo(xS(glon),PAD);ctx.lineTo(xS(glon),H-PAD);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(PAD,yS(glat));ctx.lineTo(W-PAD,yS(glat));ctx.stroke();
+    ctx.fillStyle='#8099b0';ctx.font='8px monospace';ctx.textAlign='center';
+    ctx.fillText(Math.abs(glon).toFixed(5)+'W',xS(glon),H-PAD+11);
+    ctx.save();ctx.translate(PAD-14,yS(glat));ctx.rotate(-Math.PI/2);
+    ctx.fillText(glat.toFixed(5)+'N',0,0);ctx.restore();
+  }
+  ctx.strokeStyle='#c0ccd8';ctx.strokeRect(PAD,PAD,cW,cH);
+
+  // Anomaly hotspots
+  var hotspots=[];
+  for(var fi=0;fi<files.length;fi++){
+    var f=files[fi];
+    if(f.type!=='field'||!f.packets.length)continue;
+    var harms=getHarms(f.packets[0].xmt||4);
+    var bg=computeBG(f.packets,harms);
+    var clusters=detectAnomalies(f.packets,harms,bg);
+    for(var ci=0;ci<clusters.length;ci++){
+      var ev=classifyRules(clusters[ci],harms,bg);
+      var aiKey=fi+'-'+ci;
+      var aiRes=aiResults[aiKey];
+      var cls=aiRes?aiRes.classification:ev.cls;
+      var pts=clusters[ci].map(function(a){return a.pk;}).filter(function(pk){return pk.lat!==null;});
+      if(!pts.length)continue;
+      var cx=0,cy=0;
+      for(var pi=0;pi<pts.length;pi++){cx+=pts[pi].lon;cy+=pts[pi].lat;}
+      cx/=pts.length;cy/=pts.length;
+      hotspots.push({lat:cy,lon:cx,cls:cls,conf:ev.confPct,fi:fi,ci:ci,run:f.run,nPkts:ev.nPkts});
+    }
+  }
+
+  // Cluster hotspots within ~20m of each other
+  var THRESH=0.0002;
+  var hsClusters=[],used={};
+  for(var i=0;i<hotspots.length;i++){
+    if(used[i])continue;
+    var grp=[hotspots[i]];used[i]=true;
+    for(var j=i+1;j<hotspots.length;j++){
+      if(used[j])continue;
+      if(Math.abs(hotspots[i].lat-hotspots[j].lat)<THRESH&&
+         Math.abs(hotspots[i].lon-hotspots[j].lon)<THRESH){
+        grp.push(hotspots[j]);used[j]=true;
+      }
+    }
+    hsClusters.push(grp);
+  }
+
+  if(showHotspots){
+    for(var ci=0;ci<hsClusters.length;ci++){
+      var grp=hsClusters[ci];
+      var glat=0,glon=0;
+      for(var gi=0;gi<grp.length;gi++){glat+=grp[gi].lat;glon+=grp[gi].lon;}
+      glat/=grp.length;glon/=grp.length;
+      var gcx=xS(glon),gcy=yS(glat);
+      var multiFile=false;
+      var firstFi=grp[0].fi;
+      for(var gi=1;gi<grp.length;gi++){if(grp[gi].fi!==firstFi){multiFile=true;break;}}
+      var col=MAT_COLORS[grp[0].cls]||'#808080';
+      var r=multiFile?22:14;
+      ctx.save();
+      ctx.globalAlpha=0.15;ctx.fillStyle=col;
+      ctx.beginPath();ctx.arc(gcx,gcy,r,0,Math.PI*2);ctx.fill();
+      ctx.globalAlpha=multiFile?0.8:0.5;
+      ctx.strokeStyle=col;ctx.lineWidth=multiFile?2:1.2;
+      if(!multiFile)ctx.setLineDash([4,3]);
+      ctx.beginPath();ctx.arc(gcx,gcy,r,0,Math.PI*2);ctx.stroke();
+      ctx.setLineDash([]);ctx.globalAlpha=1;
+      ctx.fillStyle=col;ctx.font='8px monospace';ctx.textAlign='center';
+      ctx.fillText(grp[0].cls.substring(0,12),gcx,gcy+r+9);
+      if(multiFile){
+        ctx.fillStyle='#fff';ctx.font='bold 9px monospace';
+        ctx.fillText(String(grp.length),gcx,gcy+3);
+      }
+      ctx.restore();
+    }
+  }
+
+  // File track lines
+  var hitZones=[];
+  if(showLines){
+    for(var fi=0;fi<fileTraces.length;fi++){
+      var trace=fileTraces[fi];
+      if(!trace||!trace.length)continue;
+      var isActive=fi===activeIdx,isHov=fi===hovFi;
+      var lineColor=RUN_COLORS[fi%RUN_COLORS.length];
+      for(var rgi=0;rgi<runGroups.length;rgi++){
+        if(runGroups[rgi].fileIds.indexOf(fi)>=0){lineColor=runGroups[rgi].color;break;}
+      }
+      ctx.save();
+      ctx.strokeStyle=lineColor;
+      ctx.lineWidth=isHov||isActive?3:1.8;
+      ctx.globalAlpha=isHov||isActive?1.0:0.55;
+      ctx.beginPath();
+      for(var ti=0;ti<trace.length;ti++){
+        var tx=xS(trace[ti].lon),ty=yS(trace[ti].lat);
+        if(ti)ctx.lineTo(tx,ty);else ctx.moveTo(tx,ty);
+      }
+      ctx.stroke();
+      if(trace.length){
+        ctx.globalAlpha=1;ctx.fillStyle=lineColor;
+        ctx.beginPath();ctx.arc(xS(trace[0].lon),yS(trace[0].lat),isHov?5:3,0,Math.PI*2);ctx.fill();
+      }
+      ctx.restore();
+      hitZones.push({fi:fi,run:files[fi].run,pts:trace,color:lineColor});
+    }
+  }
+
+  return function(mx,my){
+    for(var hi=0;hi<hitZones.length;hi++){
+      for(var pi=0;pi<hitZones[hi].pts.length;pi++){
+        var p=hitZones[hi].pts[pi];
+        var dx=xS(p.lon)-mx,dy=yS(p.lat)-my;
+        if(dx*dx+dy*dy<100)return{fi:hitZones[hi].fi,run:hitZones[hi].run,
+          lat:p.lat,lon:p.lon,ts:p.ts,color:hitZones[hi].color};
+      }
+    }
+    if(showHotspots){
+      for(var ci=0;ci<hsClusters.length;ci++){
+        var grp=hsClusters[ci];
+        var glat=0,glon=0;
+        for(var gi=0;gi<grp.length;gi++){glat+=grp[gi].lat;glon+=grp[gi].lon;}
+        glat/=grp.length;glon/=grp.length;
+        var gcx=xS(glon),gcy=yS(glat);
+        var multiFile=false;
+        var firstFi=grp[0].fi;
+        for(var gi=1;gi<grp.length;gi++){if(grp[gi].fi!==firstFi){multiFile=true;break;}}
+        var r=multiFile?22:14;
+        var dx=gcx-mx,dy=gcy-my;
+        if(dx*dx+dy*dy<r*r)return{hotspot:true,grp:grp};
+      }
+    }
+    return null;
+  };
+}
+
+// ── App component ──────────────────────────────────────────────────────────────
+function App(){
+  var _useState0=useState([]),files=_useState0[0],setFiles=_useState0[1];
+  var _useState1=useState(null),activeIdx=_useState1[0],setActiveIdx=_useState1[1];
+  var _useState2=useState([]),training=_useState2[0],setTraining=_useState2[1];
+  var _useState3=useState(''),apiKey=_useState3[0],setApiKey=_useState3[1];
+  var _useState4=useState(null),selEv=_useState4[0],setSelEv=_useState4[1];
+  var _useState5=useState({}),aiResults=_useState5[0],setAiResults=_useState5[1];
+  var _useState6=useState(null),aiLoading=_useState6[0],setAiLoading=_useState6[1];
+  var _useState7=useState(''),confMat=_useState7[0],setConfMat=_useState7[1];
+  var _useState8=useState(false),drag=_useState8[0],setDrag=_useState8[1];
+  var _useState9=useState('analysis'),mainTab=_useState9[0],setMainTab=_useState9[1];
+  var _usStateDB=useState('loading'),dbStatus=_usStateDB[0],setDbStatus=_usStateDB[1];
+  // 'loading' | 'ok' | 'error' | 'idle'
+
+  // Load shared training data from Supabase on mount
+  useEffect(function(){
+    setDbStatus('loading');
+    loadTrainingFromDB()
+      .then(function(rows){
+        if(rows.length)setTraining(rows);
+        setDbStatus('ok');
+      })
+      .catch(function(e){
+        console.warn('Supabase load failed:',e.message);
+        setDbStatus('error');
+      });
+  },[]);
+  var _usStateA=useState([]),runGroups=_usStateA[0],setRunGroups=_usStateA[1];
+  var _usStateB=useState(null),expandedGroup=_usStateB[0],setExpandedGroup=_usStateB[1];
+  var _usStateC=useState(false),newGroupModal=_usStateC[0],setNewGroupModal=_usStateC[1];
+  var _usStateD=useState(''),newGroupName=_usStateD[0],setNewGroupName=_usStateD[1];
+  var _usStateE=useState('#0071b8'),newGroupColor=_usStateE[0],setNewGroupColor=_usStateE[1];
+  var _usStateF=useState(null),addToGroupModal=_usStateF[0],setAddToGroupModal=_usStateF[1];
+  var _usStateG=useState(''),selGroupId=_usStateG[0],setSelGroupId=_usStateG[1];
+  var _usStateH=useState(true),showLines=_usStateH[0],setShowLines=_usStateH[1];
+  var _usStateI=useState(true),showHotspots=_usStateI[0],setShowHotspots=_usStateI[1];
+  var _usStateJ=useState(null),hovFi=_usStateJ[0],setHovFi=_usStateJ[1];
+  var _usStateK=useState(null),mapTip=_usStateK[0],setMapTip=_usStateK[1];
+
+  var fileRef=useRef();
+  var mapRef=useRef();
+  var hitRef=useRef(null);
+  var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
+
+  // Analysis for active file
+  var analysis=useMemo(function(){
+    if(activeIdx===null||!files[activeIdx])return null;
+    var f=files[activeIdx];
+    if(f.type==='lab'){
+      return{isLab:true,run:f.run,labStats:computeLabStats(f.packets),nPkts:f.packets.length};
+    }
+    var pkts=f.packets;
+    if(!pkts.length)return null;
+    var xmt=pkts[0].xmt,harms=getHarms(xmt),bg=computeBG(pkts,harms);
+    var clusters=detectAnomalies(pkts,harms,bg);
+    var events=clusters.map(function(cl){return classifyRules(cl,harms,bg);});
+    var d1=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[0]*1000:NaN;});
+    var mag=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[1]:NaN;});
+    var dH=pkts.map(function(pk){var v=pk.freqs[harms[5]];return v?v[0]*1000:NaN;});
+    var d3=pkts.map(function(pk){var v=pk.freqs[harms[2]];return v?v[0]*1000:NaN;});
+    var xL=pkts.map(function(pk){return (pk.ts||'').split(' ')[1]?pk.ts.split(' ')[1].substring(0,5):'';});
+    var im={};pkts.forEach(function(pk,i){im[pk.idx]=i;});
+    var bgEv=events.map(function(ev,ei){
+      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
+      return{i0:im[ev.pktStart]!==undefined?im[ev.pktStart]:-1,
+             i1:im[ev.pktEnd]!==undefined?im[ev.pktEnd]:-1,
+             color:MAT_COLORS[cls]||'#aaa'};
+    });
+    return{isLab:false,pkts:pkts,xmt:xmt,harms:harms,bg:bg,clusters:clusters,
+           events:events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,im:im};
+  },[files,activeIdx,aiResults]);
+
+  // Chart rendering
+  useEffect(function(){
+    if(!analysis||analysis.isLab)return;
+    var d1=analysis.d1,mag=analysis.mag,dH=analysis.dH,d3=analysis.d3;
+    var bg=analysis.bg,xL=analysis.xL,bgEv=analysis.bgEv,harms=analysis.harms;
+    var allPh=d1.concat(dH).filter(function(v){return !isNaN(v)&&Math.abs(v)<200;});
+    var phMin=allPh.length?allPh.reduce(function(a,b){return a<b?a:b;}):-50;
+    var phMax=allPh.length?allPh.reduce(function(a,b){return a>b?a:b;}):50;
+    var yr_ph=[Math.floor(phMin/10)*10-5,Math.ceil(phMax/10)*10+5];
+    var allMag=mag.filter(function(v){return !isNaN(v)&&v>0;});
+    var mgMin=allMag.length?allMag.reduce(function(a,b){return a<b?a:b;}):0;
+    var mgMax=allMag.length?allMag.reduce(function(a,b){return a>b?a:b;}):1000;
+    var yr_mag=[Math.floor(mgMin/100)*100-50,Math.ceil(mgMax/100)*100+50];
+    drawChart(tsRef.current,[{data:d1,color:'#0071b8',width:1.2}],yr_ph,
+      {threshLo:bg.mean-3*bg.std,threshHi:bg.mean+3*bg.std,xLabels:xL,bgEvents:bgEv});
+    drawChart(highRef.current,[{data:d3,color:'#b07800',width:1},{data:dH,color:'#1a8c4e',width:1.2}],
+      yr_ph,{xLabels:xL,bgEvents:bgEv});
+    drawChart(magRef.current,[{data:mag,color:'#1a8c4e',width:1.2}],yr_mag,{xLabels:xL,bgEvents:bgEv});
+    var ei=(selEv!==null&&selEv<analysis.events.length)?selEv:0;
+    var ev=analysis.events[ei];
+    if(ev){
+      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
+      var vals=Object.keys(ev.dp).map(function(k){return ev.dp[k];}).filter(function(v){return !isNaN(v);});
+      var spMin=vals.length?vals.reduce(function(a,b){return a<b?a:b;},-5):-20;
+      var spMax=vals.length?vals.reduce(function(a,b){return a>b?a:b;},5):20;
+      drawSpectral(specRef.current,ev.dp,harms,
+        [Math.floor(spMin/10)*10-5,Math.ceil(spMax/10)*10+5],MAT_COLORS[cls]||'#0071b8');
+    }
+  },[analysis,selEv,aiResults]);
+
+  // Map rendering
+  useEffect(function(){
+    if(mainTab!=='map')return;
+    hitRef.current=drawMap(mapRef.current,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults);
+  },[mainTab,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults]);
+
+  var onMapMove=useCallback(function(e){
+    if(!mapRef.current||!hitRef.current)return;
+    var rect=mapRef.current.getBoundingClientRect();
+    var mx=(e.clientX-rect.left)*(mapRef.current.width/rect.width);
+    var my=(e.clientY-rect.top)*(mapRef.current.height/rect.height);
+    var hit=hitRef.current(mx,my);
+    if(hit){
+      if(hit.hotspot){
+        setHovFi(null);
+        var grp=hit.grp;
+        var fis=grp.map(function(h){return h.fi;});
+        var uniqueFis=fis.filter(function(v,i){return fis.indexOf(v)===i;});
+        var lines=[uniqueFis.length>1?'HOTSPOT ('+grp.length+' detections, '+uniqueFis.length+' files)':'HOTSPOT: '+grp[0].run,
+          'Class: '+grp[0].cls];
+        setMapTip({x:e.clientX-rect.left+14,y:e.clientY-rect.top-40,lines:lines});
+      }else{
+        setHovFi(hit.fi);
+        setMapTip({x:e.clientX-rect.left+14,y:e.clientY-rect.top-40,
+          lines:[hit.run,'Lat '+hit.lat.toFixed(6)+'N','Lon '+Math.abs(hit.lon).toFixed(6)+'W',hit.ts||'']});
+      }
+    }else{setHovFi(null);setMapTip(null);}
+  },[]);
+
+  // File loading
+  var loadFiles=useCallback(function(fileList){
+    var promises=[];
+    for(var i=0;i<fileList.length;i++){
+      promises.push((function(file){
+        return file.text().then(function(text){
+          var pkts=parseAnyFile(text);
+          if(!pkts.length)return null;
+          return{name:file.name,run:pkts[0].run||file.name,packets:pkts,
+                 xmt:pkts[0].xmt,type:pkts[0].type};
+        });
+      })(fileList[i]));
+    }
+    Promise.all(promises).then(function(results){
+      var newFiles=results.filter(function(r){return r!==null;});
+      setFiles(function(prev){
+        var updated=prev.concat(newFiles);
+        if(!prev.length&&updated.length)setActiveIdx(0);
+        return updated;
+      });
+    });
+  },[]);
+
+  // AI classification
+  var doAI=function(fi,ei){
+    if(!apiKey){alert('Enter API key');return;}
+    var f=files[fi];if(!f||f.type==='lab')return;
+    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
+    var bg=computeBG(f.packets,harms);
+    var clusters=detectAnomalies(f.packets,harms,bg);
+    if(!clusters.length||!clusters[ei])return;
+    var ev=classifyRules(clusters[ei],harms,bg);
+    var key=fi+'-'+ei;
+    setAiLoading(key);
+    classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
+      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=r;return next;});
+      setSelEv(ei);
+    }).catch(function(e){
+      var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
+        key_indicators:'',reasoning:e.message,caution:null};
+      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=err;return next;});
+    }).finally(function(){setAiLoading(null);});
+  };
+
+  var doAIAll=function(){
+    if(!analysis||analysis.isLab||!apiKey)return;
+    var i=0;
+    function next(){
+      if(i>=analysis.events.length)return;
+      var ei=i++;
+      var f=files[activeIdx];
+      var harms=getHarms(f.packets[0].xmt||4);
+      var bg=computeBG(f.packets,harms);
+      var clusters=detectAnomalies(f.packets,harms,bg);
+      if(!clusters[ei]){next();return;}
+      var ev=classifyRules(clusters[ei],harms,bg);
+      var key=activeIdx+'-'+ei;
+      setAiLoading(key);
+      classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
+        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=r;return nx;});
+        setSelEv(ei);
+      }).catch(function(e){
+        var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
+          key_indicators:'',reasoning:e.message,caution:null};
+        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=err;return nx;});
+      }).finally(function(){
+        setAiLoading(null);
+        setTimeout(next,600);
+      });
+    }
+    next();
+  };
+
+  var saveTraining=function(fi,ei){
+    if(!confMat)return;
+    var f=files[fi];if(!f||f.type==='lab')return;
+    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
+    var bg=computeBG(f.packets,harms);
+    var clusters=detectAnomalies(f.packets,harms,bg);
+    if(!clusters.length||!clusters[ei])return;
+    var ev=classifyRules(clusters[ei],harms,bg);
+    var aiRes=aiResults[fi+'-'+ei];
+    var entry={
+      material:confMat,run:f.run,ts:ev.ts,
+      fv:{dp1:ev.dp[harms[0]]||0,dp3:ev.dp[harms[2]]||0,dp_last:ev.dp[harms[5]]||0,
+          magPct:ev.magPct,maxSNR:ev.maxSNR},
+      aiConf:aiRes?aiRes.confidence_pct:ev.confPct
+    };
+    // Optimistic local update immediately
+    setTraining(function(prev){return prev.concat([entry]);});
+    setConfMat('');
+    // Persist to Supabase in background
+    setDbStatus('loading');
+    saveTrainingToDB(entry,harms)
+      .then(function(rows){
+        // Update local entry with DB-assigned id so we can delete it later
+        if(rows&&rows[0]){
+          var dbId=rows[0].id;
+          setTraining(function(prev){
+            var updated=prev.slice();
+            updated[updated.length-1]=Object.assign({},updated[updated.length-1],{id:dbId});
+            return updated;
+          });
+        }
+        setDbStatus('ok');
+      })
+      .catch(function(e){
+        console.warn('Supabase save failed:',e.message);
+        setDbStatus('error');
+      });
+  };
+
+  // Run group helpers
+  var createGroup=function(){
+    if(!newGroupName.trim())return;
+    setRunGroups(function(prev){return prev.concat([{
+      id:'g'+Date.now(),name:newGroupName.trim(),color:newGroupColor,fileIds:[]}]);});
+    setNewGroupModal(false);setNewGroupName('');
+  };
+  var addToGroup=function(fi,gid){
+    setRunGroups(function(prev){return prev.map(function(g){
+      return(g.id===gid&&g.fileIds.indexOf(fi)<0)?
+        Object.assign({},g,{fileIds:g.fileIds.concat([fi])}):g;});});
+    setAddToGroupModal(null);setSelGroupId('');
+  };
+  var removeFromGroup=function(fi,gid){
+    setRunGroups(function(prev){return prev.map(function(g){
+      return g.id===gid?Object.assign({},g,{fileIds:g.fileIds.filter(function(i){return i!==fi;})}):g;});});
+  };
+  var deleteGroup=function(id){
+    setRunGroups(function(prev){return prev.filter(function(g){return g.id!==id;});});
+  };
+
+  // Derived render values
+  var af=analysis;
+  var activeEv=(af&&!af.isLab&&selEv!==null&&selEv<af.events.length)?af.events[selEv]:null;
+  var aiKey=(activeIdx!==null&&selEv!==null)?activeIdx+'-'+selEv:null;
+  var aiRes=aiKey?aiResults[aiKey]:null;
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <h1>IPA MIP CLASSIFIER</h1>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>{files.length} files</span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:training.length?'var(--pos)':'var(--dim2)'}}>{training.length} training</span>
+        <div style={{flex:1}}/>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,
+          color:dbStatus==='ok'?'var(--pos)':dbStatus==='error'?'var(--neg)':dbStatus==='loading'?'#b07800':'var(--dim)'}}>
+          {dbStatus==='loading'?'⟳ syncing':dbStatus==='ok'?'✓ DB synced':dbStatus==='error'?'✗ DB offline':'DB'}
+        </span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7</span>
+      </div>
+
+      <div className="main">
+        <div className="sidebar">
+          <div className={drag?'upload-zone drag':'upload-zone'}
+            onDragOver={function(e){e.preventDefault();setDrag(true);}}
+            onDragLeave={function(){setDrag(false);}}
+            onDrop={function(e){e.preventDefault();setDrag(false);loadFiles(e.dataTransfer.files);}}
+            onClick={function(){fileRef.current&&fileRef.current.click();}}>
+            <div className="icon">📡</div>
+            <p>Drop <code>_p.txt</code> files<br/>(lab or field) · <span>click to browse</span></p>
+          </div>
+          <input ref={fileRef} type="file" accept=".txt" multiple style={{display:'none'}}
+            onChange={function(e){loadFiles(e.target.files);}}/>
+
+          {files.length>0 && <div className="sidebar-label">Files</div>}
+          {files.map(function(f,i){
+            var grp=null;
+            for(var gi=0;gi<runGroups.length;gi++){if(runGroups[gi].fileIds.indexOf(i)>=0){grp=runGroups[gi];break;}}
+            var dotCol=grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0');
+            return (
+              <div key={i} className={activeIdx===i?'file-item active':'file-item'}
+                onClick={function(){setActiveIdx(i);setSelEv(null);}}>
+                <div className="file-dot" style={{background:dotCol}}/>
+                <div style={{flex:1,overflow:'hidden'}}>
+                  <div className="file-name">{f.run}</div>
+                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}</div>
+                </div>
+                <button title="Add to group"
+                  onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
+                  style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',
+                    borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
+              </div>
+            );
+          })}
+
+          {files.length>0 && (
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
+              <span className="sidebar-label">Run Groups</span>
+              <button className="btn btn-primary btn-sm" onClick={function(){setNewGroupModal(true);}}>+ Group</button>
+            </div>
+          )}
+          {runGroups.map(function(g){
+            var isExp=expandedGroup===g.id;
+            return (
+              <div key={g.id} className="run-group">
+                <div className="run-group-hdr" onClick={function(){setExpandedGroup(isExp?null:g.id);}}>
+                  <div className="run-swatch" style={{background:g.color}}/>
+                  <span className="run-group-name">{g.name}</span>
+                  <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{g.fileIds.length}f</span>
+                  <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}}
+                    style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>
+                </div>
+                {isExp && (
+                  <div className="run-group-body">
+                    {g.fileIds.map(function(fi){
+                      var f=files[fi];if(!f)return null;
+                      return (
+                        <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'}
+                          onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
+                          <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
+                          <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
+                          <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{f.type}</span>
+                          <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}}
+                            style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>
+                        </div>
+                      );
+                    })}
+                    {!g.fileIds.length && <span style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>No files added</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {training.length>0 && (
+            <div>
+              <div className="sep" style={{height:1,background:'var(--border)',margin:'4px 0'}}/>
+              <div className="sidebar-label">Training ({training.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3,maxHeight:100,overflowY:'auto'}}>
+                {training.map(function(t,i){return (
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',
+                    borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)'}}>
+                    <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+                      background:MAT_COLORS[t.material]||'#8099b0'}}/>
+                    <span style={{fontWeight:700,color:MAT_COLORS[t.material]||'var(--dim2)'}}>{t.material}</span>
+                    <span style={{flex:1,fontSize:9,color:'var(--dim)',marginLeft:4}}>{(t.run||'').substring(0,10)}</span>
+                    <button onClick={function(){
+                      setTraining(function(prev){return prev.filter(function(_,j){return j!==i;});});
+                      if(t.id)deleteTrainingFromDB(t.id).catch(function(e){console.warn('delete failed',e);});
+                    }} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
+                  </div>
+                );})}
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={function(){
+                if(!window.confirm('Delete all '+training.length+' training confirmations from the shared database? This affects all users.'))return;
+                var ids=training.filter(function(t){return t.id;}).map(function(t){return t.id;});
+                setTraining([]);
+                // Delete each from Supabase
+                ids.forEach(function(id){
+                  deleteTrainingFromDB(id).catch(function(e){console.warn('Delete failed for id '+id,e);});
+                });
+              }}>Clear training</button>
+            </div>
+          )}
+          {files.length>0 && (
+            <button className="btn btn-ghost btn-sm"
+              onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);}}>
+              Clear all files</button>
+          )}
+        </div>
+
+        <div className="content">
+          {files.length>0 && (
+            <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
+              <div className={mainTab==='analysis'?'tab active':'tab'} onClick={function(){setMainTab('analysis');}}>Analysis</div>
+              <div className={mainTab==='map'?'tab active':'tab'} onClick={function(){setMainTab('map');}}>Map</div>
+              <div className={mainTab==='lab'?'tab active':'tab'} onClick={function(){setMainTab('lab');}}>Lab Stats</div>
+            </div>
+          )}
+
+          {mainTab==='analysis' && (
+            <div>
+              {!af && (
+                <div className="empty">
+                  <div className="icon">◎</div>
+                  <p>Load <code>_p.txt</code> files to begin</p>
+                </div>
+              )}
+              {af && af.isLab && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Lab file selected — view computed statistics in the <strong>Lab Stats</strong> tab</p>
+                </div>
+              )}
+              {af && !af.isLab && (
+                <div>
+                  <div className="statsbar">
+                    <div className="stat"><label>Run</label>
+                      <div className="val" style={{fontSize:11}}>{af.pkts[0]?af.pkts[0].run.substring(0,16):''}</div>
+                      <div className="sub">{af.pkts.length}pkt · {af.xmt}Hz</div></div>
+                    <div className="stat"><label>BG Δφ mean</label>
+                      <div className="val">{af.bg.mean.toFixed(3)}</div>
+                      <div className="sub">mrad at {af.xmt}Hz</div></div>
+                    <div className="stat"><label>BG std dev</label>
+                      <div className="val">{af.bg.std.toFixed(3)}</div>
+                      <div className="sub">mrad ddof=1</div></div>
+                    <div className="stat"><label>3σ threshold</label>
+                      <div className="val">{(af.bg.mean-3*af.bg.std).toFixed(2)}</div>
+                      <div className="sub">{(af.bg.mean+3*af.bg.std).toFixed(2)} mrad</div></div>
+                    <div className="stat"><label>Events</label>
+                      <div className="val" style={{color:af.events.length?'#b07800':'var(--pos)'}}>{af.events.length}</div>
+                      <div className="sub">{af.clusters.reduce(function(a,c){return a+c.length;},0)} anom pkts</div></div>
+                  </div>
+                  <div className="charts-grid">
+                    <div className="chart-panel full">
+                      <div className="chart-title">Δφ {af.xmt}Hz ch1-0 (mrad) — 3σ threshold shown<span>shaded = events</span></div>
+                      <canvas ref={tsRef} style={{height:110}} height={110}/>
+                    </div>
+                    <div className="chart-panel">
+                      <div className="chart-title">Δφ {af.harms[2]}Hz (amber) · {af.harms[5]}Hz (green)</div>
+                      <canvas ref={highRef} style={{height:100}} height={100}/>
+                    </div>
+                    <div className="chart-panel">
+                      <div className="chart-title">Harmonic spectrum — event {selEv!==null?selEv+1:'(select row)'}
+                        {aiRes && <span style={{color:MAT_COLORS[aiRes.classification]||'#333',fontSize:9,marginLeft:6}}>{aiRes.classification}</span>}
+                      </div>
+                      <canvas ref={specRef} style={{height:100}} height={100}/>
+                    </div>
+                    <div className="chart-panel full">
+                      <div className="chart-title">Ch1 magnitude at {af.xmt}Hz (counts)</div>
+                      <canvas ref={magRef} style={{height:75}} height={75}/>
+                    </div>
+                  </div>
+                  <div className="chart-panel full" style={{padding:'8px 0 0'}}>
+                    <div className="chart-title" style={{padding:'0 10px 7px',display:'flex',alignItems:'center',gap:8}}>
+                      <span>Events — {af.events.length}</span>
+                      <span style={{color:'var(--dim)',flex:1,fontSize:9}}>click row to view harmonic spectrum</span>
+                      <button className="btn btn-ai btn-sm" onClick={doAIAll}
+                        disabled={!apiKey||!af.events.length||!!aiLoading}>
+                        {aiLoading?'Running...':'⚡ AI All'}
+                      </button>
+                    </div>
+                    <div className="events-wrap">
+                      <table className="events-table">
+                        <thead><tr>
+                          <th>#</th><th>Time</th><th>Pkts</th>
+                          <th>Δφ {af.harms[0]}Hz</th><th>Δφ {af.harms[2]}Hz</th><th>Δφ {af.harms[5]}Hz</th>
+                          <th>Mag%</th><th>SNR</th><th>Class</th><th>Conf</th><th>Src</th><th>AI</th>
+                        </tr></thead>
+                        <tbody>
+                          {af.events.map(function(ev,ei){
+                            var ak=activeIdx+'-'+ei,ar=aiResults[ak],ld=aiLoading===ak;
+                            var cls=ar?ar.classification:ev.cls,conf=ar?ar.confidence_pct:ev.confPct;
+                            var bc=cls.indexOf('Hydro')>=0||cls.indexOf('Gas')>=0||cls.indexOf('Crude')>=0?'badge-hydro':
+                              cls.indexOf('Metal')>=0||cls.indexOf('Steel')>=0||cls.indexOf('Ilmen')>=0?'badge-metal':
+                              cls.indexOf('Mix')>=0?'badge-mixed':cls.indexOf('Art')>=0?'badge-art':'badge-weak';
+                            var cc=conf>75?'var(--pos)':conf>50?'#b07800':'var(--neg)';
+                            var dp0=ev.dp[af.harms[0]]||0,dp2=ev.dp[af.harms[2]]||0,dp5=ev.dp[af.harms[5]]||0;
+                            return (
+                              <tr key={ei} className={selEv===ei?'selected':''} style={{cursor:'pointer'}}
+                                onClick={function(){setSelEv(ei===selEv?null:ei);}}>
+                                <td style={{color:'var(--dim2)'}}>{ei+1}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.ts?ev.ts.split(' ')[1]?ev.ts.split(' ')[1].substring(0,8):'—':'—'}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.nPkts}</td>
+                                <td style={{color:dp0<0?'var(--neg)':'var(--pos)'}}>{dp0.toFixed(2)}</td>
+                                <td style={{color:dp2>0?'var(--pos)':'var(--neg)'}}>{dp2.toFixed(2)}</td>
+                                <td style={{color:dp5>0?'var(--pos)':'var(--neg)'}}>{dp5.toFixed(2)}</td>
+                                <td style={{color:ev.magPct<-2?'var(--neg)':ev.magPct>5?'var(--pos)':'var(--dim3)'}}>{ev.magPct.toFixed(1)}%</td>
+                                <td style={{color:'#b07800'}}>{ev.maxSNR.toFixed(1)}</td>
+                                <td><span className={'badge '+bc}>{cls}</span></td>
+                                <td><div className="conf-bar">
+                                  <div className="conf-fill" style={{width:Math.max(4,conf*0.8)+'px',background:cc}}/>
+                                  <span className="conf-text">{conf}%</span></div></td>
+                                <td style={{fontSize:9,color:'var(--dim2)'}}>{ar?'AI':'rules'}</td>
+                                <td>{ld?<span className="spinner"/>:
+                                  <button className="btn btn-ai btn-sm" style={{padding:'2px 7px',fontSize:9}}
+                                    onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}}
+                                    disabled={!apiKey||!!aiLoading}>AI</button>}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mainTab==='map' && (
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              <div className="map-toggles">
+                <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)'}}>Show:</span>
+                <button className={showLines?'tog on':'tog'} onClick={function(){setShowLines(function(s){return !s;});}}>Track Lines</button>
+                <button className={showHotspots?'tog on':'tog'} onClick={function(){setShowHotspots(function(s){return !s;});}}>Anomaly Hotspots</button>
+                <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',marginLeft:8}}>
+                  Solid = multi-file · Dashed = single-file · Hover for info · Click track to open file
+                </span>
+              </div>
+              <div className="map-wrap" style={{height:420,position:'relative'}}>
+                <canvas ref={mapRef} style={{height:420}} height={420}
+                  onMouseMove={onMapMove}
+                  onMouseLeave={function(){setHovFi(null);setMapTip(null);}}
+                  onClick={function(e){
+                    if(!mapRef.current||!hitRef.current)return;
+                    var rect=mapRef.current.getBoundingClientRect();
+                    var mx=(e.clientX-rect.left)*(mapRef.current.width/rect.width);
+                    var my=(e.clientY-rect.top)*(mapRef.current.height/rect.height);
+                    var hit=hitRef.current(mx,my);
+                    if(hit&&!hit.hotspot){setActiveIdx(hit.fi);setMainTab('analysis');setSelEv(null);}
+                  }}/>
+                {mapTip && (
+                  <div className="map-tip" style={{left:mapTip.x,top:mapTip.y}}>
+                    {mapTip.lines.map(function(l,i){return (
+                      <div key={i} style={i===0?{fontWeight:700,color:'var(--accent)'}:{}}>{l}</div>
+                    );})}
+                  </div>
+                )}
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:10,fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim3)'}}>
+                {runGroups.map(function(g){return (
+                  <div key={g.id} style={{display:'flex',alignItems:'center',gap:4}}>
+                    <div style={{width:20,height:3,background:g.color,borderRadius:1}}/>
+                    <span>{g.name}</span>
+                  </div>
+                );})}
+                {files.filter(function(f){return f.type==='field';}).map(function(f){
+                  var fi=files.indexOf(f);
+                  var inGroup=runGroups.some(function(g){return g.fileIds.indexOf(fi)>=0;});
+                  if(inGroup)return null;
+                  return (
+                    <div key={fi} style={{display:'flex',alignItems:'center',gap:4}}>
+                      <div style={{width:20,height:3,background:RUN_COLORS[fi%RUN_COLORS.length],borderRadius:1}}/>
+                      <span>{(f.run||'').substring(0,20)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {mainTab==='lab' && (
+            <div>
+              {!af && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Load a lab <code>_p.txt</code> file</p>
+                </div>
+              )}
+              {af && !af.isLab && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Select a lab file from the sidebar</p>
+                </div>
+              )}
+              {af && af.isLab && (
+                <div>
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:12,fontWeight:700,color:'var(--text)',marginBottom:3}}>{af.run}</div>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)'}}>
+                      {af.labStats.length} xmt group{af.labStats.length!==1?'s':''} · {af.nPkts} packets total
+                    </div>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',marginTop:2}}>
+                      col[0]=freq_Hz · col[1]=ch1-0_delta_rad · col[9]=ch1_mag_counts · std_dev ddof=1 · only ch1 recorded
+                    </div>
+                  </div>
+                  {af.labStats.map(function(grp){return (
+                    <div key={grp.xmt} style={{marginBottom:20}}>
+                      <div style={{fontFamily:'var(--font-mono)',fontSize:11,fontWeight:700,
+                        color:'var(--accent)',marginBottom:6,borderBottom:'1px solid var(--border)',paddingBottom:4}}>
+                        xmt = {grp.xmt}Hz · {grp.nPkts} packet{grp.nPkts!==1?'s':''}
+                      </div>
+                      <div style={{overflowX:'auto'}}>
+                        <table className="lab-tbl">
+                          <thead><tr>
+                            <th style={{textAlign:'left'}}>freq (Hz)</th>
+                            <th>ch1 Δφ mean (rad)</th>
+                            <th>ch1 Δφ std (rad)</th>
+                            <th>ch1 Δφ mean (mrad)</th>
+                            <th>ch1 mag mean (counts)</th>
+                            <th>N</th>
+                          </tr></thead>
+                          <tbody>
+                            {grp.rows.map(function(row){return (
+                              <tr key={row.freq}>
+                                <td style={{textAlign:'left'}}>{row.freq}</td>
+                                <td>{row.meanDp.toFixed(10)}</td>
+                                <td>{row.stdDp.toFixed(10)}</td>
+                                <td>{(row.meanDp*1000).toFixed(6)}</td>
+                                <td>{row.meanMag.toFixed(4)}</td>
+                                <td>{row.n}</td>
+                              </tr>
+                            );})}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="ai-panel">
+          <div className="ai-section-title">AI Classifier</div>
+          <div>
+            <div style={{fontSize:11,color:'var(--dim2)',marginBottom:5,lineHeight:1.5}}>Anthropic API key</div>
+            <div className="api-key-row">
+              <input className="api-key-input" type="password" placeholder="sk-ant-..."
+                value={apiKey} onChange={function(e){setApiKey(e.target.value);}}/>
+            </div>
+            <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Session only, never stored.</div>
+          </div>
+          <div className="sep" style={{height:1,background:'var(--border)'}}/>
+          <div className="ai-section-title">Event Analysis</div>
+          {!activeEv && (
+            <div style={{fontSize:11,color:'var(--dim)',fontFamily:'var(--font-mono)',padding:'6px 0'}}>Select a row in Analysis tab.</div>
+          )}
+          {activeEv && (
+            <div>
+              <div style={{fontSize:10,color:'var(--dim2)',fontFamily:'var(--font-mono)',lineHeight:1.6,marginBottom:8}}>
+                Event {(selEv||0)+1} · {activeEv.ts?activeEv.ts.split(' ')[1]?activeEv.ts.split(' ')[1].substring(0,8):'—':'—'} · {activeEv.nPkts}pkt · SNR {activeEv.maxSNR.toFixed(1)}
+                {activeEv.lat && <div>Lat {activeEv.lat.toFixed(6)}N · Lon {Math.abs(activeEv.lon||0).toFixed(6)}W</div>}
+              </div>
+              {aiRes && (
+                <div className="ai-classification">
+                  <div className="ai-cls-row">
+                    <div style={{width:10,height:10,borderRadius:2,background:MAT_COLORS[aiRes.classification]||'#333'}}/>
+                    <span className="ai-cls-val" style={{color:MAT_COLORS[aiRes.classification]||'var(--text)'}}>{aiRes.classification}</span>
+                    <span className="ai-conf-val">{aiRes.confidence_pct}% · {aiRes.confidence_label}</span>
+                  </div>
+                  {aiRes.key_indicators && <div style={{fontSize:11,color:'var(--accent)',marginBottom:5,fontStyle:'italic'}}>{aiRes.key_indicators}</div>}
+                  {aiRes.reasoning && <div style={{fontSize:11,color:'var(--dim3)',lineHeight:1.6,marginBottom:5}}>{aiRes.reasoning}</div>}
+                  {aiRes.caution && <div style={{fontSize:10,color:'#b07800',lineHeight:1.5,borderTop:'1px solid var(--border)',paddingTop:5}}>⚠ {aiRes.caution}</div>}
+                </div>
+              )}
+              {!aiRes && (
+                <div>
+                  <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>
+                    Rules: <span style={{color:MAT_COLORS[activeEv.cls]||'var(--text)'}}>{activeEv.cls}</span> ({activeEv.confPct}%)
+                  </div>
+                  <button className="btn btn-ai" style={{width:'100%'}}
+                    onClick={function(){doAI(activeIdx,selEv);}} disabled={!apiKey||!!aiLoading}>
+                    {aiLoading===aiKey?'Analyzing...':'⚡ Analyze with Claude AI'}
+                  </button>
+                </div>
+              )}
+              <div className="sep" style={{height:1,background:'var(--border)',margin:'10px 0'}}/>
+              <div className="ai-section-title">Confirm Material</div>
+              <div className="confirm-row">
+                <select className="confirm-sel" value={confMat} onChange={function(e){setConfMat(e.target.value);}}>
+                  <option value="">— material —</option>
+                  {MAT_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                </select>
+                <button className="confirm-btn" onClick={function(){saveTraining(activeIdx,selEv);}} disabled={!confMat}>✓</button>
+              </div>
+            </div>
+          )}
+          {training.length>0 && (
+            <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',
+              borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
+              {training.length} confirmed → included in next AI call
+            </div>
+          )}
+        </div>
+      </div>
+
+      {newGroupModal && (
+        <div className="modal-bg" onClick={function(){setNewGroupModal(false);}}>
+          <div className="modal" onClick={function(e){e.stopPropagation();}}>
+            <h3>New Run Group</h3>
+            <label>Name</label>
+            <input autoFocus value={newGroupName} onChange={function(e){setNewGroupName(e.target.value);}}
+              placeholder="e.g. Eagle Harbor Day 1"
+              onKeyDown={function(e){if(e.key==='Enter')createGroup();}}/>
+            <label>Color</label>
+            <div className="color-row">
+              {SWATCH_COLORS.map(function(c){return (
+                <div key={c} className={newGroupColor===c?'cswatch sel':'cswatch'}
+                  style={{background:c}} onClick={function(){setNewGroupColor(c);}}/>
+              );})}
+            </div>
+            <div className="modal-btns">
+              <button className="btn btn-ghost" onClick={function(){setNewGroupModal(false);}}>Cancel</button>
+              <button className="btn btn-primary" onClick={createGroup} disabled={!newGroupName.trim()}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {addToGroupModal!==null && (
+        <div className="modal-bg" onClick={function(){setAddToGroupModal(null);}}>
+          <div className="modal" onClick={function(e){e.stopPropagation();}}>
+            <h3>Add to Run Group</h3>
+            <p style={{fontSize:11,color:'var(--dim2)',marginBottom:8}}>
+              {files[addToGroupModal]?files[addToGroupModal].run:''}
+            </p>
+            {!runGroups.length && <div style={{fontSize:11,color:'var(--dim2)'}}>No groups yet — create one first.</div>}
+            {runGroups.length>0 && (
+              <div>
+                <label>Group</label>
+                <select value={selGroupId} onChange={function(e){setSelGroupId(e.target.value);}}>
+                  <option value="">— select —</option>
+                  {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name}</option>;})}
+                </select>
+              </div>
+            )}
+            <div className="modal-btns">
+              <button className="btn btn-ghost" onClick={function(){setAddToGroupModal(null);}}>Cancel</button>
+              {runGroups.length>0 && <button className="btn btn-primary"
+                onClick={function(){addToGroup(addToGroupModal,selGroupId);}} disabled={!selGroupId}>Add</button>}
+              <button className="btn btn-primary" style={{background:'var(--accent)'}}
+                onClick={function(){setNewGroupModal(true);setAddToGroupModal(null);}}>+ New Group</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App,null));
+
+</script>
+</body>
+</html>

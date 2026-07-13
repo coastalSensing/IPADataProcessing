@@ -167,6 +167,16 @@ canvas{display:block;width:100%;}
 
 /* ── Map & run organizer additions ── */
 .map-wrap{position:relative;background:#e8eef4;border-radius:3px;border:1px solid var(--border);overflow:hidden;}
+.leaflet-container{border-radius:3px;}
+.map-controls-panel{background:rgba(255,255,255,.95);border:1px solid var(--border2);border-radius:3px;padding:8px 10px;font-family:var(--font-mono);font-size:10px;display:flex;flex-direction:column;gap:6px;}
+.layer-btn-group{display:flex;gap:4px;flex-wrap:wrap;}
+.layer-btn{padding:3px 8px;border-radius:2px;border:1px solid var(--border2);background:var(--panel);font-family:var(--font-mono);font-size:9px;cursor:pointer;color:var(--dim3);transition:all .15s;}
+.layer-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.layer-btn:hover:not(.active){border-color:var(--accent);color:var(--accent);}
+.file-sel-list{display:flex;flex-direction:column;gap:3px;max-height:140px;overflow-y:auto;}
+.file-sel-row{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:2px;cursor:pointer;}
+.file-sel-row:hover{background:var(--panel2);}
+.file-sel-check{width:12px;height:12px;accent-color:var(--accent);}
 .map-canvas{display:block;width:100%;cursor:crosshair;}
 .map-tip{position:absolute;background:rgba(255,255,255,.97);border:1px solid var(--border2);border-radius:3px;
   padding:5px 9px;font-family:var(--font-mono);font-size:10px;pointer-events:none;
@@ -209,10 +219,13 @@ canvas{display:block;width:100%;}
 .cswatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;}
 .cswatch:hover,.cswatch.sel{border-color:var(--text);}
 </style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
+
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
 
 // ── Supabase config ────────────────────────────────────────────────────────────
@@ -607,66 +620,30 @@ function drawSpectral(canvas,dpMap,harms,yr,color){
 }
 
 // ── Map drawing ────────────────────────────────────────────────────────────────
-function drawMap(canvas,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults){
-  if(!canvas)return function(){return null;};
-  var W=canvas.clientWidth,H=canvas.clientHeight;
-  if(!W||!H)return function(){return null;};
-  canvas.width=W;canvas.height=H;
-  var ctx=canvas.getContext('2d');
-  ctx.fillStyle='#e8eef4';ctx.fillRect(0,0,W,H);
 
-  // Gather all field file coords
-  var allLat=[],allLon=[];
-  var fileTraces=[];
-  for(var fi=0;fi<files.length;fi++){
-    var f=files[fi];
-    if(f.type!=='field'){fileTraces.push([]);continue;}
-    var trace=[];
-    for(var pi=0;pi<f.packets.length;pi++){
-      var pk=f.packets[pi];
-      if(pk.lat!==null&&pk.lon!==null){
-        trace.push({lat:pk.lat,lon:pk.lon,idx:pk.idx,ts:pk.ts});
-        allLat.push(pk.lat);allLon.push(pk.lon);
+// ── Leaflet map helpers ────────────────────────────────────────────────────────
+// Cluster hotspots that are within ~20m of each other across files
+function clusterHotspots(hotspots){
+  var THRESH=0.0002,clusters=[],used={};
+  for(var i=0;i<hotspots.length;i++){
+    if(used[i])continue;
+    var grp=[hotspots[i]];used[i]=true;
+    for(var j=i+1;j<hotspots.length;j++){
+      if(used[j])continue;
+      if(Math.abs(hotspots[i].lat-hotspots[j].lat)<THRESH&&
+         Math.abs(hotspots[i].lon-hotspots[j].lon)<THRESH){
+        grp.push(hotspots[j]);used[j]=true;
       }
     }
-    fileTraces.push(trace);
+    clusters.push(grp);
   }
+  return clusters;
+}
 
-  if(!allLat.length){
-    ctx.fillStyle='#8099b0';ctx.font='12px monospace';ctx.textAlign='center';
-    ctx.fillText('No field coordinates found',W/2,H/2-8);
-    ctx.fillText('Load field _p.txt files to see map',W/2,H/2+10);
-    return function(){return null;};
-  }
-
-  var PAD=48;
-  var minLat=allLat.reduce(function(a,b){return a<b?a:b;});
-  var maxLat=allLat.reduce(function(a,b){return a>b?a:b;});
-  var minLon=allLon.reduce(function(a,b){return a<b?a:b;});
-  var maxLon=allLon.reduce(function(a,b){return a>b?a:b;});
-  var padLat=(maxLat-minLat)*0.10||0.0003;
-  var padLon=(maxLon-minLon)*0.10||0.0003;
-  var BL=minLat-padLat,TL=maxLat+padLat,BLon=minLon-padLon,TLon=maxLon+padLon;
-  var cW=W-PAD*2,cH=H-PAD*2;
-  function xS(lon){return PAD+(lon-BLon)/(TLon-BLon)*cW;}
-  function yS(lat){return H-PAD-(lat-BL)/(TL-BL)*cH;}
-
-  // Grid
-  ctx.strokeStyle='#d0d8e0';ctx.lineWidth=0.5;
-  for(var gi=0;gi<=4;gi++){
-    var glat=BL+gi*(TL-BL)/4,glon=BLon+gi*(TLon-BLon)/4;
-    ctx.beginPath();ctx.moveTo(xS(glon),PAD);ctx.lineTo(xS(glon),H-PAD);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(PAD,yS(glat));ctx.lineTo(W-PAD,yS(glat));ctx.stroke();
-    ctx.fillStyle='#8099b0';ctx.font='8px monospace';ctx.textAlign='center';
-    ctx.fillText(Math.abs(glon).toFixed(5)+'W',xS(glon),H-PAD+11);
-    ctx.save();ctx.translate(PAD-14,yS(glat));ctx.rotate(-Math.PI/2);
-    ctx.fillText(glat.toFixed(5)+'N',0,0);ctx.restore();
-  }
-  ctx.strokeStyle='#c0ccd8';ctx.strokeRect(PAD,PAD,cW,cH);
-
-  // Anomaly hotspots
+function buildHotspots(files,aiResults,visibleFileIds){
   var hotspots=[];
   for(var fi=0;fi<files.length;fi++){
+    if(visibleFileIds&&visibleFileIds.indexOf(fi)<0)continue;
     var f=files[fi];
     if(f.type!=='field'||!f.packets.length)continue;
     var harms=getHarms(f.packets[0].xmt||4);
@@ -679,115 +656,13 @@ function drawMap(canvas,files,activeIdx,runGroups,showLines,showHotspots,hovFi,a
       var cls=aiRes?aiRes.classification:ev.cls;
       var pts=clusters[ci].map(function(a){return a.pk;}).filter(function(pk){return pk.lat!==null;});
       if(!pts.length)continue;
-      var cx=0,cy=0;
-      for(var pi=0;pi<pts.length;pi++){cx+=pts[pi].lon;cy+=pts[pi].lat;}
-      cx/=pts.length;cy/=pts.length;
-      hotspots.push({lat:cy,lon:cx,cls:cls,conf:ev.confPct,fi:fi,ci:ci,run:f.run,nPkts:ev.nPkts});
+      var clat=0,clon=0;
+      for(var pi=0;pi<pts.length;pi++){clat+=pts[pi].lat;clon+=pts[pi].lon;}
+      clat/=pts.length;clon/=pts.length;
+      hotspots.push({lat:clat,lon:clon,cls:cls,conf:ev.confPct,fi:fi,ci:ci,run:f.run,nPkts:ev.nPkts});
     }
   }
-
-  // Cluster hotspots within ~20m of each other
-  var THRESH=0.0002;
-  var hsClusters=[],used={};
-  for(var i=0;i<hotspots.length;i++){
-    if(used[i])continue;
-    var grp=[hotspots[i]];used[i]=true;
-    for(var j=i+1;j<hotspots.length;j++){
-      if(used[j])continue;
-      if(Math.abs(hotspots[i].lat-hotspots[j].lat)<THRESH&&
-         Math.abs(hotspots[i].lon-hotspots[j].lon)<THRESH){
-        grp.push(hotspots[j]);used[j]=true;
-      }
-    }
-    hsClusters.push(grp);
-  }
-
-  if(showHotspots){
-    for(var ci=0;ci<hsClusters.length;ci++){
-      var grp=hsClusters[ci];
-      var glat=0,glon=0;
-      for(var gi=0;gi<grp.length;gi++){glat+=grp[gi].lat;glon+=grp[gi].lon;}
-      glat/=grp.length;glon/=grp.length;
-      var gcx=xS(glon),gcy=yS(glat);
-      var multiFile=false;
-      var firstFi=grp[0].fi;
-      for(var gi=1;gi<grp.length;gi++){if(grp[gi].fi!==firstFi){multiFile=true;break;}}
-      var col=MAT_COLORS[grp[0].cls]||'#808080';
-      var r=multiFile?22:14;
-      ctx.save();
-      ctx.globalAlpha=0.15;ctx.fillStyle=col;
-      ctx.beginPath();ctx.arc(gcx,gcy,r,0,Math.PI*2);ctx.fill();
-      ctx.globalAlpha=multiFile?0.8:0.5;
-      ctx.strokeStyle=col;ctx.lineWidth=multiFile?2:1.2;
-      if(!multiFile)ctx.setLineDash([4,3]);
-      ctx.beginPath();ctx.arc(gcx,gcy,r,0,Math.PI*2);ctx.stroke();
-      ctx.setLineDash([]);ctx.globalAlpha=1;
-      ctx.fillStyle=col;ctx.font='8px monospace';ctx.textAlign='center';
-      ctx.fillText(grp[0].cls.substring(0,12),gcx,gcy+r+9);
-      if(multiFile){
-        ctx.fillStyle='#fff';ctx.font='bold 9px monospace';
-        ctx.fillText(String(grp.length),gcx,gcy+3);
-      }
-      ctx.restore();
-    }
-  }
-
-  // File track lines
-  var hitZones=[];
-  if(showLines){
-    for(var fi=0;fi<fileTraces.length;fi++){
-      var trace=fileTraces[fi];
-      if(!trace||!trace.length)continue;
-      var isActive=fi===activeIdx,isHov=fi===hovFi;
-      var lineColor=RUN_COLORS[fi%RUN_COLORS.length];
-      for(var rgi=0;rgi<runGroups.length;rgi++){
-        if(runGroups[rgi].fileIds.indexOf(fi)>=0){lineColor=runGroups[rgi].color;break;}
-      }
-      ctx.save();
-      ctx.strokeStyle=lineColor;
-      ctx.lineWidth=isHov||isActive?3:1.8;
-      ctx.globalAlpha=isHov||isActive?1.0:0.55;
-      ctx.beginPath();
-      for(var ti=0;ti<trace.length;ti++){
-        var tx=xS(trace[ti].lon),ty=yS(trace[ti].lat);
-        if(ti)ctx.lineTo(tx,ty);else ctx.moveTo(tx,ty);
-      }
-      ctx.stroke();
-      if(trace.length){
-        ctx.globalAlpha=1;ctx.fillStyle=lineColor;
-        ctx.beginPath();ctx.arc(xS(trace[0].lon),yS(trace[0].lat),isHov?5:3,0,Math.PI*2);ctx.fill();
-      }
-      ctx.restore();
-      hitZones.push({fi:fi,run:files[fi].run,pts:trace,color:lineColor});
-    }
-  }
-
-  return function(mx,my){
-    for(var hi=0;hi<hitZones.length;hi++){
-      for(var pi=0;pi<hitZones[hi].pts.length;pi++){
-        var p=hitZones[hi].pts[pi];
-        var dx=xS(p.lon)-mx,dy=yS(p.lat)-my;
-        if(dx*dx+dy*dy<100)return{fi:hitZones[hi].fi,run:hitZones[hi].run,
-          lat:p.lat,lon:p.lon,ts:p.ts,color:hitZones[hi].color};
-      }
-    }
-    if(showHotspots){
-      for(var ci=0;ci<hsClusters.length;ci++){
-        var grp=hsClusters[ci];
-        var glat=0,glon=0;
-        for(var gi=0;gi<grp.length;gi++){glat+=grp[gi].lat;glon+=grp[gi].lon;}
-        glat/=grp.length;glon/=grp.length;
-        var gcx=xS(glon),gcy=yS(glat);
-        var multiFile=false;
-        var firstFi=grp[0].fi;
-        for(var gi=1;gi<grp.length;gi++){if(grp[gi].fi!==firstFi){multiFile=true;break;}}
-        var r=multiFile?22:14;
-        var dx=gcx-mx,dy=gcy-my;
-        if(dx*dx+dy*dy<r*r)return{hotspot:true,grp:grp};
-      }
-    }
-    return null;
-  };
+  return clusterHotspots(hotspots);
 }
 
 // ── App component ──────────────────────────────────────────────────────────────
@@ -829,9 +704,17 @@ function App(){
   var _usStateI=useState(true),showHotspots=_usStateI[0],setShowHotspots=_usStateI[1];
   var _usStateJ=useState(null),hovFi=_usStateJ[0],setHovFi=_usStateJ[1];
   var _usStateK=useState(null),mapTip=_usStateK[0],setMapTip=_usStateK[1];
+  // Map tile layer selection: 'satellite'|'street'|'topo'|'noaa'
+  var _usStateL=useState('satellite'),mapLayer=_usStateL[0],setMapLayer=_usStateL[1];
+  // Per-file visibility: null = all visible; array of fi indices = only those shown
+  var _usStateM=useState(null),visibleFiles=_usStateM[0],setVisibleFiles=_usStateM[1];
+  // Per-hotspot-cluster visibility toggle (cluster index -> bool)
+  var _usStateN=useState({}),hiddenHotspots=_usStateN[0],setHiddenHotspots=_usStateN[1];
 
   var fileRef=useRef();
-  var mapRef=useRef();
+  var mapRef=useRef();     // now a div ref for Leaflet
+  var leafletMap=useRef(null);   // Leaflet map instance
+  var leafletLayers=useRef({tracks:{},hotspots:{}});  // layer groups
   var hitRef=useRef(null);
   var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
 
@@ -893,34 +776,135 @@ function App(){
     }
   },[analysis,selEv,aiResults]);
 
-  // Map rendering
+  // ── Leaflet map initialisation (runs once when map tab first opens) ──────────
   useEffect(function(){
     if(mainTab!=='map')return;
-    hitRef.current=drawMap(mapRef.current,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults);
-  },[mainTab,files,activeIdx,runGroups,showLines,showHotspots,hovFi,aiResults]);
+    if(!mapRef.current)return;
 
-  var onMapMove=useCallback(function(e){
-    if(!mapRef.current||!hitRef.current)return;
-    var rect=mapRef.current.getBoundingClientRect();
-    var mx=(e.clientX-rect.left)*(mapRef.current.width/rect.width);
-    var my=(e.clientY-rect.top)*(mapRef.current.height/rect.height);
-    var hit=hitRef.current(mx,my);
-    if(hit){
-      if(hit.hotspot){
-        setHovFi(null);
-        var grp=hit.grp;
-        var fis=grp.map(function(h){return h.fi;});
-        var uniqueFis=fis.filter(function(v,i){return fis.indexOf(v)===i;});
-        var lines=[uniqueFis.length>1?'HOTSPOT ('+grp.length+' detections, '+uniqueFis.length+' files)':'HOTSPOT: '+grp[0].run,
-          'Class: '+grp[0].cls];
-        setMapTip({x:e.clientX-rect.left+14,y:e.clientY-rect.top-40,lines:lines});
-      }else{
-        setHovFi(hit.fi);
-        setMapTip({x:e.clientX-rect.left+14,y:e.clientY-rect.top-40,
-          lines:[hit.run,'Lat '+hit.lat.toFixed(6)+'N','Lon '+Math.abs(hit.lon).toFixed(6)+'W',hit.ts||'']});
+    // Tile layer URLs
+    var TILES={
+      satellite:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      street:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      topo:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      noaa:'https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png'
+    };
+    var ATTRIBS={
+      satellite:'Tiles &copy; Esri &mdash; Source: Esri, USGS',
+      street:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      topo:'Tiles &copy; Esri &mdash; Source: Esri, USGS, NOAA',
+      noaa:'NOAA Electronic Navigational Charts'
+    };
+
+    // Init map if not already created
+    if(!leafletMap.current){
+      var map=L.map(mapRef.current,{center:[47.62,-122.50],zoom:14,zoomControl:true});
+      L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20}).addTo(map);
+      leafletMap.current=map;
+      leafletLayers.current={baseTile:null,tracks:L.layerGroup().addTo(map),hotspots:L.layerGroup().addTo(map)};
+    }
+
+    var map=leafletMap.current;
+
+    // Swap tile layer if changed
+    if(leafletLayers.current.baseTile){
+      map.removeLayer(leafletLayers.current.baseTile);
+    }
+    var newTile=L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20});
+    newTile.addTo(map);
+    newTile.bringToBack();
+    leafletLayers.current.baseTile=newTile;
+
+    // ── Draw / update track lines ─────────────────────────────────────────────
+    leafletLayers.current.tracks.clearLayers();
+    var bounds=[];
+    if(showLines){
+      for(var fi=0;fi<files.length;fi++){
+        var f=files[fi];
+        if(f.type!=='field')continue;
+        var visible=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
+        if(!visible)continue;
+        var pts=f.packets.filter(function(pk){return pk.lat!==null&&pk.lon!==null;});
+        if(!pts.length)continue;
+        var lls=pts.map(function(pk){return[pk.lat,pk.lon];});
+        lls.forEach(function(ll){bounds.push(ll);});
+        var col=RUN_COLORS[fi%RUN_COLORS.length];
+        for(var rgi=0;rgi<runGroups.length;rgi++){
+          if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}
+        }
+        var isActive=fi===activeIdx;
+        var pl=L.polyline(lls,{
+          color:col,weight:isActive?4:2.5,opacity:isActive?1.0:0.7,
+          smoothFactor:1
+        });
+        // Start marker
+        L.circleMarker(lls[0],{radius:5,fillColor:col,color:'#fff',weight:1.5,fillOpacity:1}).addTo(leafletLayers.current.tracks);
+        // Closure to capture fi, f, col
+        (function(fi2,f2,col2,pl2){
+          pl2.on('click',function(){setActiveIdx(fi2);setMainTab('analysis');setSelEv(null);});
+          pl2.on('mouseover',function(e){
+            pl2.setStyle({weight:5,opacity:1});
+            pl2.bindTooltip(
+              '<div style="font-family:monospace;font-size:11px"><b>'+f2.run+'</b><br>'+
+              f2.packets.length+' pkts · '+f2.xmt+'Hz · '+f2.type+'</div>',
+              {sticky:true,direction:'top'}
+            ).openTooltip(e.latlng);
+          });
+          pl2.on('mouseout',function(){
+            pl2.setStyle({weight:fi2===activeIdx?4:2.5,opacity:fi2===activeIdx?1.0:0.7});
+            pl2.closeTooltip();
+          });
+        })(fi,f,col,pl);
+        pl.addTo(leafletLayers.current.tracks);
       }
-    }else{setHovFi(null);setMapTip(null);}
-  },[]);
+    }
+
+    // ── Draw / update hotspot circles ─────────────────────────────────────────
+    leafletLayers.current.hotspots.clearLayers();
+    if(showHotspots){
+      var visFi=visibleFiles;
+      var hsClusters=buildHotspots(files,aiResults,visFi);
+      for(var hi=0;hi<hsClusters.length;hi++){
+        if(hiddenHotspots[hi])continue;
+        var grp=hsClusters[hi];
+        var clat=0,clon=0;
+        for(var gi=0;gi<grp.length;gi++){clat+=grp[gi].lat;clon+=grp[gi].lon;}
+        clat/=grp.length;clon/=grp.length;
+        var uniqueFiSet={};
+        for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
+        var multiFile=Object.keys(uniqueFiSet).length>1;
+        var col2=MAT_COLORS[grp[0].cls]||'#808080';
+        var r=multiFile?22:14;
+        bounds.push([clat,clon]);
+        var circle=L.circle([clat,clon],{
+          radius:r*4,  // metres ~= pixel radius at zoom 17
+          color:col2,weight:multiFile?2:1.2,opacity:multiFile?0.9:0.6,
+          fillColor:col2,fillOpacity:0.15,
+          dashArray:multiFile?null:'6,4'
+        });
+        var tipHtml='<div style="font-family:monospace;font-size:11px">'+
+          '<b style="color:'+col2+'">'+grp[0].cls+'</b><br>'+
+          (multiFile?grp.length+' detections · '+Object.keys(uniqueFiSet).length+' files':grp[0].run)+'<br>'+
+          'Conf: '+grp[0].conf+'%</div>';
+        circle.bindTooltip(tipHtml,{sticky:true,direction:'top'});
+        circle.addTo(leafletLayers.current.hotspots);
+        // Label
+        var icon=L.divIcon({
+          html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col2+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
+               (multiFile?grp.length+' ×':'')+grp[0].cls.substring(0,10)+'</div>',
+          iconSize:[120,16],iconAnchor:[60,-r-2],className:''
+        });
+        L.marker([clat,clon],{icon:icon,interactive:false}).addTo(leafletLayers.current.hotspots);
+      }
+    }
+
+    // Fit bounds to visible data
+    if(bounds.length>=2){
+      try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}
+    }
+
+  },[mainTab,files,activeIdx,runGroups,showLines,showHotspots,visibleFiles,hiddenHotspots,aiResults,mapLayer]);
+
+  var onMapMove=useCallback(function(e){},{});  // tooltip handling now done by Leaflet
 
   // File loading
   var loadFiles=useCallback(function(fileList){
@@ -1309,54 +1293,106 @@ function App(){
           )}
 
           {mainTab==='map' && (
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              <div className="map-toggles">
-                <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)'}}>Show:</span>
-                <button className={showLines?'tog on':'tog'} onClick={function(){setShowLines(function(s){return !s;});}}>Track Lines</button>
-                <button className={showHotspots?'tog on':'tog'} onClick={function(){setShowHotspots(function(s){return !s;});}}>Anomaly Hotspots</button>
-                <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',marginLeft:8}}>
-                  Solid = multi-file · Dashed = single-file · Hover for info · Click track to open file
-                </span>
-              </div>
-              <div className="map-wrap" style={{height:420,position:'relative'}}>
-                <canvas ref={mapRef} style={{height:420}} height={420}
-                  onMouseMove={onMapMove}
-                  onMouseLeave={function(){setHovFi(null);setMapTip(null);}}
-                  onClick={function(e){
-                    if(!mapRef.current||!hitRef.current)return;
-                    var rect=mapRef.current.getBoundingClientRect();
-                    var mx=(e.clientX-rect.left)*(mapRef.current.width/rect.width);
-                    var my=(e.clientY-rect.top)*(mapRef.current.height/rect.height);
-                    var hit=hitRef.current(mx,my);
-                    if(hit&&!hit.hotspot){setActiveIdx(hit.fi);setMainTab('analysis');setSelEv(null);}
-                  }}/>
-                {mapTip && (
-                  <div className="map-tip" style={{left:mapTip.x,top:mapTip.y}}>
-                    {mapTip.lines.map(function(l,i){return (
-                      <div key={i} style={i===0?{fontWeight:700,color:'var(--accent)'}:{}}>{l}</div>
-                    );})}
+            <div style={{display:'flex',gap:10,height:520}}>
+              {/* Left control panel */}
+              <div style={{width:200,flexShrink:0,display:'flex',flexDirection:'column',gap:8,overflowY:'auto'}}>
+
+                {/* Layer selector */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Base Layer</div>
+                  <div className="layer-btn-group" style={{flexDirection:'column'}}>
+                    {[['satellite','Satellite'],['noaa','NOAA ENC'],['topo','Topo'],['street','Street']].map(function(pair){
+                      return (
+                        <button key={pair[0]} className={mapLayer===pair[0]?'layer-btn active':'layer-btn'}
+                          onClick={function(){setMapLayer(pair[0]);}}>
+                          {pair[1]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Show/hide toggles */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Display</div>
+                  <button className={showLines?'layer-btn active':'layer-btn'} onClick={function(){setShowLines(function(s){return !s;});}}>Track Lines</button>
+                  <button className={showHotspots?'layer-btn active':'layer-btn'} onClick={function(){setShowHotspots(function(s){return !s;});}}>Hotspots</button>
+                </div>
+
+                {/* File visibility selector */}
+                {files.filter(function(f){return f.type==='field';}).length>0 && (
+                  <div className="map-controls-panel" style={{flex:1}}>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                      Files
+                      <button onClick={function(){setVisibleFiles(null);}}
+                        style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>all</button>
+                      <button onClick={function(){setVisibleFiles([]);}}
+                        style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>none</button>
+                    </div>
+                    <div className="file-sel-list">
+                      {files.map(function(f,fi){
+                        if(f.type!=='field')return null;
+                        var col=RUN_COLORS[fi%RUN_COLORS.length];
+                        for(var rgi=0;rgi<runGroups.length;rgi++){if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}}
+                        var checked=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
+                        return (
+                          <div key={fi} className="file-sel-row" onClick={function(){
+                            setVisibleFiles(function(prev){
+                              var base=prev?prev.slice():files.map(function(_,i){return i;}).filter(function(i){return files[i].type==='field';});
+                              var idx=base.indexOf(fi);
+                              if(idx>=0){return base.filter(function(i){return i!==fi;});}
+                              else{return base.concat([fi]);}
+                            });
+                          }}>
+                            <input type="checkbox" className="file-sel-check" readOnly checked={checked}
+                              style={{accentColor:col}}/>
+                            <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
+                            <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(f.run||'').substring(0,18)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
-              </div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:10,fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim3)'}}>
-                {runGroups.map(function(g){return (
-                  <div key={g.id} style={{display:'flex',alignItems:'center',gap:4}}>
-                    <div style={{width:20,height:3,background:g.color,borderRadius:1}}/>
-                    <span>{g.name}</span>
-                  </div>
-                );})}
-                {files.filter(function(f){return f.type==='field';}).map(function(f){
-                  var fi=files.indexOf(f);
-                  var inGroup=runGroups.some(function(g){return g.fileIds.indexOf(fi)>=0;});
-                  if(inGroup)return null;
+
+                {/* Hotspot cluster visibility */}
+                {showHotspots && (function(){
+                  var visFi=visibleFiles;
+                  var clusters=buildHotspots(files,aiResults,visFi);
+                  if(!clusters.length)return null;
                   return (
-                    <div key={fi} style={{display:'flex',alignItems:'center',gap:4}}>
-                      <div style={{width:20,height:3,background:RUN_COLORS[fi%RUN_COLORS.length],borderRadius:1}}/>
-                      <span>{(f.run||'').substring(0,20)}</span>
+                    <div className="map-controls-panel" style={{flex:1}}>
+                      <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                        Hotspots
+                        <button onClick={function(){setHiddenHotspots({});}}
+                          style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>show all</button>
+                      </div>
+                      <div className="file-sel-list">
+                        {clusters.map(function(grp,hi){
+                          var col=MAT_COLORS[grp[0].cls]||'#808080';
+                          var uniqueFiSet={};
+                          for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
+                          var multiFile=Object.keys(uniqueFiSet).length>1;
+                          return (
+                            <div key={hi} className="file-sel-row" onClick={function(){
+                              setHiddenHotspots(function(prev){var n=Object.assign({},prev);n[hi]=!n[hi];return n;});
+                            }}>
+                              <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenHotspots[hi]} style={{accentColor:col}}/>
+                              <div style={{width:10,height:10,borderRadius:'50%',background:col,flexShrink:0,border:multiFile?'2px solid '+col:'1px dashed '+col}}/>
+                              <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                {grp[0].cls.substring(0,12)}{multiFile?' ×'+grp.length:''}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   );
-                })}
+                })()}
               </div>
+
+              {/* Map container — Leaflet mounts here */}
+              <div ref={mapRef} style={{flex:1,borderRadius:3,border:'1px solid var(--border)',minHeight:480,zIndex:0}}/>
             </div>
           )}
 

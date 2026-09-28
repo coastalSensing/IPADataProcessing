@@ -31,6 +31,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Stamp build (commit SHA) for cache-busting and version display
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          sed -i "s/__BUILD__/${SHORT_SHA}/g" index.html
+          grep -o "ipa-core.js?v=[a-z0-9]*" index.html || true
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

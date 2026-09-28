@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IPA MIP Classifier Portal — AI (</title>
+<title>IPA MIP Classifier Portal</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -218,861 +218,549 @@ canvas{display:block;width:100%;}
 .color-row{display:flex;gap:5px;margin-top:4px;flex-wrap:wrap;}
 .cswatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;}
 .cswatch:hover,.cswatch.sel{border-color:var(--text);}
+
+/* ── v27 additions ── */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:10px;}
+.section{background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:12px 14px;margin-bottom:10px;}
+.section h3{font-family:var(--font-mono);font-size:11px;color:var(--accent);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+.note{font-size:11px;color:var(--dim3);line-height:1.6;margin-bottom:8px;}
+.note b{color:var(--text);}
+.warnbox{background:rgba(176,120,0,.08);border:1px solid rgba(176,120,0,.3);border-radius:3px;padding:7px 10px;font-size:11px;color:#7a5400;line-height:1.5;margin-bottom:8px;}
+.mt{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:10px;}
+.mt th{text-align:left;padding:4px 7px;border-bottom:1px solid var(--border2);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim2);white-space:nowrap;}
+.mt td{padding:4px 7px;border-bottom:1px solid var(--border);white-space:nowrap;}
+.mt tr:hover td{background:var(--panel2);}
+.mt td.num,.mt th.num{text-align:right;}
+.cm td{text-align:center;min-width:34px;}
+.tier{display:inline-block;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;}
+.tier-Confirmed{background:rgba(26,140,78,.14);color:var(--pos);}
+.tier-Corroborated{background:rgba(0,113,184,.12);color:var(--accent);}
+.tier-Conflicting{background:rgba(204,34,51,.12);color:var(--neg);}
+.tier-Weak{background:rgba(80,100,130,.12);color:var(--dim3);}
+.tier-Single{background:rgba(80,100,130,.08);color:var(--dim2);}
+.param-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;}
+.param{display:flex;flex-direction:column;gap:2px;}
+.param label{font-family:var(--font-mono);font-size:9px;color:var(--dim2);}
+.param input,.param select{background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:4px 6px;border-radius:3px;width:100%;}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.refs li{font-size:11px;color:var(--dim3);line-height:1.6;margin-left:16px;}
+.pill{display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-family:var(--font-mono);background:var(--panel2);border:1px solid var(--border2);color:var(--dim3);}
 </style>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="ipa-core.js?v=27"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
+const APP_VERSION='v27';
+const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
+const CONFIRM_OPTIONS=MAT_OPTIONS.concat(['No anomaly']);
+const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
+const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
+const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','minPkts','labCosMin'];
 
 // ── Supabase client (handles auth + data) ─────────────────────────────────────
 var SUPA_URL='https://ztrtrymaqrrquxpcjcsp.supabase.co';
 var SUPA_KEY='sb_publishable_GliclnRAR4DK2rhPpv-DJw_di5zsiOe';
 var supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
+function q(p){return p.then(function(res){if(res.error)throw new Error(res.error.message);return res.data;});}
+function isSchemaErr(e){return /column|schema cache|does not exist|relation/i.test(e&&e.message||'');}
 
 function loadTrainingFromDB(){
-  return supabase.from('training_confirmations')
-    .select('*').order('confirmed_at',{ascending:true}).limit(500)
-    .then(function(res){
-      if(res.error)throw new Error(res.error.message);
-      return (res.data||[]).map(function(r){
-        return{
-          material:r.material,run:r.run_name,ts:r.confirmed_at,
-          fv:{dp1:r.dp_fund_mrad||0,dp3:r.dp_mid_mrad||0,dp_last:r.dp_high_mrad||0,
-              magPct:r.mag_pct||0,maxSNR:r.max_snr||0},
-          aiConf:r.ai_conf_pct||0,id:r.id
-        };
-      });
-    });
+  return q(supabase.from('training_confirmations').select('*').order('confirmed_at',{ascending:true}).limit(2000))
+    .then(function(rows){return (rows||[]).map(function(r){return{
+      material:r.material,run:r.run_name,ts:r.confirmed_at,id:r.id,
+      fv:{dp1:r.dp_fund_mrad||0,dp3:r.dp_mid_mrad||0,dp_last:r.dp_high_mrad||0,magPct:r.mag_pct||0,maxSNR:r.max_snr||0,slope:r.phase_slope},
+      aiConf:r.ai_conf_pct||0,rulesCls:r.rules_class||null,aiCls:r.ai_class||null,labCls:r.lab_class||null,
+      labCos:r.lab_cos,fusedCls:r.fused_class||null,predConf:r.pred_conf_pct};});});
 }
-
 function saveTrainingToDB(entry,harms){
-  return supabase.from('training_confirmations').insert({
-    material:entry.material,
-    run_name:entry.run,
-    xmt_hz:harms[0]===4?4:harms[0]===2?2:8,
-    dp_fund_mrad:entry.fv.dp1,
-    dp_mid_mrad:entry.fv.dp3,
-    dp_high_mrad:entry.fv.dp_last,
-    mag_pct:entry.fv.magPct,
-    max_snr:entry.fv.maxSNR,
-    fund_freq_hz:harms[0],
-    mid_freq_hz:harms[2],
-    high_freq_hz:harms[5],
-    ai_conf_pct:entry.aiConf||0,
-    notes:null
-  }).select().then(function(res){
-    if(res.error)throw new Error(res.error.message);
-    return res.data;
-  });
+  var legacy={material:entry.material,run_name:entry.run,xmt_hz:harms[0]===4?4:harms[0]===2?2:8,
+    dp_fund_mrad:entry.fv.dp1,dp_mid_mrad:entry.fv.dp3,dp_high_mrad:entry.fv.dp_last,mag_pct:entry.fv.magPct,
+    max_snr:entry.fv.maxSNR,fund_freq_hz:harms[0],mid_freq_hz:harms[2],high_freq_hz:harms[5],ai_conf_pct:entry.aiConf||0,notes:null};
+  var ext=Object.assign({},legacy,{rules_class:entry.rulesCls,ai_class:entry.aiCls,lab_class:entry.labCls,lab_cos:entry.labCos,
+    fused_class:entry.fusedCls,pred_conf_pct:entry.predConf,phase_slope:entry.fv.slope,dp_dev_json:entry.dpDev,
+    lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION});
+  return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true};})
+    .catch(function(e){if(!isSchemaErr(e))throw e;
+      return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false};});});
 }
+function deleteTrainingFromDB(id){return q(supabase.from('training_confirmations').delete().eq('id',id));}
+function loadLabSigsDB(){return q(supabase.from('lab_signatures').select('*').order('created_at',{ascending:true})).then(function(rows){
+  return rows.map(function(r){return{id:r.id,material:r.material,xmt:r.xmt_hz,freqs:r.freqs_hz,mean:r.mean_mrad,std:r.std_mrad,n:r.n_pkts,run:r.run_name,src:'db'};});});}
+function saveLabSigDB(s){return q(supabase.from('lab_signatures').insert({material:s.material,xmt_hz:s.xmt,freqs_hz:s.freqs,mean_mrad:s.mean,std_mrad:s.std,n_pkts:s.n,run_name:s.run}).select());}
+function deleteLabSigDB(id){return q(supabase.from('lab_signatures').delete().eq('id',id));}
+function loadWaypointsDB(){return q(supabase.from('waypoints').select('*').order('created_at',{ascending:true})).then(function(rows){
+  return rows.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db'};});});}
+function saveWaypointsDB(wps){return q(supabase.from('waypoints').insert(wps.map(function(w){return{name:w.name,lat:w.lat,lon:w.lon,material:w.material,source:w.source};})).select());}
+function deleteWaypointsDB(ids){return q(supabase.from('waypoints').delete().in('id',ids));}
+function saveCalibrationDB(fit,proc){return q(supabase.from('layback_calibrations').insert({layback_m:fit.L,latency_s:fit.tau,bias_m:fit.bias,
+  se_layback_m:fit.seL,n_matches:fit.nInliers,rms_m:fit.rms,cross_mean_m:fit.crossMean,params:{matchRadiusM:proc.matchRadiusM,maxCrossM:proc.maxCrossM,minSNRcal:proc.minSNRcal,mode:proc.mode}}).select());}
+function signInWithGitHub(){return supabase.auth.signInWithOAuth({provider:'github',options:{redirectTo:window.location.origin+window.location.pathname}});}
+function signOut(){return supabase.auth.signOut();}
 
-function deleteTrainingFromDB(id){
-  return supabase.from('training_confirmations')
-    .delete().eq('id',id)
-    .then(function(res){if(res.error)throw new Error(res.error.message);});
+function lsGet(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function downloadCSV(name,rows){
+  if(!rows.length)return;
+  var cols=Object.keys(rows[0]);
+  var esc=function(v){v=v===null||v===undefined?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  var csv=[cols.join(',')].concat(rows.map(function(r){return cols.map(function(c){return esc(r[c]);}).join(',');})).join('\n');
+  var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=name;a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
 }
+function fmt(v,d){return v===null||v===undefined||!isFinite(v)?'—':Number(v).toFixed(d===undefined?1:d);}
+function pct(v){return v===null||v===undefined||!isFinite(v)?'—':(v*100).toFixed(0)+'%';}
+function badgeClass(cls){cls=cls||'';var f=IPA.family(cls);
+  return f==='hydrocarbon'?'badge-hydro':f==='metallic'?'badge-metal':f==='mixed'?'badge-mixed':f==='artifact'?'badge-art':'badge-weak';}
 
-function signInWithGitHub(){
-  return supabase.auth.signInWithOAuth({
-    provider:'github',
-    options:{redirectTo:window.location.href}
-  });
-}
-
-function signOut(){
-  return supabase.auth.signOut();
-}
-
-const HARM={2:[2,6,10,14,18,22],4:[4,12,20,28,36,44],8:[8,24,40,56,72,88]};
-function getHarms(xmt){return HARM[xmt]||HARM[4];}
-
-const MAT_COLORS={
-  'Hydrocarbon IP':'#0080b0','Class 3 Gas Oil':'#4070c0','Alaska Crude Oil':'#c07820',
-  'ITB Rebel Crude':'#1a8c4e','Metallic IP':'#b02040','Steel':'#cc2233',
-  'Ilmenite':'#a04010','Galvanized Steel':'#807030','Mixed':'#5a50c8',
-  'Asphalt':'#607060','Artifact':'#c05000','Weak/Inconclusive':'#708090','No anomaly':'#9090a0'
-};
-const MAT_OPTIONS=['Hydrocarbon IP','Class 3 Gas Oil','Alaska Crude Oil','ITB Rebel Crude',
-  'Metallic IP','Steel','Ilmenite','Galvanized Steel','Mixed','Asphalt','Artifact','Weak/Inconclusive'];
-const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
-  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
-const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
-  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
-
-// ── Parsers ────────────────────────────────────────────────────────────────────
-// header[9]='Lab' and empty coords -> lab file
-// header[9]=device ID, header[6]=NMEA lat -> field file
-function isLabFile(parts){return parts[9]==='Lab'||!parts[6];}
-
-// NMEA DDMM.MMMMM -> decimal degrees. West-coast lon negated.
-function nmeaDD(raw,isLon){
-  var v=parseFloat(raw);
-  if(isNaN(v))return null;
-  var deg=Math.floor(v/100),mins=v-deg*100,dd=deg+mins/60;
-  return isLon?-dd:dd;
-}
-
-// Packet size is always 33 lines: 1 header + 1 col-header + 31 data rows
-// col[0]=frequency_Hz, col[1]=ch1-0_delta_rad, col[9]=ch1_mag_counts
-// Only ch1 is recorded in lab — ch2-ch7 contain noise
-function parseAnyFile(text){
-  var lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
-  var pkts=[];
-  for(var i=0;i<lines.length;){
-    var raw=lines[i].replace(/^\uFEFF/,'');
-    if(!raw.startsWith('#,')){i++;continue;}
-    var p=raw.split(',');
-    var idx=parseInt(p[8]),xmt=parseInt(p[12]),ts=p[3],run=(p[2]||'').trim();
-    var lab=isLabFile(p);
-    var lat=lab?null:nmeaDD((p[6]||'').trim(),false);
-    var lon=lab?null:nmeaDD((p[7]||'').trim(),true);
-    if(!isNaN(idx)&&!isNaN(xmt)){
-      var freqs={};
-      for(var r=i+2;r<i+33&&r<lines.length;r++){
-        var dl=lines[r].trim();
-        if(!dl||dl.startsWith('#'))break;
-        var c=dl.split(',');
-        if(c.length<10)continue;
-        var freq=parseFloat(c[0]),dp=parseFloat(c[1]),mag=parseFloat(c[9]);
-        if(!isNaN(freq)&&!isNaN(dp)&&!isNaN(mag))freqs[freq]=[dp,mag];
-      }
-      if(Object.keys(freqs).length){
-        pkts.push({idx:idx,ts:ts,run:run,xmt:xmt,lat:lat,lon:lon,
-                   freqs:freqs,type:lab?'lab':'field'});
-      }
-    }
-    i+=33;
-  }
-  return pkts;
-}
-
-// ── Lab stats ──────────────────────────────────────────────────────────────────
-// Groups packets by xmt frequency (a single lab file may contain multiple xmt groups).
-// For each group: freq_Hz, ch1_delta_mean_rad, ch1_delta_std_rad (ddof=1), ch1_mag_mean_counts
-function computeLabStats(packets){
-  var byXmt={};
-  for(var pi=0;pi<packets.length;pi++){
-    var pk=packets[pi],x=pk.xmt;
-    if(!byXmt[x])byXmt[x]={};
-    var keys=Object.keys(pk.freqs);
-    for(var ki=0;ki<keys.length;ki++){
-      var f=parseFloat(keys[ki]),dp=pk.freqs[keys[ki]][0],mag=pk.freqs[keys[ki]][1];
-      if(!byXmt[x][f])byXmt[x][f]={dp:[],mag:[]};
-      byXmt[x][f].dp.push(dp);
-      byXmt[x][f].mag.push(mag);
-    }
-  }
-  var groups=Object.keys(byXmt).map(Number).sort(function(a,b){return a-b;});
-  return groups.map(function(xmt){
-    var fm=byXmt[xmt];
-    var freqKeys=Object.keys(fm).map(Number).sort(function(a,b){return a-b;});
-    var rows=freqKeys.map(function(freq){
-      var dps=fm[freq].dp,mags=fm[freq].mag,n=dps.length;
-      var sumDp=0;for(var i=0;i<n;i++)sumDp+=dps[i];
-      var meanDp=sumDp/n;
-      var ssq=0;for(var i=0;i<n;i++)ssq+=(dps[i]-meanDp)*(dps[i]-meanDp);
-      var stdDp=n>1?Math.sqrt(ssq/(n-1)):0;
-      var sumMag=0;for(var i=0;i<n;i++)sumMag+=mags[i];
-      var meanMag=sumMag/n;
-      return{freq:freq,meanDp:meanDp,stdDp:stdDp,meanMag:meanMag,n:n};
-    });
-    var firstFreq=freqKeys[0];
-    var nPkts=fm[firstFreq]?fm[firstFreq].dp.length:0;
-    return{xmt:xmt,nPkts:nPkts,rows:rows};
-  });
-}
-
-// ── Field analysis ─────────────────────────────────────────────────────────────
-function computeBG(packets,harms){
-  // Background computed at each harmonic independently using its own mean/std.
-  // Mask: packets where |dp| < 15 mrad at that frequency.
-  // Returns: per-harmonic bg map, plus fundamental mean/std for 3sigma display.
-  var bgMap={};
-  for(var h=0;h<harms.length;h++){
-    var f=harms[h];
-    var dps=packets.map(function(pk){var v=pk.freqs[f];return v?v[0]*1000:NaN;});
-    var bgV=dps.filter(function(v){return !isNaN(v)&&Math.abs(v)<15;});
-    if(bgV.length<3)bgV=dps.filter(function(v){return !isNaN(v);});
-    if(!bgV.length){bgMap[f]={mean:0,std:1};continue;}
-    var sum=bgV.reduce(function(a,b){return a+b;},0);
-    var mean=sum/bgV.length;
-    var ssq=bgV.reduce(function(a,b){return a+(b-mean)*(b-mean);},0);
-    var std=bgV.length>1?Math.sqrt(ssq/(bgV.length-1)):1;
-    bgMap[f]={mean:mean,std:std||1};
-  }
-  // Magnitude background at fundamental
-  var f0=harms[0];
-  var d1=packets.map(function(pk){var v=pk.freqs[f0];return v?v[0]*1000:NaN;});
-  var mask=d1.map(function(v){return !isNaN(v)&&Math.abs(v)<15;});
-  var mags=packets.map(function(pk){var v=pk.freqs[f0];return v?v[1]:NaN;});
-  var mBg=mags.filter(function(v,i){return mask[i]&&!isNaN(v);});
-  var magMean=mBg.length?mBg.reduce(function(a,b){return a+b;},0)/mBg.length:1;
-  // Expose fundamental stats at top level for display and threshold lines
-  var bg0=bgMap[f0]||{mean:0,std:1};
-  return{mean:bg0.mean,std:bg0.std,magMean:magMean,perHz:bgMap};
-}
-
-function detectAnomalies(packets,harms,bg){
-  // A packet is anomalous when the FUNDAMENTAL frequency exceeds 3sigma of the
-  // fundamental background. Higher harmonics use their own per-harmonic background
-  // for classification (see classifyRules) but NOT for initial event detection.
-  // This prevents persistent signals at higher harmonics (e.g. background hydrocarbon)
-  // from flagging every packet as anomalous and collapsing all events into one cluster.
-  var f0=harms[0];
-  var bg0=bg.perHz?bg.perHz[f0]:{mean:bg.mean,std:bg.std};
-  var anomalies=[];
-  for(var i=0;i<packets.length;i++){
-    var pk=packets[i];
-    var v0=pk.freqs[f0];
-    if(!v0)continue;
-    var snr=Math.abs(v0[0]*1000-bg0.mean)/bg0.std;
-    if(snr>=3.0)anomalies.push({i:i,pk:pk,snr:snr});
-  }
-  // Cluster: consecutive anomalous packets within 5 packet-index gap form one event.
-  // Gap of 5 accommodates ~5 seconds between packets at 4Hz xmt (~1 pkt/s).
-  var clusters=[],cur=[];
-  for(var j=0;j<anomalies.length;j++){
-    var a=anomalies[j];
-    if(!cur.length||a.pk.idx-cur[cur.length-1].pk.idx<=5){cur.push(a);}
-    else{clusters.push(cur);cur=[a];}
-  }
-  if(cur.length)clusters.push(cur);
-  return clusters;
-}
-
-function classifyRules(cluster,harms,bg){
-  var rep=cluster[0];
-  for(var i=1;i<cluster.length;i++){if(cluster[i].snr>rep.snr)rep=cluster[i];}
-  var pk=rep.pk,dp={};
-  for(var h=0;h<harms.length;h++){var v=pk.freqs[harms[h]];dp[harms[h]]=v?v[0]*1000:0;}
-  var mag0=pk.freqs[harms[0]];
-  var magPct=mag0?((mag0[1]-bg.magMean)/bg.magMean)*100:0;
-  // dp1dev: deviation of fundamental from fundamental background
-  var bg0=bg.perHz&&bg.perHz[harms[0]]?bg.perHz[harms[0]]:{mean:bg.mean,std:bg.std};
-  var dp1dev=dp[harms[0]]-bg0.mean;
-  // For each harmonic: compute signed deviation from that harmonic's own background.
-  // This correctly identifies e.g. a negative spike at 4Hz against ambient -2.7 mrad background.
-  var dpDev={};
-  for(var h=0;h<harms.length;h++){
-    var bgh=bg.perHz&&bg.perHz[harms[h]]?bg.perHz[harms[h]]:{mean:bg0.mean,std:bg0.std};
-    dpDev[harms[h]]=dp[harms[h]]-bgh.mean;
-  }
-  // posHigh: high harmonics (idx 2..5) deviate positively from their own background by >3 mrad
-  var posHigh=0;for(var h=2;h<harms.length;h++){if(dpDev[harms[h]]>3)posHigh++;}
-  // negLow: low harmonics (idx 0..2) deviate negatively from their own background by >5 mrad
-  var negLow=0;for(var h=0;h<3;h++){if(dpDev[harms[h]]<-5)negLow++;}
-  // Alternating polarity check on raw dp values (not deviations)
-  var altPol=(dp[harms[0]]*dp[harms[1]]<0&&dp[harms[1]]*dp[harms[2]]<0);
-  // maxSNR computed at fundamental (since detection is fundamental-only)
-  var maxSNR=rep.snr;
-  // Also compute highest SNR across all harmonics using per-harmonic background
-  var maxSNRall=maxSNR;
-  if(bg.perHz){
-    for(var h=0;h<harms.length;h++){
-      var bgh=bg.perHz[harms[h]];
-      if(!bgh)continue;
-      var snrh=Math.abs(dpDev[harms[h]])/bgh.std;
-      if(snrh>maxSNRall)maxSNRall=snrh;
-    }
-  }
-  var cls,confPct;
-  if(Math.abs(dp1dev)>150){cls='Artifact';confPct=99;}
-  else if(magPct<-30){cls='Artifact';confPct=99;}
-  else if(posHigh>=3&&Math.abs(dp1dev)<10&&maxSNRall>10){cls='Hydrocarbon IP';confPct=Math.min(95,80+maxSNRall/5);}
-  else if(posHigh>=2&&Math.abs(dp1dev)<12&&maxSNRall>5){cls='Hydrocarbon IP';confPct=Math.min(80,60+maxSNRall/4);}
-  else if(dp1dev<-8&&negLow>=2&&!altPol&&maxSNR>8){cls='Metallic IP';confPct=Math.min(92,75+maxSNR/8);}
-  else if(dp1dev<-5&&negLow>=1&&maxSNR>5){cls='Metallic IP';confPct=Math.min(75,55+maxSNR/6);}
-  else if(dp1dev<-5&&posHigh>=2){cls='Mixed';confPct=Math.min(70,55+maxSNR/8);}
-  else if(posHigh>=2&&maxSNRall>3){cls='Hydrocarbon IP';confPct=Math.min(60,40+maxSNRall/3);}
-  else{cls='Weak/Inconclusive';confPct=Math.min(35,15+maxSNR*3);}
-  return{cls:cls,confPct:Math.round(confPct),dp:dp,dpDev:dpDev,magPct:magPct,
-    maxSNR:maxSNR,maxSNRall:maxSNRall,
-    pktStart:cluster[0].pk.idx,pktEnd:cluster[cluster.length-1].pk.idx,
-    pktPeak:rep.pk.idx,ts:rep.pk.ts,nPkts:cluster.length,
-    lat:rep.pk.lat,lon:rep.pk.lon};
-}
-
-// ── Claude API ─────────────────────────────────────────────────────────────────
-async function classifyWithClaude(ev,harms,bg,training,apiKey){
+// ── Claude API (browser direct access) ─────────────────────────────────────────
+async function classifyWithClaude(ev,harms,bg,training,apiKey,model){
   var ctx='';
   if(training.length){
-    ctx='\nCONFIRMED EXAMPLES:\n'+training.slice(-20).map(function(t){
-      return '- '+t.material+': dp'+harms[0]+'Hz='+t.fv.dp1.toFixed(2)+
-        ', dp'+harms[2]+'Hz='+t.fv.dp3.toFixed(2)+
-        ', dp'+harms[5]+'Hz='+t.fv.dp_last.toFixed(2)+
-        ', mag%='+t.fv.magPct.toFixed(1)+', SNR='+t.fv.maxSNR.toFixed(1);
-    }).join('\n');
+    ctx='\nCONFIRMED FIELD EXAMPLES (ground truth from this team):\n'+training.slice(-25).map(function(t){
+      return '- '+t.material+': dev'+harms[0]+'Hz='+(+t.fv.dp1).toFixed(2)+', dev'+harms[2]+'Hz='+(+t.fv.dp3).toFixed(2)+
+        ', dev'+harms[5]+'Hz='+(+t.fv.dp_last).toFixed(2)+', mag%='+(+t.fv.magPct).toFixed(1)+', SNR='+(+t.fv.maxSNR).toFixed(1);}).join('\n');
   }
-  var prompt='IPA MIP classifier. fund='+harms[0]+'Hz bg_mean='+bg.mean.toFixed(3)+
-    'mrad bg_std='+bg.std.toFixed(3)+'mrad\nEVENT:\n'+
-    harms.map(function(f){return '  d'+f+'Hz='+((ev.dp[f]||0).toFixed(3))+
-      'mrad SNR='+((Math.abs((ev.dp[f]||0)-bg.mean)/bg.std).toFixed(2));}).join('\n')+
-    '\n  mag%='+(ev.magPct||0).toFixed(2)+' nPkts='+ev.nPkts+' SNR='+ev.maxSNR.toFixed(2)+
-    ctx+'\nREF(r7): HydroIP=growing pos high harmonics near-zero fund. '+
-    'MetalIP=neg low harmonics mag decrease. Artifact=|dp|>100 or mag<-30%.\n'+
-    'JSON only: {"classification":"<label>","confidence_pct":<0-99>,"confidence_label":"<High|Medium|Low>","key_indicators":"<1 sentence>","reasoning":"<2-3 sentences>","caution":"<or null>"}';
+  var lab=(ev.labMatches||[]).slice(0,3).map(function(m){return '- '+m.material+': cos='+m.cos.toFixed(3)+' (angle '+m.angleDeg.toFixed(1)+'°), scale='+m.scale.toFixed(2)+', chi2red='+m.chi2red.toFixed(2);}).join('\n');
+  var prompt='You are assisting a marine induced-polarization (MIP) classifier for towed-streamer IPA data. '+
+    'Transmit fundamental '+harms[0]+'Hz; phase is ch1-0 delta in mrad. Deviations are relative to a running-median background; z = deviation / robust noise sigma.\n'+
+    'EVENT:\n'+harms.map(function(f){var p=bg.perHz[f];return '  '+f+'Hz: raw='+(ev.dp[f]||0).toFixed(2)+' dev='+(ev.dpDev[f]||0).toFixed(2)+' z='+(p?(Math.abs(ev.dpDev[f]||0)/p.std).toFixed(1):'?');}).join('\n')+
+    '\n  mag%='+(ev.magPct||0).toFixed(2)+' nPkts='+ev.nPkts+' fundSNR='+ev.maxSNR.toFixed(1)+' maxSNR='+ev.maxSNRall.toFixed(1)+
+    ' phaseSlope='+(ev.phaseSlope||0).toFixed(2)+'mrad/decade\n'+
+    'RULE ENGINE: '+ev.cls+' ('+ev.confPct+'%)\n'+
+    (lab?'LAB REFERENCE SPECTRAL-ANGLE MATCHES (blank-subtracted, amplitude-invariant):\n'+lab+'\n':'No lab reference signatures loaded.\n')+ctx+
+    '\nPHYSICS GUIDE: Hydrocarbon/organic IP = growing positive deviation toward higher harmonics with near-zero fundamental deviation (Olhoeft 1985 organic reactions; Wynn marine IP oil work). '+
+    'Metallic/electronic polarisation (steel, ilmenite) = strong negative low-harmonic deviation, often with magnitude decrease (Pelton 1978 / Wong 1979 style Cole-Cole response). '+
+    'Artifact = |fundamental dev|>150 mrad or magnitude drop >30% or single-packet spikes. Prefer lab-match evidence when cos>0.9 and SNR>5.\n'+
+    'Allowed labels: '+CONFIRM_OPTIONS.join(', ')+'.\n'+
+    'Reply with JSON only: {"classification":"<label>","confidence_pct":<0-99>,"confidence_label":"<High|Medium|Low>","key_indicators":"<1 sentence>","reasoning":"<2-3 sentences>","caution":"<or null>"}';
   var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,
-      messages:[{role:'user',content:prompt}]})});
-  if(!r.ok)throw new Error('API '+r.status);
+    headers:{'content-type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:model,max_tokens:600,messages:[{role:'user',content:prompt}]})});
+  if(!r.ok){var t='';try{t=(await r.json()).error.message;}catch(e){}throw new Error('API '+r.status+(t?': '+t:''));}
   var d=await r.json();
   var raw=(d.content&&d.content[0])?d.content[0].text:'';
-  return JSON.parse(raw.replace(/```json|```/g,'').trim());
+  var m=raw.match(/\{[\s\S]*\}/);
+  return JSON.parse(m?m[0]:raw);
 }
 
 // ── Canvas drawing ─────────────────────────────────────────────────────────────
 function drawChart(canvas,datasets,yr,opts){
   opts=opts||{};
   if(!canvas)return;
-  var W=canvas.clientWidth,H=canvas.clientHeight;
-  if(!W||!H)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;if(!W||!H)return;
   canvas.width=W;canvas.height=H;
   var ctx=canvas.getContext('2d');
   var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
-  var n=datasets[0]?datasets[0].data.length:0;
-  if(!n)return;
+  var n=datasets[0]?datasets[0].data.length:0;if(!n)return;
   var yrSpan=yr[1]-yr[0]||1;
   function xS(i){return PL+(i/(n-1||1))*cW;}
   function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
   ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
   ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
-  for(var t=0;t<=4;t++){
-    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
+  for(var t=0;t<=4;t++){var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
     ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
-    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
-    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
-  }
-  if(opts.xLabels){
-    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
-    var step=Math.max(1,Math.floor(n/5));
-    for(var xi=0;xi<n;xi+=step)ctx.fillText(opts.xLabels[xi]||'',xS(xi),H-2);
-  }
-  if(yr[0]<0&&yr[1]>0){
-    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
-    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
-  }
-  if(opts.bgEvents){
-    for(var ei=0;ei<opts.bgEvents.length;ei++){
-      var ev=opts.bgEvents[ei];
-      if(ev.i0<0)continue;
-      ctx.fillStyle=ev.color+'22';
-      ctx.fillRect(xS(ev.i0)-2,PT,Math.max(4,xS(ev.i1)-xS(ev.i0)+4),cH);
-    }
-  }
-  if(opts.threshLo!==undefined){
-    ctx.strokeStyle='rgba(176,32,64,.45)';ctx.lineWidth=1;ctx.setLineDash([5,3]);
-    if(opts.threshLo>yr[0]&&opts.threshLo<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshLo));ctx.lineTo(PL+cW,yS(opts.threshLo));ctx.stroke();}
-    if(opts.threshHi!==undefined&&opts.threshHi>yr[0]&&opts.threshHi<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshHi));ctx.lineTo(PL+cW,yS(opts.threshHi));ctx.stroke();}
-    ctx.setLineDash([]);
-  }
-  for(var di=0;di<datasets.length;di++){
-    var ds=datasets[di];
-    ctx.strokeStyle=ds.color;ctx.lineWidth=ds.width||1.3;
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';ctx.fillText(gv.toFixed(1),PL-3,gy+3);}
+  if(opts.xLabels){ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
+    var step=Math.max(1,Math.floor(n/5));for(var xi=0;xi<n;xi+=step)ctx.fillText(opts.xLabels[xi]||'',xS(xi),H-2);}
+  if(yr[0]<0&&yr[1]>0){ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);}
+  if(opts.bgEvents){opts.bgEvents.forEach(function(ev){if(ev.i0<0)return;
+    ctx.fillStyle=ev.color+(ev.sel?'44':'22');ctx.fillRect(xS(ev.i0)-2,PT,Math.max(4,xS(ev.i1)-xS(ev.i0)+4),cH);});}
+  if(opts.threshLo!==undefined){ctx.strokeStyle='rgba(176,32,64,.45)';ctx.lineWidth=1;ctx.setLineDash([5,3]);
+    [opts.threshLo,opts.threshHi].forEach(function(th){if(th!==undefined&&th>yr[0]&&th<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(th));ctx.lineTo(PL+cW,yS(th));ctx.stroke();}});
+    ctx.setLineDash([]);}
+  datasets.forEach(function(ds){
+    ctx.strokeStyle=ds.color;ctx.lineWidth=ds.width||1.3;if(ds.dash)ctx.setLineDash(ds.dash);
     ctx.beginPath();var started=false;
-    for(var pi=0;pi<ds.data.length;pi++){
-      var pv=ds.data[pi];
-      if(isNaN(pv)){started=false;continue;}
-      var px=xS(pi),py=yS(Math.min(Math.max(pv,yr[0]),yr[1]));
-      if(started){ctx.lineTo(px,py);}else{ctx.moveTo(px,py);started=true;}
-    }
-    ctx.stroke();
-  }
+    ds.data.forEach(function(pv,pi){if(!isFinite(pv)){started=false;return;}
+      var px=xS(pi),py=yS(pv);if(started)ctx.lineTo(px,py);else{ctx.moveTo(px,py);started=true;}});
+    ctx.stroke();ctx.setLineDash([]);});
   ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
 }
-
-function drawSpectral(canvas,dpMap,harms,yr,color){
+function drawSpectral(canvas,series,harms,yr){
   if(!canvas)return;
-  var W=canvas.clientWidth,H=canvas.clientHeight;
-  if(!W||!H)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;if(!W||!H)return;
   canvas.width=W;canvas.height=H;
   var ctx=canvas.getContext('2d');
-  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
-  var yrSpan=yr[1]-yr[0]||1;
+  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB,yrSpan=yr[1]-yr[0]||1;
   function xS(i){return PL+(i/(harms.length-1||1))*cW;}
   function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
   ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
   ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
-  for(var t=0;t<=4;t++){
-    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
-    ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
-    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
-    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
-  }
-  if(yr[0]<0&&yr[1]>0){
-    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
-    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
-  }
+  for(var t=0;t<=4;t++){var gv=yr[0]+yrSpan*t/4,gy=yS(gv);ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';ctx.fillText(gv.toFixed(1),PL-3,gy+3);}
+  if(yr[0]<0&&yr[1]>0){ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);}
   ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
-  for(var hi=0;hi<harms.length;hi++)ctx.fillText(harms[hi]+'Hz',xS(hi),H-2);
-  var pts=[];
-  for(var hi=0;hi<harms.length;hi++){
-    pts.push({x:xS(hi),y:yS(Math.min(Math.max(dpMap[harms[hi]]||0,yr[0]),yr[1]))});
-  }
-  var zero=yS(Math.max(yr[0],0));
-  ctx.fillStyle=color+'22';
-  ctx.beginPath();ctx.moveTo(pts[0].x,zero);
-  for(var pi=0;pi<pts.length;pi++)ctx.lineTo(pts[pi].x,pts[pi].y);
-  ctx.lineTo(pts[pts.length-1].x,zero);ctx.closePath();ctx.fill();
-  ctx.strokeStyle=color;ctx.lineWidth=2;
-  ctx.beginPath();
-  for(var pi=0;pi<pts.length;pi++){if(pi)ctx.lineTo(pts[pi].x,pts[pi].y);else ctx.moveTo(pts[pi].x,pts[pi].y);}
-  ctx.stroke();
-  ctx.fillStyle=color;
-  for(var pi=0;pi<pts.length;pi++){ctx.beginPath();ctx.arc(pts[pi].x,pts[pi].y,4,0,Math.PI*2);ctx.fill();}
+  harms.forEach(function(h,hi){ctx.fillText(h+'Hz',xS(hi),H-2);});
+  series.forEach(function(s,si){
+    var pts=harms.map(function(h,hi){return{x:xS(hi),y:yS(s.map[h]||0)};});
+    if(si===0){var zero=yS(Math.max(yr[0],Math.min(0,yr[1])));ctx.fillStyle=s.color+'22';ctx.beginPath();ctx.moveTo(pts[0].x,zero);
+      pts.forEach(function(p){ctx.lineTo(p.x,p.y);});ctx.lineTo(pts[pts.length-1].x,zero);ctx.closePath();ctx.fill();}
+    ctx.strokeStyle=s.color;ctx.lineWidth=s.width||2;if(s.dash)ctx.setLineDash(s.dash);
+    ctx.beginPath();pts.forEach(function(p,i){if(i)ctx.lineTo(p.x,p.y);else ctx.moveTo(p.x,p.y);});ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=s.color;pts.forEach(function(p){ctx.beginPath();ctx.arc(p.x,p.y,s.dash?2.5:4,0,Math.PI*2);ctx.fill();});
+  });
   ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
 }
-
-// ── Map drawing ────────────────────────────────────────────────────────────────
-
-// ── Leaflet map helpers ────────────────────────────────────────────────────────
-// Cluster hotspots that are within ~20m of each other across files
-function clusterHotspots(hotspots){
-  var THRESH=0.0002,clusters=[],used={};
-  for(var i=0;i<hotspots.length;i++){
-    if(used[i])continue;
-    var grp=[hotspots[i]];used[i]=true;
-    for(var j=i+1;j<hotspots.length;j++){
-      if(used[j])continue;
-      if(Math.abs(hotspots[i].lat-hotspots[j].lat)<THRESH&&
-         Math.abs(hotspots[i].lon-hotspots[j].lon)<THRESH){
-        grp.push(hotspots[j]);used[j]=true;
-      }
-    }
-    clusters.push(grp);
-  }
-  return clusters;
+// Generic x/y scatter with optional lines
+function drawScatter(canvas,series,opts){
+  if(!canvas)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;if(!W||!H)return;
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d'),PL=46,PR=12,PT=12,PB=28,cW=W-PL-PR,cH=H-PT-PB;
+  var xr=opts.xr,yr=opts.yr;
+  function xS(v){return PL+(v-xr[0])/(xr[1]-xr[0]||1)*cW;}
+  function yS(v){return PT+cH-(v-yr[0])/(yr[1]-yr[0]||1)*cH;}
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);ctx.strokeStyle='#dde4ed';ctx.lineWidth=.5;ctx.font='9px monospace';ctx.fillStyle='#6080a0';
+  for(var t=0;t<=4;t++){var gx=xr[0]+(xr[1]-xr[0])*t/4,gy=yr[0]+(yr[1]-yr[0])*t/4;
+    ctx.beginPath();ctx.moveTo(xS(gx),PT);ctx.lineTo(xS(gx),PT+cH);ctx.stroke();ctx.beginPath();ctx.moveTo(PL,yS(gy));ctx.lineTo(PL+cW,yS(gy));ctx.stroke();
+    ctx.textAlign='center';ctx.fillText(gx.toFixed(1),xS(gx),PT+cH+11);ctx.textAlign='right';ctx.fillText(gy.toFixed(0),PL-3,yS(gy)+3);}
+  ctx.textAlign='center';ctx.fillText(opts.xlabel||'',PL+cW/2,H-2);
+  ctx.save();ctx.translate(10,PT+cH/2);ctx.rotate(-Math.PI/2);ctx.fillText(opts.ylabel||'',0,0);ctx.restore();
+  (opts.lines||[]).forEach(function(l){ctx.strokeStyle=l.color;ctx.lineWidth=l.width||1.2;if(l.dash)ctx.setLineDash(l.dash);
+    ctx.beginPath();ctx.moveTo(xS(l.x0),yS(l.y0));ctx.lineTo(xS(l.x1),yS(l.y1));ctx.stroke();ctx.setLineDash([]);});
+  series.forEach(function(s){s.pts.forEach(function(p){ctx.fillStyle=p[2]||s.color;ctx.globalAlpha=p[3]===false?.3:1;
+    ctx.beginPath();if(s.shape==='tri'){var x=xS(p[0]),y=yS(p[1]);ctx.moveTo(x,y-5);ctx.lineTo(x+4.5,y+3.5);ctx.lineTo(x-4.5,y+3.5);ctx.closePath();}
+    else ctx.arc(xS(p[0]),yS(p[1]),s.r||3.5,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;});});
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
 }
+function rangeOf(vals,pad,minSpan){var v=vals.filter(isFinite);if(!v.length)return[-1,1];
+  var lo=Math.min.apply(null,v),hi=Math.max.apply(null,v),span=Math.max(hi-lo,minSpan||1);var c=(lo+hi)/2;
+  return[c-span/2-span*(pad||.1),c+span/2+span*(pad||.1)];}
 
-function buildHotspots(files,aiResults,visibleFileIds){
-  var hotspots=[];
-  for(var fi=0;fi<files.length;fi++){
-    if(visibleFileIds&&visibleFileIds.indexOf(fi)<0)continue;
-    var f=files[fi];
-    if(f.type!=='field'||!f.packets.length)continue;
-    var harms=getHarms(f.packets[0].xmt||4);
-    var bg=computeBG(f.packets,harms);
-    var clusters=detectAnomalies(f.packets,harms,bg);
-    for(var ci=0;ci<clusters.length;ci++){
-      var ev=classifyRules(clusters[ci],harms,bg);
-      var aiKey=fi+'-'+ci;
-      var aiRes=aiResults[aiKey];
-      var cls=aiRes?aiRes.classification:ev.cls;
-      var pts=clusters[ci].map(function(a){return a.pk;}).filter(function(pk){return pk.lat!==null;});
-      if(!pts.length)continue;
-      var clat=0,clon=0;
-      for(var pi=0;pi<pts.length;pi++){clat+=pts[pi].lat;clon+=pts[pi].lon;}
-      clat/=pts.length;clon/=pts.length;
-      hotspots.push({lat:clat,lon:clon,cls:cls,conf:ev.confPct,fi:fi,ci:ci,run:f.run,nPkts:ev.nPkts});
-    }
-  }
-  return clusterHotspots(hotspots);
+function Tile(props){return (
+  <div className="stat"><label>{props.label}</label>
+    <div className="val" style={Object.assign({fontSize:props.small?12:15},props.color?{color:props.color}:{})}>{props.value}</div>
+    {props.sub && <div className="sub">{props.sub}</div>}</div>);}
+function Num(props){return (
+  <div className="param"><label>{props.label}</label>
+    <input type="number" step={props.step||1} value={props.value} onChange={function(e){var v=parseFloat(e.target.value);if(isFinite(v))props.onChange(v);}}/></div>);}
+function CanvasBox(props){
+  var ref=useRef();
+  useEffect(function(){props.draw(ref.current);});
+  return <canvas ref={ref} style={{height:props.height||180,width:'100%'}} height={props.height||180}/>;
 }
 
 // ── App component ──────────────────────────────────────────────────────────────
 function App(){
-  var _useState0=useState([]),files=_useState0[0],setFiles=_useState0[1];
-  var _useState1=useState(null),activeIdx=_useState1[0],setActiveIdx=_useState1[1];
-  var _useState2=useState([]),training=_useState2[0],setTraining=_useState2[1];
-  var _useState3=useState(''),apiKey=_useState3[0],setApiKey=_useState3[1];
-  var _useState4=useState(null),selEv=_useState4[0],setSelEv=_useState4[1];
-  var _useState5=useState({}),aiResults=_useState5[0],setAiResults=_useState5[1];
-  var _useState6=useState(null),aiLoading=_useState6[0],setAiLoading=_useState6[1];
-  var _useState7=useState(''),confMat=_useState7[0],setConfMat=_useState7[1];
-  var _useState8=useState(false),drag=_useState8[0],setDrag=_useState8[1];
-  var _useState9=useState('analysis'),mainTab=_useState9[0],setMainTab=_useState9[1];
-  var _usStateDB=useState('loading'),dbStatus=_usStateDB[0],setDbStatus=_usStateDB[1];
-  var _usStateAuth=useState(null),authUser=_usStateAuth[0],setAuthUser=_usStateAuth[1];
-  // authUser=null means not logged in; object means logged in
+  var [files,setFiles]=useState([]);
+  var [activeIdx,setActiveIdx]=useState(null);
+  var [training,setTraining]=useState([]);
+  var [apiKey,setApiKey]=useState('');
+  var [aiModel,setAiModel]=useState(lsGet('ipa_ai_model','claude-sonnet-4-5'));
+  var [selEv,setSelEv]=useState(null);
+  var [aiResults,setAiResults]=useState({});
+  var [aiLoading,setAiLoading]=useState(null);
+  var [confMat,setConfMat]=useState('');
+  var [drag,setDrag]=useState(false);
+  var [mainTab,setMainTab]=useState('analysis');
+  var [dbStatus,setDbStatus]=useState('loading');
+  var [dbNote,setDbNote]=useState('');
+  var [authUser,setAuthUser]=useState(null);
+  var [proc,setProcState]=useState(Object.assign({},IPA.DEFAULT_PROC,lsGet('ipa_proc',{})));
+  var [showProc,setShowProc]=useState(false);
+  var [labSigs,setLabSigs]=useState([]);
+  var [labTag,setLabTag]=useState({});
+  var [waypoints,setWaypoints]=useState([]);
+  var [metricPred,setMetricPred]=useState('fused');
+  var [metricLevel,setMetricLevel]=useState('family');
+  var [mapFocus,setMapFocus]=useState(null);
+  var [runGroups,setRunGroups]=useState([]);
+  var [expandedGroup,setExpandedGroup]=useState(null);
+  var [newGroupModal,setNewGroupModal]=useState(false);
+  var [newGroupName,setNewGroupName]=useState('');
+  var [newGroupColor,setNewGroupColor]=useState('#0071b8');
+  var [addToGroupModal,setAddToGroupModal]=useState(null);
+  var [selGroupId,setSelGroupId]=useState('');
+  var [showLines,setShowLines]=useState(true);
+  var [showHotspots,setShowHotspots]=useState(true);
+  var [showWps,setShowWps]=useState(true);
+  var [mapLayer,setMapLayer]=useState('satellite');
+  var [visibleFiles,setVisibleFiles]=useState(null);
+  var [hiddenHotspots,setHiddenHotspots]=useState({});
 
-  // ── Auth: check session on mount and listen for changes ───────────────────
+  function setProc(patch){setProcState(function(p){var n=Object.assign({},p,patch);lsSet('ipa_proc',n);return n;});}
+  useEffect(function(){lsSet('ipa_ai_model',aiModel);},[aiModel]);
+
+  var fileRef=useRef(),wpRef=useRef(),mapRef=useRef(),leafletMap=useRef(null),leafletLayers=useRef({});
+  var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
   useEffect(function(){
-    // Check for existing session (e.g. after GitHub OAuth redirect)
-    supabase.auth.getSession().then(function(res){
-      var session=res.data&&res.data.session;
-      if(session&&session.user){
-        setAuthUser(session.user);
-      }else{
-        setAuthUser(false); // explicitly not logged in
-      }
-    });
-    // Subscribe to auth changes
-    var sub=supabase.auth.onAuthStateChange(function(event,session){
-      if(session&&session.user){setAuthUser(session.user);}
-      else{setAuthUser(false);}
-    });
-    return function(){
-      if(sub&&sub.data&&sub.data.subscription)sub.data.subscription.unsubscribe();
-    };
+    supabase.auth.getSession().then(function(res){var s=res.data&&res.data.session;setAuthUser(s&&s.user?s.user:false);});
+    var sub=supabase.auth.onAuthStateChange(function(ev,s){setAuthUser(s&&s.user?s.user:false);});
+    return function(){if(sub&&sub.data&&sub.data.subscription)sub.data.subscription.unsubscribe();};
   },[]);
-
-  // ── Load training data once authenticated ─────────────────────────────────
   useEffect(function(){
     if(!authUser)return;
     setDbStatus('loading');
-    loadTrainingFromDB()
-      .then(function(rows){
-        if(rows.length)setTraining(rows);
-        setDbStatus('ok');
-      })
-      .catch(function(e){
-        console.warn('Supabase load failed:',e.message);
-        setDbStatus('error');
-      });
+    var notes=[];
+    Promise.all([
+      loadTrainingFromDB().then(function(r){setTraining(r);}),
+      loadLabSigsDB().then(function(r){setLabSigs(function(prev){return r.concat(prev.filter(function(s){return s.src!=='db';}));});})
+        .catch(function(e){notes.push('lab_signatures: '+e.message);}),
+      loadWaypointsDB().then(function(r){if(r.length)setWaypoints(function(prev){return r.concat(prev.filter(function(w){return !w.id;}));});})
+        .catch(function(e){notes.push('waypoints: '+e.message);})
+    ]).then(function(){setDbStatus('ok');setDbNote(notes.length?'Run supabase_schema.sql to enable: '+notes.join('; '):'');})
+      .catch(function(e){console.warn('Supabase load failed:',e.message);setDbStatus('error');setDbNote(e.message);});
   },[authUser]);
-  var _usStateA=useState([]),runGroups=_usStateA[0],setRunGroups=_usStateA[1];
-  var _usStateB=useState(null),expandedGroup=_usStateB[0],setExpandedGroup=_usStateB[1];
-  var _usStateC=useState(false),newGroupModal=_usStateC[0],setNewGroupModal=_usStateC[1];
-  var _usStateD=useState(''),newGroupName=_usStateD[0],setNewGroupName=_usStateD[1];
-  var _usStateE=useState('#0071b8'),newGroupColor=_usStateE[0],setNewGroupColor=_usStateE[1];
-  var _usStateF=useState(null),addToGroupModal=_usStateF[0],setAddToGroupModal=_usStateF[1];
-  var _usStateG=useState(''),selGroupId=_usStateG[0],setSelGroupId=_usStateG[1];
-  var _usStateH=useState(true),showLines=_usStateH[0],setShowLines=_usStateH[1];
-  var _usStateI=useState(true),showHotspots=_usStateI[0],setShowHotspots=_usStateI[1];
-  var _usStateJ=useState(null),hovFi=_usStateJ[0],setHovFi=_usStateJ[1];
-  var _usStateK=useState(null),mapTip=_usStateK[0],setMapTip=_usStateK[1];
-  // Map tile layer selection: 'satellite'|'street'|'topo'|'noaa'
-  var _usStateL=useState('satellite'),mapLayer=_usStateL[0],setMapLayer=_usStateL[1];
-  // Per-file visibility: null = all visible; array of fi indices = only those shown
-  var _usStateM=useState(null),visibleFiles=_usStateM[0],setVisibleFiles=_usStateM[1];
-  // Per-hotspot-cluster visibility toggle (cluster index -> bool)
-  var _usStateN=useState({}),hiddenHotspots=_usStateN[0],setHiddenHotspots=_usStateN[1];
 
-  var fileRef=useRef();
-  var mapRef=useRef();     // now a div ref for Leaflet
-  var leafletMap=useRef(null);   // Leaflet map instance
-  var leafletLayers=useRef({tracks:{},hotspots:{}});  // layer groups
-  var hitRef=useRef(null);
-  var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
+  // ── Analysis pipeline ─────────────────────────────────────────────────────
+  var detKey=DET_KEYS.map(function(k){return proc[k];}).join('|');
+  useEffect(function(){setAiResults({});setSelEv(null);},[detKey]);
+  var baseAnalyses=useMemo(function(){
+    var o=Object.assign({},proc,{applyLayback:false});
+    return files.map(function(f){
+      if(f.type!=='field'||!f.packets.length)return null;
+      try{return IPA.analyzeField(f.packets,o,labSigs);}catch(e){console.error(e);return null;}
+    });
+  },[files,detKey,labSigs]);
+  var fileAnalyses=useMemo(function(){
+    return baseAnalyses.map(function(fa,fi){
+      if(!fa)return null;
+      var L=proc.applyLayback?proc.laybackM:0,tau=proc.applyLayback?proc.latencyS:0;
+      var events=fa.events.map(function(ev){var c=IPA.laybackShift(ev.lat,ev.lon,ev.cog,ev.sog,L,tau);return Object.assign({},ev,{latC:c[0],lonC:c[1]});});
+      var track=fa.track.map(function(tp){var k=fa.kin[tp.i];var c=IPA.laybackShift(tp.lat,tp.lon,tp.cog,k.sog,L,tau);return{lat:c[0],lon:c[1],cog:tp.cog,i:tp.i};});
+      return Object.assign({},fa,{events:events,track:track});
+    });
+  },[baseAnalyses,proc.applyLayback,proc.laybackM,proc.latencyS]);
 
-  // Analysis for active file
+  function finalCls(fi,ei,ev){var ar=aiResults[fi+'-'+ei];return ar&&ar.classification!=='Error'?ar.classification:ev.fusedCls;}
+  function finalConf(fi,ei,ev){var ar=aiResults[fi+'-'+ei];return ar&&ar.classification!=='Error'?ar.confidence_pct:ev.fusedConf;}
+
+  var refLon=useMemo(function(){for(var i=0;i<files.length;i++){var p=files[i].packets.find(function(pk){return pk.lon!==null;});if(p)return p.lon;}return NaN;},[files]);
+  var wps=useMemo(function(){return IPA.alignWaypointHemisphere(waypoints,refLon);},[waypoints,refLon]);
+
+  var fieldIdx=useMemo(function(){return fileAnalyses.map(function(fa,fi){return fa?fi:-1;}).filter(function(fi){return fi>=0;});},[fileAnalyses]);
+  var fileTracks=useMemo(function(){return fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,track:fileAnalyses[fi].track,trackLenM:fileAnalyses[fi].trackLenM};});},[fieldIdx,fileAnalyses]);
+  var points=useMemo(function(){
+    var pts=[];
+    fieldIdx.forEach(function(fi){fileAnalyses[fi].events.forEach(function(ev,ei){
+      if(ev.latC===null||ev.latC===undefined)return;
+      pts.push({lat:ev.latC,lon:ev.lonC,cls:finalCls(fi,ei,ev),conf:finalConf(fi,ei,ev),fi:fi,ei:ei,run:files[fi].run,cog:ev.cog,snr:ev.maxSNRall});
+    });});
+    return pts;
+  },[fieldIdx,fileAnalyses,aiResults]);
+  var sites=useMemo(function(){return IPA.buildSites(points,fileTracks,wps,proc);},[points,fileTracks,wps,proc.mergeRadiusM,proc.passRadiusM]);
+  var calib=useMemo(function(){
+    if(!wps.length)return null;
+    var fe=fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,events:baseAnalyses[fi].events};});
+    var m=IPA.collectCalibrationMatches(fe,wps,proc);
+    return IPA.fitLayback(m);
+  },[wps,fieldIdx,baseAnalyses,proc.matchRadiusM,proc.maxCrossM,proc.minSNRcal]);
+  var detMetrics=useMemo(function(){return wps.length&&fileTracks.length?IPA.detectionMetrics(fileTracks,points,wps,proc):null;},
+    [fileTracks,points,wps,proc.passRadiusM,proc.detRadiusM]);
+
+  // Active-file analysis & chart series
   var analysis=useMemo(function(){
     if(activeIdx===null||!files[activeIdx])return null;
     var f=files[activeIdx];
-    if(f.type==='lab'){
-      return{isLab:true,run:f.run,labStats:computeLabStats(f.packets),nPkts:f.packets.length};
-    }
-    var pkts=f.packets;
-    if(!pkts.length)return null;
-    var xmt=pkts[0].xmt,harms=getHarms(xmt),bg=computeBG(pkts,harms);
-    var clusters=detectAnomalies(pkts,harms,bg);
-    var events=clusters.map(function(cl){return classifyRules(cl,harms,bg);});
-    var d1=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[0]*1000:NaN;});
+    if(f.type==='lab')return{isLab:true,run:f.run,labStats:IPA.computeLabStats(f.packets),nPkts:f.packets.length};
+    var fa=fileAnalyses[activeIdx];if(!fa)return null;
+    var pkts=f.packets,harms=fa.harms,bg=fa.bg,T=proc.mode==='legacy'?3:proc.zThresh;
+    var ser=function(h){return pkts.map(function(pk){var v=pk.freqs[h];return v?v[0]*1000:NaN;});};
+    var d1=ser(harms[0]),dH=ser(harms[5]),d3=ser(harms[2]);
     var mag=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[1]:NaN;});
-    var dH=pkts.map(function(pk){var v=pk.freqs[harms[5]];return v?v[0]*1000:NaN;});
-    var d3=pkts.map(function(pk){var v=pk.freqs[harms[2]];return v?v[0]*1000:NaN;});
-    var xL=pkts.map(function(pk){return (pk.ts||'').split(' ')[1]?pk.ts.split(' ')[1].substring(0,5):'';});
+    var p0=bg.perHz[harms[0]],base0=pkts.map(function(_,i){return IPA.bgAt(bg,harms[0],i);});
+    var xL=pkts.map(function(pk){var s=(pk.ts||'').split(' ')[1];return s?s.substring(0,5):'';});
     var im={};pkts.forEach(function(pk,i){im[pk.idx]=i;});
-    var bgEv=events.map(function(ev,ei){
-      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
-      return{i0:im[ev.pktStart]!==undefined?im[ev.pktStart]:-1,
-             i1:im[ev.pktEnd]!==undefined?im[ev.pktEnd]:-1,
-             color:MAT_COLORS[cls]||'#aaa'};
-    });
-    return{isLab:false,pkts:pkts,xmt:xmt,harms:harms,bg:bg,clusters:clusters,
-           events:events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,im:im};
-  },[files,activeIdx,aiResults]);
+    var bgEv=fa.events.map(function(ev,ei){return{i0:im[ev.pktStart]!==undefined?im[ev.pktStart]:-1,i1:im[ev.pktEnd]!==undefined?im[ev.pktEnd]:-1,
+      color:MAT_COLORS[finalCls(activeIdx,ei,ev)]||'#aaa',sel:ei===selEv};});
+    return{isLab:false,pkts:pkts,xmt:fa.xmt,harms:harms,bg:bg,clusters:fa.clusters,events:fa.events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,
+      hiT:base0.map(function(b){return b+T*p0.std;}),loT:base0.map(function(b){return b-T*p0.std;}),base0:base0,T:T};
+  },[files,activeIdx,fileAnalyses,aiResults,selEv,proc.mode,proc.zThresh]);
 
-  // Chart rendering
   useEffect(function(){
-    if(!analysis||analysis.isLab)return;
-    var d1=analysis.d1,mag=analysis.mag,dH=analysis.dH,d3=analysis.d3;
-    var bg=analysis.bg,xL=analysis.xL,bgEv=analysis.bgEv,harms=analysis.harms;
-    var allPh=d1.concat(dH).filter(function(v){return !isNaN(v)&&Math.abs(v)<200;});
-    var phMin=allPh.length?allPh.reduce(function(a,b){return a<b?a:b;}):-50;
-    var phMax=allPh.length?allPh.reduce(function(a,b){return a>b?a:b;}):50;
+    if(!analysis||analysis.isLab||mainTab!=='analysis')return;
+    var a=analysis;
+    var allPh=a.d1.concat(a.dH).filter(function(v){return isFinite(v)&&Math.abs(v)<200;});
+    var phMin=allPh.length?Math.min.apply(null,allPh):-50,phMax=allPh.length?Math.max.apply(null,allPh):50;
     var yr_ph=[Math.floor(phMin/10)*10-5,Math.ceil(phMax/10)*10+5];
-    var allMag=mag.filter(function(v){return !isNaN(v)&&v>0;});
-    var mgMin=allMag.length?allMag.reduce(function(a,b){return a<b?a:b;}):0;
-    var mgMax=allMag.length?allMag.reduce(function(a,b){return a>b?a:b;}):1000;
-    var yr_mag=[Math.floor(mgMin/100)*100-50,Math.ceil(mgMax/100)*100+50];
-    drawChart(tsRef.current,[{data:d1,color:'#0071b8',width:1.2}],yr_ph,
-      {threshLo:bg.mean-3*bg.std,threshHi:bg.mean+3*bg.std,xLabels:xL,bgEvents:bgEv});
-    drawChart(highRef.current,[{data:d3,color:'#b07800',width:1},{data:dH,color:'#1a8c4e',width:1.2}],
-      yr_ph,{xLabels:xL,bgEvents:bgEv});
-    drawChart(magRef.current,[{data:mag,color:'#1a8c4e',width:1.2}],yr_mag,{xLabels:xL,bgEvents:bgEv});
-    var ei=(selEv!==null&&selEv<analysis.events.length)?selEv:0;
-    var ev=analysis.events[ei];
+    var allMag=a.mag.filter(function(v){return isFinite(v)&&v>0;});
+    var yr_mag=[Math.floor((allMag.length?Math.min.apply(null,allMag):0)/100)*100-50,Math.ceil((allMag.length?Math.max.apply(null,allMag):1000)/100)*100+50];
+    var ds=[{data:a.d1,color:'#0071b8',width:1.2}];
+    var o={xLabels:a.xL,bgEvents:a.bgEv};
+    if(a.bg.mode==='robust'){ds.push({data:a.hiT,color:'rgba(176,32,64,.55)',width:1,dash:[5,3]},{data:a.loT,color:'rgba(176,32,64,.55)',width:1,dash:[5,3]},{data:a.base0,color:'#8099b0',width:1,dash:[2,2]});}
+    else{o.threshLo=a.bg.mean-3*a.bg.std;o.threshHi=a.bg.mean+3*a.bg.std;}
+    drawChart(tsRef.current,ds,yr_ph,o);
+    drawChart(highRef.current,[{data:a.d3,color:'#b07800',width:1},{data:a.dH,color:'#1a8c4e',width:1.2}],yr_ph,o);
+    drawChart(magRef.current,[{data:a.mag,color:'#1a8c4e',width:1.2}],yr_mag,o);
+    var ei=(selEv!==null&&selEv<a.events.length)?selEv:0,ev=a.events[ei];
     if(ev){
-      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
-      var vals=Object.keys(ev.dp).map(function(k){return ev.dp[k];}).filter(function(v){return !isNaN(v);});
-      var spMin=vals.length?vals.reduce(function(a,b){return a<b?a:b;},-5):-20;
-      var spMax=vals.length?vals.reduce(function(a,b){return a>b?a:b;},5):20;
-      drawSpectral(specRef.current,ev.dp,harms,
-        [Math.floor(spMin/10)*10-5,Math.ceil(spMax/10)*10+5],MAT_COLORS[cls]||'#0071b8');
+      var cls=finalCls(activeIdx,ei,ev),series=[{map:ev.dpDev,color:MAT_COLORS[cls]||'#0071b8'}];
+      if(ev.labBest){var sig=labSigs.find(function(s){return s.material===ev.labBest.material&&s.xmt===a.xmt;});
+        var blank=labSigs.filter(function(s){return s.material==='Seawater blank'&&s.xmt===a.xmt;}).pop();
+        if(sig){var mp={};a.harms.forEach(function(h){var k=sig.freqs.indexOf(h);if(k<0)return;var v=sig.mean[k];
+          if(blank){var kb=blank.freqs.indexOf(h);if(kb>=0)v-=blank.mean[kb];}mp[h]=v*ev.labBest.scale;});
+          series.push({map:mp,color:MAT_COLORS[sig.material]||'#555',dash:[4,3],width:1.5});}}
+      var vals=[];series.forEach(function(s){a.harms.forEach(function(h){if(isFinite(s.map[h]))vals.push(s.map[h]);});});
+      drawSpectral(specRef.current,series,a.harms,[Math.floor(Math.min(-5,Math.min.apply(null,vals))/10)*10-5,Math.ceil(Math.max(5,Math.max.apply(null,vals))/10)*10+5]);
     }
-  },[analysis,selEv,aiResults]);
+  },[analysis,selEv,aiResults,mainTab,labSigs]);
 
-  // ── Leaflet map initialisation (runs once when map tab first opens) ──────────
+  // ── Leaflet map ───────────────────────────────────────────────────────────
   useEffect(function(){
-    if(mainTab!=='map')return;
-    if(!mapRef.current)return;
-
-    // Tile layer URLs
-    var TILES={
-      satellite:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    if(mainTab!=='map'||!mapRef.current)return;
+    var TILES={satellite:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       street:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
       topo:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-      noaa:'https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png'
-    };
-    var ATTRIBS={
-      satellite:'Tiles &copy; Esri &mdash; Source: Esri, USGS',
-      street:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      topo:'Tiles &copy; Esri &mdash; Source: Esri, USGS, NOAA',
-      noaa:'NOAA Electronic Navigational Charts'
-    };
-
-    // Init map if not already created
-    if(!leafletMap.current){
-      var map=L.map(mapRef.current,{center:[47.62,-122.50],zoom:14,zoomControl:true,
-        scrollWheelZoom:true,doubleClickZoom:true,touchZoom:true});
-      L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20}).addTo(map);
-      leafletMap.current=map;
-      leafletLayers.current={baseTile:null,tracks:L.layerGroup().addTo(map),hotspots:L.layerGroup().addTo(map)};
+      noaa:'https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png'};
+    var ATTRIBS={satellite:'Tiles &copy; Esri',street:'&copy; OpenStreetMap contributors',topo:'Tiles &copy; Esri',noaa:'NOAA ENC'};
+    if(!leafletMap.current||leafletMap.current._container!==mapRef.current){
+      if(leafletMap.current){try{leafletMap.current.remove();}catch(e){}}
+      var m=L.map(mapRef.current,{center:[47.62,-122.50],zoom:14});
+      leafletMap.current=m;
+      leafletLayers.current={baseTile:null,tracks:L.layerGroup().addTo(m),hotspots:L.layerGroup().addTo(m),wps:L.layerGroup().addTo(m)};
     }
-    // Fix sizing after flex layout renders
     setTimeout(function(){if(leafletMap.current)leafletMap.current.invalidateSize();},100);
-
-    var map=leafletMap.current;
-
-    // Swap tile layer if changed
-    if(leafletLayers.current.baseTile){
-      map.removeLayer(leafletLayers.current.baseTile);
-    }
-    var newTile=L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20});
-    newTile.addTo(map);
-    newTile.bringToBack();
-    leafletLayers.current.baseTile=newTile;
-
-    // ── Draw / update track lines ─────────────────────────────────────────────
-    leafletLayers.current.tracks.clearLayers();
+    var map=leafletMap.current,LL=leafletLayers.current;
+    if(LL.baseTile)map.removeLayer(LL.baseTile);
+    LL.baseTile=L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20}).addTo(map);LL.baseTile.bringToBack();
+    LL.tracks.clearLayers();LL.hotspots.clearLayers();LL.wps.clearLayers();
     var bounds=[];
     if(showLines){
-      for(var fi=0;fi<files.length;fi++){
-        var f=files[fi];
-        if(f.type!=='field')continue;
-        var visible=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
-        if(!visible)continue;
-        var pts=f.packets.filter(function(pk){return pk.lat!==null&&pk.lon!==null;});
-        if(!pts.length)continue;
-        var lls=pts.map(function(pk){return[pk.lat,pk.lon];});
+      files.forEach(function(f,fi){
+        if(f.type!=='field'||(visibleFiles&&visibleFiles.indexOf(fi)<0))return;
+        var fa=fileAnalyses[fi];if(!fa||!fa.track.length)return;
+        var lls=fa.track.map(function(tp){return[tp.lat,tp.lon];});
         lls.forEach(function(ll){bounds.push(ll);});
         var col=RUN_COLORS[fi%RUN_COLORS.length];
-        for(var rgi=0;rgi<runGroups.length;rgi++){
-          if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}
-        }
-        var isActive=fi===activeIdx;
-        var pl=L.polyline(lls,{
-          color:col,weight:isActive?4:2.5,opacity:isActive?1.0:0.7,
-          smoothFactor:1
-        });
-        // Start marker
-        L.circleMarker(lls[0],{radius:5,fillColor:col,color:'#fff',weight:1.5,fillOpacity:1}).addTo(leafletLayers.current.tracks);
-        // Closure to capture fi, f, col
-        (function(fi2,f2,col2,pl2){
-          pl2.on('click',function(){setActiveIdx(fi2);setMainTab('analysis');setSelEv(null);});
-          pl2.on('mouseover',function(e){
-            pl2.setStyle({weight:5,opacity:1});
-            pl2.bindTooltip(
-              '<div style="font-family:monospace;font-size:11px"><b>'+f2.run+'</b><br>'+
-              f2.packets.length+' pkts · '+f2.xmt+'Hz · '+f2.type+'</div>',
-              {sticky:true,direction:'top'}
-            ).openTooltip(e.latlng);
-          });
-          pl2.on('mouseout',function(){
-            pl2.setStyle({weight:fi2===activeIdx?4:2.5,opacity:fi2===activeIdx?1.0:0.7});
-            pl2.closeTooltip();
-          });
-        })(fi,f,col,pl);
-        pl.addTo(leafletLayers.current.tracks);
-      }
-    }
-
-    // ── Draw / update hotspot circles ─────────────────────────────────────────
-    leafletLayers.current.hotspots.clearLayers();
-    if(showHotspots){
-      var visFi=visibleFiles;
-      var hsClusters=buildHotspots(files,aiResults,visFi);
-      for(var hi=0;hi<hsClusters.length;hi++){
-        if(hiddenHotspots[hi])continue;
-        var grp=hsClusters[hi];
-        var clat=0,clon=0;
-        for(var gi=0;gi<grp.length;gi++){clat+=grp[gi].lat;clon+=grp[gi].lon;}
-        clat/=grp.length;clon/=grp.length;
-        var uniqueFiSet={};
-        for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
-        var multiFile=Object.keys(uniqueFiSet).length>1;
-        var col2=MAT_COLORS[grp[0].cls]||'#808080';
-        var r=multiFile?22:14;
-        bounds.push([clat,clon]);
-        var circle=L.circle([clat,clon],{
-          radius:r*4,  // metres ~= pixel radius at zoom 17
-          color:col2,weight:multiFile?2:1.2,opacity:multiFile?0.9:0.6,
-          fillColor:col2,fillOpacity:0.15,
-          dashArray:multiFile?null:'6,4'
-        });
-        var tipHtml='<div style="font-family:monospace;font-size:11px">'+
-          '<b style="color:'+col2+'">'+grp[0].cls+'</b><br>'+
-          (multiFile?grp.length+' detections · '+Object.keys(uniqueFiSet).length+' files':grp[0].run)+'<br>'+
-          'Conf: '+grp[0].conf+'%</div>';
-        circle.bindTooltip(tipHtml,{sticky:true,direction:'top'});
-        circle.addTo(leafletLayers.current.hotspots);
-        // Label
-        var icon=L.divIcon({
-          html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col2+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
-               (multiFile?grp.length+' ×':'')+grp[0].cls.substring(0,10)+'</div>',
-          iconSize:[120,16],iconAnchor:[60,-r-2],className:''
-        });
-        L.marker([clat,clon],{icon:icon,interactive:false}).addTo(leafletLayers.current.hotspots);
-      }
-    }
-
-    // Fit bounds to visible data
-    if(bounds.length>=2){
-      try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}
-    }
-
-  },[mainTab,files,activeIdx,runGroups,showLines,showHotspots,visibleFiles,hiddenHotspots,aiResults,mapLayer]);
-
-  var onMapMove=useCallback(function(e){},{});  // tooltip handling now done by Leaflet
-
-  // File loading
-  var loadFiles=useCallback(function(fileList){
-    var promises=[];
-    for(var i=0;i<fileList.length;i++){
-      promises.push((function(file){
-        return file.text().then(function(text){
-          var pkts=parseAnyFile(text);
-          if(!pkts.length)return null;
-          return{name:file.name,run:pkts[0].run||file.name,packets:pkts,
-                 xmt:pkts[0].xmt,type:pkts[0].type};
-        });
-      })(fileList[i]));
-    }
-    Promise.all(promises).then(function(results){
-      var newFiles=results.filter(function(r){return r!==null;});
-      setFiles(function(prev){
-        var updated=prev.concat(newFiles);
-        if(!prev.length&&updated.length)setActiveIdx(0);
-        return updated;
+        runGroups.forEach(function(g){if(g.fileIds.indexOf(fi)>=0)col=g.color;});
+        var isA=fi===activeIdx;
+        var pl=L.polyline(lls,{color:col,weight:isA?4:2.5,opacity:isA?1:.7});
+        L.circleMarker(lls[0],{radius:5,fillColor:col,color:'#fff',weight:1.5,fillOpacity:1}).addTo(LL.tracks);
+        pl.on('click',function(){setActiveIdx(fi);setMainTab('analysis');setSelEv(null);});
+        pl.bindTooltip('<div style="font-family:monospace;font-size:11px"><b>'+f.run+'</b><br>'+f.packets.length+' pkts · '+f.xmt+'Hz'+
+          (proc.applyLayback&&(proc.laybackM||proc.latencyS)?'<br>sensor track (layback '+fmt(proc.laybackM)+' m)':'')+'</div>',{sticky:true});
+        pl.addTo(LL.tracks);
       });
+    }
+    if(showHotspots){
+      sites.forEach(function(s){
+        var key=s.lat.toFixed(5)+','+s.lon.toFixed(5);if(hiddenHotspots[key])return;
+        if(visibleFiles&&!Object.keys(s.runs).some(function(fi){return visibleFiles.indexOf(+fi)>=0;}))return;
+        var col=MAT_COLORS[s.cls]||'#808080',multi=s.nRuns>1;
+        bounds.push([s.lat,s.lon]);
+        var c=L.circle([s.lat,s.lon],{radius:Math.max(proc.mergeRadiusM/2,s.scatterM*2,4),color:col,weight:s.tier==='Confirmed'?3:multi?2:1.2,
+          opacity:multi?.95:.6,fillColor:col,fillOpacity:.18,dashArray:multi?null:'6,4'});
+        c.bindTooltip('<div style="font-family:monospace;font-size:11px"><b style="color:'+col+'">'+s.cls+'</b> · '+s.tier+'<br>'+
+          s.nDet+' det · '+s.nRuns+'/'+s.nPass+' runs ('+pct(s.repeatability)+')'+(s.reciprocal?' · reciprocal':'')+'<br>'+
+          'consensus '+pct(s.consensus)+' · scatter '+fmt(s.scatterM)+' m'+(s.nearestWp?'<br>'+s.nearestWp+' @ '+fmt(s.nearestWpM)+' m':'')+'</div>',{sticky:true});
+        c.addTo(LL.hotspots);
+        L.marker([s.lat,s.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[120,16],iconAnchor:[60,-12],
+          html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
+          (multi?s.nRuns+'× ':'')+s.cls.substring(0,12)+'</div>'})}).addTo(LL.hotspots);
+      });
+    }
+    if(showWps){
+      wps.forEach(function(w){
+        bounds.push([w.lat,w.lon]);
+        L.marker([w.lat,w.lon],{icon:L.divIcon({className:'',iconSize:[14,14],iconAnchor:[7,7],
+          html:'<div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:12px solid #ffcc00;filter:drop-shadow(0 0 1px #000)"></div>'})})
+          .bindTooltip('<div style="font-family:monospace;font-size:11px"><b>'+w.name+'</b>'+(w.material?'<br>'+w.material:'')+'</div>',{direction:'top'}).addTo(LL.wps);
+      });
+    }
+    if(mapFocus){map.setView(mapFocus,18);}
+    else if(bounds.length>=2){try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}}
+  },[mainTab,files,fileAnalyses,activeIdx,runGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,mapLayer,mapFocus]);
+
+  // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
+  var loadFiles=useCallback(function(fileList,forceWp){
+    var arr=Array.prototype.slice.call(fileList);
+    Promise.all(arr.map(function(file){return file.text().then(function(text){
+      var pkts=forceWp?[]:IPA.parseAnyFile(text);
+      if(pkts.length)return{kind:'ipa',f:{name:file.name,run:pkts[0].run||file.name,packets:pkts,xmt:pkts[0].xmt,type:pkts[0].type}};
+      var w=IPA.parseWaypoints(text,file.name);
+      if(w.length)return{kind:'wp',w:w};
+      return null;
+    });})).then(function(res){
+      var nf=res.filter(function(r){return r&&r.kind==='ipa';}).map(function(r){return r.f;});
+      var nw=[];res.forEach(function(r){if(r&&r.kind==='wp')nw=nw.concat(r.w);});
+      if(nf.length)setFiles(function(prev){var u=prev.concat(nf);if(!prev.length)setActiveIdx(0);return u;});
+      if(nw.length)setWaypoints(function(prev){return prev.concat(nw);});
+      var bad=res.filter(function(r){return !r;}).length;
+      if(bad)alert(bad+' file(s) could not be parsed as IPA packets or waypoints.');
     });
   },[]);
 
-  // AI classification
-  var doAI=function(fi,ei){
-    if(!apiKey){alert('Enter API key');return;}
-    var f=files[fi];if(!f||f.type==='lab')return;
-    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
-    var bg=computeBG(f.packets,harms);
-    var clusters=detectAnomalies(f.packets,harms,bg);
-    if(!clusters.length||!clusters[ei])return;
-    var ev=classifyRules(clusters[ei],harms,bg);
-    var key=fi+'-'+ei;
-    setAiLoading(key);
-    classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
-      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=r;return next;});
-      setSelEv(ei);
+  // ── AI classification ─────────────────────────────────────────────────────
+  function runAI(fi,ei){
+    var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return Promise.resolve();
+    var key=fi+'-'+ei;setAiLoading(key);
+    return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,training,apiKey,aiModel).then(function(r){
+      setAiResults(function(p){var n=Object.assign({},p);n[key]=r;return n;});
     }).catch(function(e){
-      var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
-        key_indicators:'',reasoning:e.message,caution:null};
-      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=err;return next;});
+      setAiResults(function(p){var n=Object.assign({},p);n[key]={classification:'Error',confidence_pct:0,confidence_label:'Error',key_indicators:'',reasoning:e.message,caution:null};return n;});
     }).finally(function(){setAiLoading(null);});
-  };
-
+  }
+  var doAI=function(fi,ei){if(!apiKey){alert('Enter API key');return;}runAI(fi,ei).then(function(){setSelEv(ei);});};
   var doAIAll=function(){
     if(!analysis||analysis.isLab||!apiKey)return;
-    var i=0;
-    function next(){
-      if(i>=analysis.events.length)return;
-      var ei=i++;
-      var f=files[activeIdx];
-      var harms=getHarms(f.packets[0].xmt||4);
-      var bg=computeBG(f.packets,harms);
-      var clusters=detectAnomalies(f.packets,harms,bg);
-      if(!clusters[ei]){next();return;}
-      var ev=classifyRules(clusters[ei],harms,bg);
-      var key=activeIdx+'-'+ei;
-      setAiLoading(key);
-      classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
-        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=r;return nx;});
-        setSelEv(ei);
-      }).catch(function(e){
-        var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
-          key_indicators:'',reasoning:e.message,caution:null};
-        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=err;return nx;});
-      }).finally(function(){
-        setAiLoading(null);
-        setTimeout(next,600);
-      });
-    }
-    next();
+    var fi=activeIdx,n=analysis.events.length,i=0;
+    (function next(){if(i>=n)return;var ei=i++;runAI(fi,ei).then(function(){setTimeout(next,500);});})();
   };
 
+  // ── Training confirmations ────────────────────────────────────────────────
   var saveTraining=function(fi,ei){
     if(!confMat)return;
-    var f=files[fi];if(!f||f.type==='lab')return;
-    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
-    var bg=computeBG(f.packets,harms);
-    var clusters=detectAnomalies(f.packets,harms,bg);
-    if(!clusters.length||!clusters[ei])return;
-    var ev=classifyRules(clusters[ei],harms,bg);
-    var aiRes=aiResults[fi+'-'+ei];
-    var entry={
-      material:confMat,run:f.run,ts:ev.ts,
-      fv:{dp1:ev.dp[harms[0]]||0,dp3:ev.dp[harms[2]]||0,dp_last:ev.dp[harms[5]]||0,
-          magPct:ev.magPct,maxSNR:ev.maxSNR},
-      aiConf:aiRes?aiRes.confidence_pct:ev.confPct
-    };
-    // Optimistic local update immediately
-    setTraining(function(prev){return prev.concat([entry]);});
-    setConfMat('');
-    // Persist to Supabase in background
-    setDbStatus('loading');
-    saveTrainingToDB(entry,harms)
-      .then(function(rows){
-        // Update local entry with DB-assigned id so we can delete it later
-        if(rows&&rows[0]){
-          var dbId=rows[0].id;
-          setTraining(function(prev){
-            var updated=prev.slice();
-            updated[updated.length-1]=Object.assign({},updated[updated.length-1],{id:dbId});
-            return updated;
-          });
-        }
-        setDbStatus('ok');
-      })
-      .catch(function(e){
-        console.warn('Supabase save failed:',e.message);
-        setDbStatus('error');
-      });
+    var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return;
+    var ev=fa.events[ei],harms=fa.harms,ar=aiResults[fi+'-'+ei];
+    var entry={material:confMat,run:files[fi].run,ts:ev.ts,
+      fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
+      aiConf:ar?ar.confidence_pct:null,rulesCls:ev.cls,aiCls:ar&&ar.classification!=='Error'?ar.classification:null,
+      labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
+      dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode};
+    setTraining(function(p){return p.concat([entry]);});
+    setConfMat('');setDbStatus('loading');
+    saveTrainingToDB(entry,harms).then(function(res){
+      var d=res.data;
+      if(d&&d[0])setTraining(function(p){var u=p.slice();var k=u.lastIndexOf(entry);if(k>=0)u[k]=Object.assign({},u[k],{id:d[0].id});return u;});
+      setDbStatus('ok');if(!res.extended)setDbNote('Saved without prediction columns — run supabase_schema.sql so accuracy metrics persist.');
+    }).catch(function(e){console.warn('Supabase save failed:',e.message);setDbStatus('error');setDbNote(e.message);});
   };
 
+  // ── Lab signatures ────────────────────────────────────────────────────────
+  function addLabSig(grp,material,run){
+    var s=IPA.labSignatureFromGroup(grp,material,run);s.src='local';
+    setLabSigs(function(p){return p.concat([s]);});
+    saveLabSigDB(s).then(function(d){if(d&&d[0])setLabSigs(function(p){return p.map(function(x){return x===s?Object.assign({},x,{id:d[0].id,src:'db'}):x;});});})
+      .catch(function(e){setDbNote('Lab signature kept for this session only ('+e.message+'). Run supabase_schema.sql to share it.');});
+  }
+  function removeLabSig(s){setLabSigs(function(p){return p.filter(function(x){return x!==s;});});if(s.id)deleteLabSigDB(s.id).catch(function(){});}
+
   // Run group helpers
-  var createGroup=function(){
-    if(!newGroupName.trim())return;
-    setRunGroups(function(prev){return prev.concat([{
-      id:'g'+Date.now(),name:newGroupName.trim(),color:newGroupColor,fileIds:[]}]);});
-    setNewGroupModal(false);setNewGroupName('');
-  };
-  var addToGroup=function(fi,gid){
-    setRunGroups(function(prev){return prev.map(function(g){
-      return(g.id===gid&&g.fileIds.indexOf(fi)<0)?
-        Object.assign({},g,{fileIds:g.fileIds.concat([fi])}):g;});});
-    setAddToGroupModal(null);setSelGroupId('');
-  };
-  var removeFromGroup=function(fi,gid){
-    setRunGroups(function(prev){return prev.map(function(g){
-      return g.id===gid?Object.assign({},g,{fileIds:g.fileIds.filter(function(i){return i!==fi;})}):g;});});
-  };
-  var deleteGroup=function(id){
-    setRunGroups(function(prev){return prev.filter(function(g){return g.id!==id;});});
-  };
+  var createGroup=function(){if(!newGroupName.trim())return;
+    setRunGroups(function(p){return p.concat([{id:'g'+Date.now(),name:newGroupName.trim(),color:newGroupColor,fileIds:[]}]);});
+    setNewGroupModal(false);setNewGroupName('');};
+  var addToGroup=function(fi,gid){setRunGroups(function(p){return p.map(function(g){return(g.id===gid&&g.fileIds.indexOf(fi)<0)?Object.assign({},g,{fileIds:g.fileIds.concat([fi])}):g;});});
+    setAddToGroupModal(null);setSelGroupId('');};
+  var removeFromGroup=function(fi,gid){setRunGroups(function(p){return p.map(function(g){return g.id===gid?Object.assign({},g,{fileIds:g.fileIds.filter(function(i){return i!==fi;})}):g;});});};
+  var deleteGroup=function(id){setRunGroups(function(p){return p.filter(function(g){return g.id!==id;});});};
+
+  // ── Classifier accuracy data ──────────────────────────────────────────────
+  var accuracy=useMemo(function(){
+    var rows=training.filter(function(t){return t.material;}),pred,conf;
+    if(metricPred==='knn'){var k=IPA.looKnn(rows,3);if(!k)return{n:0,rows:rows.length};pred=k;conf=null;}
+    else{
+      var fld={fused:'fusedCls',rules:'rulesCls',ai:'aiCls',lab:'labCls'}[metricPred];
+      var cf={fused:'predConf',ai:'aiConf'}[metricPred];
+      rows=rows.filter(function(t){return t[fld];});
+      pred=rows.map(function(t){return t[fld];});conf=cf?rows.map(function(t){return t[cf];}):null;
+    }
+    if(!rows.length)return{n:0,rows:training.length};
+    var truth=rows.map(function(t){return t.material;});
+    if(metricLevel==='family'){truth=truth.map(IPA.family);pred=pred.map(IPA.family);}
+    var c=IPA.confusion(truth,pred);
+    c.rel=conf?IPA.reliability(truth,pred,conf):null;
+    return c;
+  },[training,metricPred,metricLevel]);
 
   // Derived render values
   var af=analysis;
@@ -1080,118 +768,88 @@ function App(){
   var aiKey=(activeIdx!==null&&selEv!==null)?activeIdx+'-'+selEv:null;
   var aiRes=aiKey?aiResults[aiKey]:null;
 
-  // ── Auth loading state ────────────────────────────────────────────────────
   if(authUser===null){
-    return (
-      <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
-        background:'var(--bg)',fontFamily:'var(--font-mono)'}}>
-        <div style={{color:'var(--dim2)',fontSize:12}}>Checking session...</div>
-      </div>
-    );
+    return <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--font-mono)'}}><div style={{color:'var(--dim2)',fontSize:12}}>Checking session...</div></div>;
   }
-
-  // ── Login screen ──────────────────────────────────────────────────────────
   if(authUser===false){
     return (
-      <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
-        background:'var(--bg)',fontFamily:'var(--font-mono)'}}>
-        <div style={{background:'var(--panel)',border:'1px solid var(--border2)',borderRadius:6,
-          padding:'40px 48px',textAlign:'center',maxWidth:380}}>
-          <div style={{fontSize:22,fontWeight:700,color:'var(--accent)',marginBottom:8,
-            letterSpacing:'.05em'}}>IPA MIP CLASSIFIER</div>
-          <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>WaTech-MatChar-r7</div>
+      <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',fontFamily:'var(--font-mono)'}}>
+        <div style={{background:'var(--panel)',border:'1px solid var(--border2)',borderRadius:6,padding:'40px 48px',textAlign:'center',maxWidth:380}}>
+          <div style={{fontSize:22,fontWeight:700,color:'var(--accent)',marginBottom:8,letterSpacing:'.05em'}}>IPA MIP CLASSIFIER</div>
+          <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>WaTech-MatChar-r7 · {APP_VERSION}</div>
           <div style={{width:40,height:1,background:'var(--border2)',margin:'16px auto'}}/>
-          <div style={{fontSize:11,color:'var(--dim3)',marginBottom:24,lineHeight:1.7}}>
-            Sign in with your GitHub account to access the classifier and shared training database.
-          </div>
-          <button onClick={signInWithGitHub}
-            style={{display:'flex',alignItems:'center',gap:10,margin:'0 auto',
-              background:'#24292e',color:'#fff',border:'none',borderRadius:4,
-              padding:'11px 22px',cursor:'pointer',fontSize:12,fontFamily:'var(--font-mono)',
-              fontWeight:700,letterSpacing:'.04em'}}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
-              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
-            </svg>
+          <div style={{fontSize:11,color:'var(--dim3)',marginBottom:24,lineHeight:1.7}}>Sign in with your GitHub account to access the classifier and shared training database.</div>
+          <button onClick={signInWithGitHub} style={{display:'flex',alignItems:'center',gap:10,margin:'0 auto',background:'#24292e',color:'#fff',border:'none',borderRadius:4,
+            padding:'11px 22px',cursor:'pointer',fontSize:12,fontFamily:'var(--font-mono)',fontWeight:700,letterSpacing:'.04em'}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.020-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
             Sign in with GitHub
           </button>
-          <div style={{fontSize:9,color:'var(--dim)',marginTop:16,lineHeight:1.6}}>
-            Access restricted to authorised IPA team members.<br/>
-            Contact coastalsensing to request access.
-          </div>
+          <div style={{fontSize:9,color:'var(--dim)',marginTop:16,lineHeight:1.6}}>Access restricted to authorised IPA team members.<br/>Contact coastalsensing to request access.</div>
         </div>
-      </div>
-    );
+      </div>);
   }
+
+  var nField=files.filter(function(f){return f.type==='field';}).length;
+  var tiersCount={};sites.forEach(function(s){tiersCount[s.tier]=(tiersCount[s.tier]||0)+1;});
+  var multi=sites.filter(function(s){return s.tier!=='Single run'&&s.tier!=='Weak repeat';});
+  var tierCls=function(t){return 'tier tier-'+t.split(' ')[0];};
 
   return (
     <div className="app">
       <div className="topbar">
         <h1>IPA MIP CLASSIFIER</h1>
         <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>{files.length} files</span>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>{files.length} files · {wps.length} wp · {labSigs.length} lab refs</span>
         <div className="sep"/>
         <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:training.length?'var(--pos)':'var(--dim2)'}}>{training.length} training</span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:proc.mode==='legacy'?'#b07800':'var(--dim2)'}}>{proc.mode==='legacy'?'LEGACY v26 detection':'robust detection'}{proc.applyLayback&&(proc.laybackM||proc.latencyS)?' · layback '+fmt(proc.laybackM)+' m':''}</span>
         <div style={{flex:1}}/>
-        <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:10,
-          color:dbStatus==='ok'?'var(--pos)':dbStatus==='error'?'var(--neg)':dbStatus==='loading'?'#b07800':'var(--dim)'}}>
-          {dbStatus==='loading'?'⟳ syncing':dbStatus==='ok'?'✓ DB synced':dbStatus==='error'?'✗ DB offline':'DB'}
+        <span title={dbNote} style={{fontFamily:'var(--font-mono)',fontSize:10,cursor:dbNote?'help':'default',
+          color:dbStatus==='ok'?(dbNote?'#b07800':'var(--pos)'):dbStatus==='error'?'var(--neg)':'#b07800'}}>
+          {dbStatus==='loading'?'⟳ syncing':dbStatus==='ok'?(dbNote?'⚠ DB partial':'✓ DB synced'):'✗ DB offline'}
         </span>
         <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7</span>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7 · {APP_VERSION}</span>
         <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim3)',maxWidth:160,
-          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-          {authUser&&authUser.email?authUser.email:authUser&&authUser.user_metadata&&authUser.user_metadata.user_name?authUser.user_metadata.user_name:''}
-        </span>
-        <button onClick={signOut}
-          style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',
-            fontFamily:'var(--font-mono)',fontSize:9,padding:'3px 8px',borderRadius:2,
-            cursor:'pointer',marginLeft:4}}>
-          Sign out
-        </button>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim3)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {authUser.email||(authUser.user_metadata&&authUser.user_metadata.user_name)||''}</span>
+        <button onClick={signOut} style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',fontFamily:'var(--font-mono)',fontSize:9,padding:'3px 8px',borderRadius:2,cursor:'pointer',marginLeft:4}}>Sign out</button>
       </div>
 
       <div className="main">
         <div className="sidebar">
           <div className={drag?'upload-zone drag':'upload-zone'}
-            onDragOver={function(e){e.preventDefault();setDrag(true);}}
-            onDragLeave={function(){setDrag(false);}}
+            onDragOver={function(e){e.preventDefault();setDrag(true);}} onDragLeave={function(){setDrag(false);}}
             onDrop={function(e){e.preventDefault();setDrag(false);loadFiles(e.dataTransfer.files);}}
             onClick={function(){fileRef.current&&fileRef.current.click();}}>
             <div className="icon">📡</div>
-            <p>Drop <code>_p.txt</code> files<br/>(lab or field) · <span>click to browse</span></p>
+            <p>Drop <code>_p.txt</code> files (lab or field)<br/>or waypoint <code>.csv/.gpx</code> · <span>click to browse</span></p>
           </div>
-          <input ref={fileRef} type="file" accept=".txt" multiple style={{display:'none'}}
-            onChange={function(e){loadFiles(e.target.files);}}/>
+          <input ref={fileRef} type="file" accept=".txt,.csv,.gpx" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
+          <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
 
           {files.length>0 && <div className="sidebar-label">Files</div>}
           {files.map(function(f,i){
-            var grp=null;
-            for(var gi=0;gi<runGroups.length;gi++){if(runGroups[gi].fileIds.indexOf(i)>=0){grp=runGroups[gi];break;}}
-            var dotCol=grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0');
+            var grp=runGroups.find(function(g){return g.fileIds.indexOf(i)>=0;});
+            var fa=fileAnalyses[i];
             return (
-              <div key={i} className={activeIdx===i?'file-item active':'file-item'}
-                onClick={function(){setActiveIdx(i);setSelEv(null);}}>
-                <div className="file-dot" style={{background:dotCol}}/>
+              <div key={i} className={activeIdx===i?'file-item active':'file-item'} onClick={function(){setActiveIdx(i);setSelEv(null);}}>
+                <div className="file-dot" style={{background:grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0')}}/>
                 <div style={{flex:1,overflow:'hidden'}}>
                   <div className="file-name">{f.run}</div>
-                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}</div>
+                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}{fa?' · '+fa.events.length+' ev':''}</div>
                 </div>
-                <button title="Add to group"
-                  onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
-                  style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',
-                    borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
-              </div>
-            );
+                <button title="Add to group" onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
+                  style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
+              </div>);
           })}
 
           {files.length>0 && (
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
               <span className="sidebar-label">Run Groups</span>
               <button className="btn btn-primary btn-sm" onClick={function(){setNewGroupModal(true);}}>+ Group</button>
-            </div>
-          )}
+            </div>)}
           {runGroups.map(function(g){
             var isExp=expandedGroup===g.id;
             return (
@@ -1199,114 +857,116 @@ function App(){
                 <div className="run-group-hdr" onClick={function(){setExpandedGroup(isExp?null:g.id);}}>
                   <div className="run-swatch" style={{background:g.color}}/>
                   <span className="run-group-name">{g.name}</span>
-                  <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{g.fileIds.length}f</span>
-                  <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}}
-                    style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>
+                  <span style={{fontSize:9,color:'var(--dim)'}}>{g.fileIds.length}f</span>
+                  <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>
                 </div>
                 {isExp && (
                   <div className="run-group-body">
-                    {g.fileIds.map(function(fi){
-                      var f=files[fi];if(!f)return null;
-                      return (
-                        <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'}
-                          onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
-                          <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
-                          <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
-                          <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{f.type}</span>
-                          <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}}
-                            style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>
-                        </div>
-                      );
-                    })}
+                    {g.fileIds.map(function(fi){var f=files[fi];if(!f)return null;return (
+                      <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'} onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
+                        <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
+                        <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
+                        <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>
+                      </div>);})}
                     {!g.fileIds.length && <span style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>No files added</span>}
-                  </div>
-                )}
-              </div>
-            );
+                  </div>)}
+              </div>);
           })}
+
+          {/* Waypoints */}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
+            <span className="sidebar-label">Known waypoints ({wps.length})</span>
+            <button className="btn btn-ghost btn-sm" onClick={function(){wpRef.current&&wpRef.current.click();}}>Load</button>
+          </div>
+          {wps.length>0 && (
+            <div>
+              <div style={{display:'flex',flexDirection:'column',gap:2,maxHeight:90,overflowY:'auto'}}>
+                {wps.map(function(w,i){return (
+                  <div key={i} style={{display:'flex',gap:5,alignItems:'center',fontSize:10,fontFamily:'var(--font-mono)',padding:'2px 5px',background:'var(--panel2)',borderRadius:2}}>
+                    <span style={{color:'#b08800'}}>▲</span><span style={{fontWeight:700}}>{w.name}</span>
+                    <span style={{flex:1,color:'var(--dim)',fontSize:9,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{w.material||''}{w.flipped?' (lon→W)':''}</span>
+                    {!w.id && <span title="not saved to DB" style={{color:'var(--dim)',fontSize:9}}>local</span>}
+                  </div>);})}
+              </div>
+              <div className="row" style={{marginTop:4}}>
+                {waypoints.some(function(w){return !w.id;}) && <button className="btn btn-ghost btn-sm" onClick={function(){
+                  var loc=waypoints.filter(function(w){return !w.id;});
+                  saveWaypointsDB(IPA.alignWaypointHemisphere(loc,refLon)).then(function(d){
+                    setWaypoints(function(p){return p.filter(function(w){return w.id;}).concat(d.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source};}));});
+                  }).catch(function(e){alert('Could not save waypoints: '+e.message+'\nRun supabase_schema.sql in Supabase first.');});
+                }}>Save to DB</button>}
+                <button className="btn btn-ghost btn-sm" onClick={function(){
+                  var ids=waypoints.filter(function(w){return w.id;}).map(function(w){return w.id;});
+                  if(ids.length&&!window.confirm('Also delete '+ids.length+' shared waypoints from the database?')){setWaypoints(function(p){return p.filter(function(w){return w.id;});});return;}
+                  if(ids.length)deleteWaypointsDB(ids).catch(function(e){console.warn(e);});
+                  setWaypoints([]);
+                }}>Clear</button>
+              </div>
+            </div>)}
+
+          {/* Processing */}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4,cursor:'pointer'}} onClick={function(){setShowProc(!showProc);}}>
+            <span className="sidebar-label">Processing {showProc?'▾':'▸'}</span>
+            <span className="pill">{proc.mode}</span>
+          </div>
+          {showProc && (
+            <div className="param-grid">
+              <div className="param" style={{gridColumn:'1/-1'}}><label>Detection mode</label>
+                <select value={proc.mode} onChange={function(e){setProc({mode:e.target.value});}}>
+                  <option value="robust">Robust (detrended, multi-harmonic)</option>
+                  <option value="legacy">Legacy v26 (fundamental 3σ only)</option>
+                </select></div>
+              {proc.mode==='robust' && <Num label="Detrend window (pkts)" value={proc.detrendWin} onChange={function(v){setProc({detrendWin:Math.max(5,Math.round(v))});}}/>}
+              {proc.mode==='robust' && <Num label="z threshold" step={0.5} value={proc.zThresh} onChange={function(v){setProc({zThresh:v});}}/>}
+              {proc.mode==='robust' && <Num label="Harmonic hits" value={proc.minHarmHits} onChange={function(v){setProc({minHarmHits:Math.max(1,Math.round(v))});}}/>}
+              {proc.mode==='robust' && <Num label="Gap (pkts)" value={proc.gapPkts} onChange={function(v){setProc({gapPkts:Math.max(0,Math.round(v))});}}/>}
+              {proc.mode==='robust' && <Num label="Min pkts / event" value={proc.minPkts} onChange={function(v){setProc({minPkts:Math.max(1,Math.round(v))});}}/>}
+              <Num label="Lab match cos ≥" step={0.01} value={proc.labCosMin} onChange={function(v){setProc({labCosMin:v});}}/>
+              <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1'}} onClick={function(){setProc(Object.assign({},IPA.DEFAULT_PROC,{laybackM:proc.laybackM,latencyS:proc.latencyS,applyLayback:proc.applyLayback}));}}>Reset detection defaults</button>
+            </div>)}
 
           {training.length>0 && (
             <div>
-              <div className="sep" style={{height:1,background:'var(--border)',margin:'4px 0'}}/>
+              <div className="sep" style={{height:1,width:'100%',background:'var(--border)',margin:'4px 0'}}/>
               <div className="sidebar-label">Training ({training.length})</div>
               <div style={{display:'flex',flexDirection:'column',gap:3,maxHeight:100,overflowY:'auto'}}>
                 {training.map(function(t,i){return (
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',
-                    borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)'}}>
-                    <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
-                      background:MAT_COLORS[t.material]||'#8099b0'}}/>
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)'}}>
+                    <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,background:MAT_COLORS[t.material]||'#8099b0'}}/>
                     <span style={{fontWeight:700,color:MAT_COLORS[t.material]||'var(--dim2)'}}>{t.material}</span>
                     <span style={{flex:1,fontSize:9,color:'var(--dim)',marginLeft:4}}>{(t.run||'').substring(0,10)}</span>
-                    <button onClick={function(){
-                      setTraining(function(prev){return prev.filter(function(_,j){return j!==i;});});
-                      if(t.id)deleteTrainingFromDB(t.id).catch(function(e){console.warn('delete failed',e);});
-                    }} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
-                  </div>
-                );})}
+                    <button onClick={function(){setTraining(function(p){return p.filter(function(_,j){return j!==i;});});if(t.id)deleteTrainingFromDB(t.id).catch(function(e){console.warn(e);});}}
+                      style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
+                  </div>);})}
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={function(){
-                if(!window.confirm('Delete all '+training.length+' training confirmations from the shared database? This affects all users.'))return;
-                var ids=training.filter(function(t){return t.id;}).map(function(t){return t.id;});
-                setTraining([]);
-                // Delete each from Supabase
-                ids.forEach(function(id){
-                  deleteTrainingFromDB(id).catch(function(e){console.warn('Delete failed for id '+id,e);});
-                });
-              }}>Clear training</button>
-            </div>
-          )}
+            </div>)}
           {files.length>0 && (
-            <button className="btn btn-ghost btn-sm"
-              onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);}}>
-              Clear all files</button>
-          )}
+            <button className="btn btn-ghost btn-sm" onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);setRunGroups([]);}}>Clear all files</button>)}
         </div>
 
         <div className="content">
-          {files.length>0 && (
-            <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
-              <div className={mainTab==='analysis'?'tab active':'tab'} onClick={function(){setMainTab('analysis');}}>Analysis</div>
-              <div className={mainTab==='map'?'tab active':'tab'} onClick={function(){setMainTab('map');}}>Map</div>
-              <div className={mainTab==='lab'?'tab active':'tab'} onClick={function(){setMainTab('lab');}}>Lab Stats</div>
-            </div>
-          )}
+          <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
+            {[['analysis','Analysis'],['map','Map'],['lab','Lab Stats'],['layback','Layback'],['metrics','Metrics']].map(function(t){
+              return <div key={t[0]} className={mainTab===t[0]?'tab active':'tab'} onClick={function(){setMainTab(t[0]);if(t[0]!=='map')setMapFocus(null);}}>{t[1]}</div>;})}
+          </div>
 
           {mainTab==='analysis' && (
             <div>
-              {!af && (
-                <div className="empty">
-                  <div className="icon">◎</div>
-                  <p>Load <code>_p.txt</code> files to begin</p>
-                </div>
-              )}
-              {af && af.isLab && (
-                <div className="empty">
-                  <div className="icon">🔬</div>
-                  <p>Lab file selected — view computed statistics in the <strong>Lab Stats</strong> tab</p>
-                </div>
-              )}
+              {!af && <div className="empty"><div className="icon">◎</div><p>Load <code>_p.txt</code> files to begin</p></div>}
+              {af && af.isLab && <div className="empty"><div className="icon">🔬</div><p>Lab file selected — tag it as a reference in the <strong>Lab Stats</strong> tab</p></div>}
               {af && !af.isLab && (
                 <div>
                   <div className="statsbar">
-                    <div className="stat"><label>Run</label>
-                      <div className="val" style={{fontSize:11}}>{af.pkts[0]?af.pkts[0].run.substring(0,16):''}</div>
-                      <div className="sub">{af.pkts.length}pkt · {af.xmt}Hz</div></div>
-                    <div className="stat"><label>BG Δφ mean</label>
-                      <div className="val">{af.bg.mean.toFixed(3)}</div>
-                      <div className="sub">mrad at {af.xmt}Hz</div></div>
-                    <div className="stat"><label>BG std dev</label>
-                      <div className="val">{af.bg.std.toFixed(3)}</div>
-                      <div className="sub">mrad ddof=1</div></div>
-                    <div className="stat"><label>3σ threshold</label>
-                      <div className="val">{(af.bg.mean-3*af.bg.std).toFixed(2)}</div>
-                      <div className="sub">{(af.bg.mean+3*af.bg.std).toFixed(2)} mrad</div></div>
-                    <div className="stat"><label>Events</label>
-                      <div className="val" style={{color:af.events.length?'#b07800':'var(--pos)'}}>{af.events.length}</div>
-                      <div className="sub">{af.clusters.reduce(function(a,c){return a+c.length;},0)} anom pkts</div></div>
+                    <Tile label="Run" small value={af.pkts[0]?af.pkts[0].run.substring(0,16):''} sub={af.pkts.length+'pkt · '+af.xmt+'Hz'}/>
+                    <Tile label={af.bg.mode==='robust'?'BG Δφ median':'BG Δφ mean'} value={af.bg.mean.toFixed(3)} sub={'mrad at '+af.xmt+'Hz'}/>
+                    <Tile label={af.bg.mode==='robust'?'Noise σ (MAD)':'BG std dev'} value={af.bg.std.toFixed(3)} sub={af.bg.mode==='robust'?'detrended, 1.4826·MAD':'mrad ddof=1'}/>
+                    <Tile label={af.bg.mode==='robust'?af.T+'σ band':'3σ threshold'} value={af.bg.mode==='robust'?'±'+(af.T*af.bg.std).toFixed(2):(af.bg.mean-3*af.bg.std).toFixed(2)}
+                      sub={af.bg.mode==='robust'?'around running median':(af.bg.mean+3*af.bg.std).toFixed(2)+' mrad'}/>
+                    <Tile label="Events" value={af.events.length} color={af.events.length?'#b07800':'var(--pos)'} sub={af.clusters.reduce(function(a,c){return a+c.length;},0)+' anom pkts'}/>
                   </div>
-                  <div className="charts-grid">
+                  <div className="charts-grid" style={{marginTop:8}}>
                     <div className="chart-panel full">
-                      <div className="chart-title">Δφ {af.xmt}Hz ch1-0 (mrad) — 3σ threshold shown<span>shaded = events</span></div>
+                      <div className="chart-title">Δφ {af.xmt}Hz ch1-0 (mrad) — {af.bg.mode==='robust'?'running-median baseline ± '+af.T+'σ':'3σ threshold'}<span>shaded = events</span></div>
                       <canvas ref={tsRef} style={{height:110}} height={110}/>
                     </div>
                     <div className="chart-panel">
@@ -1314,9 +974,8 @@ function App(){
                       <canvas ref={highRef} style={{height:100}} height={100}/>
                     </div>
                     <div className="chart-panel">
-                      <div className="chart-title">Harmonic spectrum — event {selEv!==null?selEv+1:'(select row)'}
-                        {aiRes && <span style={{color:MAT_COLORS[aiRes.classification]||'#333',fontSize:9,marginLeft:6}}>{aiRes.classification}</span>}
-                      </div>
+                      <div className="chart-title">Deviation spectrum — event {selEv!==null?selEv+1:'1'}
+                        <span style={{fontSize:9}}>{activeEv&&activeEv.labBest?'dashed = '+activeEv.labBest.material+' (lab, scaled)':''}</span></div>
                       <canvas ref={specRef} style={{height:100}} height={100}/>
                     </div>
                     <div className="chart-panel full">
@@ -1324,250 +983,379 @@ function App(){
                       <canvas ref={magRef} style={{height:75}} height={75}/>
                     </div>
                   </div>
-                  <div className="chart-panel full" style={{padding:'8px 0 0'}}>
+                  <div className="chart-panel full" style={{padding:'8px 0 0',marginTop:8}}>
                     <div className="chart-title" style={{padding:'0 10px 7px',display:'flex',alignItems:'center',gap:8}}>
                       <span>Events — {af.events.length}</span>
-                      <span style={{color:'var(--dim)',flex:1,fontSize:9}}>click row to view harmonic spectrum</span>
-                      <button className="btn btn-ai btn-sm" onClick={doAIAll}
-                        disabled={!apiKey||!af.events.length||!!aiLoading}>
-                        {aiLoading?'Running...':'⚡ AI All'}
-                      </button>
+                      <span style={{color:'var(--dim)',flex:1,fontSize:9}}>deviations from local background · click row for spectrum</span>
+                      <button className="btn btn-ai btn-sm" onClick={doAIAll} disabled={!apiKey||!af.events.length||!!aiLoading}>{aiLoading?'Running...':'⚡ AI All'}</button>
                     </div>
                     <div className="events-wrap">
                       <table className="events-table">
                         <thead><tr>
-                          <th>#</th><th>Time</th><th>Pkts</th>
-                          <th>Δφ {af.harms[0]}Hz</th><th>Δφ {af.harms[2]}Hz</th><th>Δφ {af.harms[5]}Hz</th>
-                          <th>Mag%</th><th>SNR</th><th>Class</th><th>Conf</th><th>Src</th><th>AI</th>
+                          <th>#</th><th>Time</th><th>Pkts</th><th>dev {af.harms[0]}Hz</th><th>dev {af.harms[2]}Hz</th><th>dev {af.harms[5]}Hz</th>
+                          <th>Mag%</th><th>SNR</th><th>Hdg</th><th>Lab match</th><th>Class</th><th>Conf</th><th>Src</th><th>AI</th>
                         </tr></thead>
                         <tbody>
                           {af.events.map(function(ev,ei){
                             var ak=activeIdx+'-'+ei,ar=aiResults[ak],ld=aiLoading===ak;
-                            var cls=ar?ar.classification:ev.cls,conf=ar?ar.confidence_pct:ev.confPct;
-                            var bc=cls.indexOf('Hydro')>=0||cls.indexOf('Gas')>=0||cls.indexOf('Crude')>=0?'badge-hydro':
-                              cls.indexOf('Metal')>=0||cls.indexOf('Steel')>=0||cls.indexOf('Ilmen')>=0?'badge-metal':
-                              cls.indexOf('Mix')>=0?'badge-mixed':cls.indexOf('Art')>=0?'badge-art':'badge-weak';
+                            var cls=finalCls(activeIdx,ei,ev),conf=finalConf(activeIdx,ei,ev);
                             var cc=conf>75?'var(--pos)':conf>50?'#b07800':'var(--neg)';
-                            var dp0=ev.dp[af.harms[0]]||0,dp2=ev.dp[af.harms[2]]||0,dp5=ev.dp[af.harms[5]]||0;
+                            var d0=ev.dpDev[af.harms[0]]||0,d2=ev.dpDev[af.harms[2]]||0,d5=ev.dpDev[af.harms[5]]||0;
+                            var src=ar&&ar.classification!=='Error'?'AI':ev.fusedSrc;
                             return (
-                              <tr key={ei} className={selEv===ei?'selected':''} style={{cursor:'pointer'}}
-                                onClick={function(){setSelEv(ei===selEv?null:ei);}}>
+                              <tr key={ei} className={selEv===ei?'selected':''} style={{cursor:'pointer'}} onClick={function(){setSelEv(ei===selEv?null:ei);}}>
                                 <td style={{color:'var(--dim2)'}}>{ei+1}</td>
-                                <td style={{color:'var(--dim3)'}}>{ev.ts?ev.ts.split(' ')[1]?ev.ts.split(' ')[1].substring(0,8):'—':'—'}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.ts&&ev.ts.split(' ')[1]?ev.ts.split(' ')[1].substring(0,8):'—'}</td>
                                 <td style={{color:'var(--dim3)'}}>{ev.nPkts}</td>
-                                <td style={{color:dp0<0?'var(--neg)':'var(--pos)'}}>{dp0.toFixed(2)}</td>
-                                <td style={{color:dp2>0?'var(--pos)':'var(--neg)'}}>{dp2.toFixed(2)}</td>
-                                <td style={{color:dp5>0?'var(--pos)':'var(--neg)'}}>{dp5.toFixed(2)}</td>
+                                <td style={{color:d0<0?'var(--neg)':'var(--pos)'}}>{d0.toFixed(2)}</td>
+                                <td style={{color:d2>0?'var(--pos)':'var(--neg)'}}>{d2.toFixed(2)}</td>
+                                <td style={{color:d5>0?'var(--pos)':'var(--neg)'}}>{d5.toFixed(2)}</td>
                                 <td style={{color:ev.magPct<-2?'var(--neg)':ev.magPct>5?'var(--pos)':'var(--dim3)'}}>{ev.magPct.toFixed(1)}%</td>
-                                <td style={{color:'#b07800'}}>{ev.maxSNR.toFixed(1)}</td>
-                                <td><span className={'badge '+bc}>{cls}</span></td>
-                                <td><div className="conf-bar">
-                                  <div className="conf-fill" style={{width:Math.max(4,conf*0.8)+'px',background:cc}}/>
-                                  <span className="conf-text">{conf}%</span></div></td>
-                                <td style={{fontSize:9,color:'var(--dim2)'}}>{ar?'AI':'rules'}</td>
-                                <td>{ld?<span className="spinner"/>:
-                                  <button className="btn btn-ai btn-sm" style={{padding:'2px 7px',fontSize:9}}
-                                    onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}}
-                                    disabled={!apiKey||!!aiLoading}>AI</button>}</td>
-                              </tr>
-                            );
+                                <td style={{color:'#b07800'}}>{ev.maxSNRall.toFixed(1)}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.cog!==null?Math.round(ev.cog)+'°':'—'}</td>
+                                <td style={{fontSize:10,color:ev.labBest&&ev.labBest.cos>=proc.labCosMin?'var(--text)':'var(--dim)'}}>
+                                  {ev.labBest?ev.labBest.material.substring(0,14)+' '+ev.labBest.cos.toFixed(2):'—'}{ev.labConflict?' ⚠':''}</td>
+                                <td><span className={'badge '+badgeClass(cls)}>{cls}</span></td>
+                                <td><div className="conf-bar"><div className="conf-fill" style={{width:Math.max(4,conf*0.8)+'px',background:cc}}/><span className="conf-text">{conf}%</span></div></td>
+                                <td style={{fontSize:9,color:'var(--dim2)'}}>{src}</td>
+                                <td>{ld?<span className="spinner"/>:<button className="btn btn-ai btn-sm" style={{padding:'2px 7px',fontSize:9}}
+                                  onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}} disabled={!apiKey||!!aiLoading}>AI</button>}</td>
+                              </tr>);
                           })}
                         </tbody>
                       </table>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                </div>)}
+            </div>)}
 
           {mainTab==='map' && (
-            <div style={{display:'flex',gap:10,height:520,alignItems:'stretch'}}>
-              {/* Left control panel */}
-              <div style={{width:200,flexShrink:0,display:'flex',flexDirection:'column',gap:8,overflowY:'auto'}}>
-
-                {/* Layer selector */}
+            <div style={{display:'flex',gap:10,height:560,alignItems:'stretch'}}>
+              <div style={{width:210,flexShrink:0,display:'flex',flexDirection:'column',gap:8,overflowY:'auto'}}>
                 <div className="map-controls-panel">
-                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Base Layer</div>
+                  <div className="sidebar-label">Base Layer</div>
                   <div className="layer-btn-group" style={{flexDirection:'column'}}>
-                    {[['satellite','Satellite'],['noaa','NOAA ENC'],['topo','Topo'],['street','Street']].map(function(pair){
-                      return (
-                        <button key={pair[0]} className={mapLayer===pair[0]?'layer-btn active':'layer-btn'}
-                          onClick={function(){setMapLayer(pair[0]);}}>
-                          {pair[1]}
-                        </button>
-                      );
-                    })}
+                    {[['satellite','Satellite'],['noaa','NOAA ENC'],['topo','Topo'],['street','Street']].map(function(p){
+                      return <button key={p[0]} className={mapLayer===p[0]?'layer-btn active':'layer-btn'} onClick={function(){setMapLayer(p[0]);}}>{p[1]}</button>;})}
                   </div>
                 </div>
-
-                {/* Show/hide toggles */}
                 <div className="map-controls-panel">
-                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Display</div>
-                  <button className={showLines?'layer-btn active':'layer-btn'} onClick={function(){setShowLines(function(s){return !s;});}}>Track Lines</button>
-                  <button className={showHotspots?'layer-btn active':'layer-btn'} onClick={function(){setShowHotspots(function(s){return !s;});}}>Hotspots</button>
+                  <div className="sidebar-label">Display</div>
+                  <button className={showLines?'layer-btn active':'layer-btn'} onClick={function(){setShowLines(!showLines);}}>Track Lines</button>
+                  <button className={showHotspots?'layer-btn active':'layer-btn'} onClick={function(){setShowHotspots(!showHotspots);}}>Target sites</button>
+                  <button className={showWps?'layer-btn active':'layer-btn'} onClick={function(){setShowWps(!showWps);}}>Waypoints ▲</button>
+                  <button className={proc.applyLayback?'layer-btn active':'layer-btn'} onClick={function(){setProc({applyLayback:!proc.applyLayback});}}>
+                    Layback corr. ({fmt(proc.laybackM)} m)</button>
+                  {mapFocus && <button className="layer-btn" onClick={function(){setMapFocus(null);}}>Fit all</button>}
                 </div>
-
-                {/* File visibility selector */}
-                {files.filter(function(f){return f.type==='field';}).length>0 && (
-                  <div className="map-controls-panel" style={{flex:1}}>
-                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
-                      Files
-                      <button onClick={function(){setVisibleFiles(null);}}
-                        style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>all</button>
-                      <button onClick={function(){setVisibleFiles([]);}}
-                        style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>none</button>
-                    </div>
+                {nField>0 && (
+                  <div className="map-controls-panel">
+                    <div className="sidebar-label">Files
+                      <button onClick={function(){setVisibleFiles(null);}} style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9}}>all</button>
+                      <button onClick={function(){setVisibleFiles([]);}} style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9}}>none</button></div>
                     <div className="file-sel-list">
                       {files.map(function(f,fi){
                         if(f.type!=='field')return null;
-                        var col=RUN_COLORS[fi%RUN_COLORS.length];
-                        for(var rgi=0;rgi<runGroups.length;rgi++){if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}}
-                        var checked=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
+                        var col=RUN_COLORS[fi%RUN_COLORS.length];runGroups.forEach(function(g){if(g.fileIds.indexOf(fi)>=0)col=g.color;});
+                        var checked=!visibleFiles||visibleFiles.indexOf(fi)>=0;
                         return (
-                          <div key={fi} className="file-sel-row" onClick={function(){
-                            setVisibleFiles(function(prev){
-                              var base=prev?prev.slice():files.map(function(_,i){return i;}).filter(function(i){return files[i].type==='field';});
-                              var idx=base.indexOf(fi);
-                              if(idx>=0){return base.filter(function(i){return i!==fi;});}
-                              else{return base.concat([fi]);}
-                            });
-                          }}>
-                            <input type="checkbox" className="file-sel-check" readOnly checked={checked}
-                              style={{accentColor:col}}/>
+                          <div key={fi} className="file-sel-row" onClick={function(){setVisibleFiles(function(prev){
+                            var base=prev?prev.slice():files.map(function(_,i){return i;}).filter(function(i){return files[i].type==='field';});
+                            return base.indexOf(fi)>=0?base.filter(function(i){return i!==fi;}):base.concat([fi]);});}}>
+                            <input type="checkbox" className="file-sel-check" readOnly checked={checked} style={{accentColor:col}}/>
                             <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
                             <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(f.run||'').substring(0,18)}</span>
-                          </div>
-                        );
-                      })}
+                          </div>);})}
                     </div>
-                  </div>
-                )}
-
-                {/* Hotspot cluster visibility */}
-                {showHotspots && (function(){
-                  var visFi=visibleFiles;
-                  var clusters=buildHotspots(files,aiResults,visFi);
-                  if(!clusters.length)return null;
-                  return (
-                    <div className="map-controls-panel" style={{flex:1}}>
-                      <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
-                        Hotspots
-                        <button onClick={function(){setHiddenHotspots({});}}
-                          style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>show all</button>
-                      </div>
-                      <div className="file-sel-list">
-                        {clusters.map(function(grp,hi){
-                          var col=MAT_COLORS[grp[0].cls]||'#808080';
-                          var uniqueFiSet={};
-                          for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
-                          var multiFile=Object.keys(uniqueFiSet).length>1;
-                          return (
-                            <div key={hi} className="file-sel-row" onClick={function(){
-                              setHiddenHotspots(function(prev){var n=Object.assign({},prev);n[hi]=!n[hi];return n;});
-                            }}>
-                              <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenHotspots[hi]} style={{accentColor:col}}/>
-                              <div style={{width:10,height:10,borderRadius:'50%',background:col,flexShrink:0,border:multiFile?'2px solid '+col:'1px dashed '+col}}/>
-                              <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                                {grp[0].cls.substring(0,12)}{multiFile?' ×'+grp.length:''}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
+                  </div>)}
+                {showHotspots && sites.length>0 && (
+                  <div className="map-controls-panel">
+                    <div className="sidebar-label">Sites ({sites.length})
+                      <button onClick={function(){setHiddenHotspots({});}} style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9}}>show all</button></div>
+                    <div className="file-sel-list">
+                      {sites.map(function(s){
+                        var key=s.lat.toFixed(5)+','+s.lon.toFixed(5),col=MAT_COLORS[s.cls]||'#808080';
+                        return (
+                          <div key={key} className="file-sel-row" onClick={function(){setHiddenHotspots(function(p){var n=Object.assign({},p);n[key]=!n[key];return n;});}}>
+                            <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenHotspots[key]} style={{accentColor:col}}/>
+                            <div style={{width:10,height:10,borderRadius:'50%',background:col,flexShrink:0}}/>
+                            <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.cls.substring(0,12)} ×{s.nRuns}</span>
+                          </div>);})}
                     </div>
-                  );
-                })()}
+                  </div>)}
               </div>
-
-              {/* Map container — Leaflet mounts here */}
-              <div ref={mapRef} style={{flex:1,borderRadius:3,border:'1px solid var(--border)',height:500,zIndex:0}}/>
-            </div>
-          )}
+              <div ref={mapRef} style={{flex:1,borderRadius:3,border:'1px solid var(--border)',height:540,zIndex:0}}/>
+            </div>)}
 
           {mainTab==='lab' && (
             <div>
-              {!af && (
-                <div className="empty">
-                  <div className="icon">🔬</div>
-                  <p>Load a lab <code>_p.txt</code> file</p>
-                </div>
-              )}
-              {af && !af.isLab && (
-                <div className="empty">
-                  <div className="icon">🔬</div>
-                  <p>Select a lab file from the sidebar</p>
-                </div>
-              )}
+              <div className="section">
+                <h3>Lab reference signatures ({labSigs.length})</h3>
+                <div className="note">Field events are compared with these signatures using a <b>weighted spectral angle</b> (Kruse et al. 1993). This measures how alike the phase-deviation spectra are in shape, regardless of amplitude, because amplitude depends on target size, burial and streamer height. Tag a <b>Seawater blank</b> run for each transmit frequency; it is subtracted from every sample signature, matching how field deviations are measured against background.</div>
+                {!labSigs.length && <div className="warnbox">No references yet. Load a lab <code>_p.txt</code> file, pick its material below and click <b>Use as reference</b>.</div>}
+                {labSigs.length>0 && (
+                  <table className="mt"><thead><tr><th>Material</th><th>xmt</th><th>Run</th><th className="num">N</th>{getHarms(4).map(function(h,k){return <th key={k} className="num">H{k+1}</th>;})}<th>Stored</th><th/></tr></thead>
+                    <tbody>{labSigs.map(function(s,i){return (
+                      <tr key={i}><td style={{color:MAT_COLORS[s.material]||'var(--text)',fontWeight:700}}>{s.material}</td><td>{s.xmt}Hz</td>
+                        <td>{(s.run||'').substring(0,20)}</td><td className="num">{s.n}</td>
+                        {getHarms(s.xmt).map(function(h,k){var j=s.freqs.indexOf(h);return <td key={k} className="num">{j>=0?fmt(s.mean[j],2):'—'}</td>;})}
+                        <td>{s.id?'shared DB':'this session'}</td>
+                        <td><button onClick={function(){removeLabSig(s);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer'}}>×</button></td></tr>);})}
+                    </tbody></table>)}
+              </div>
+              {!af && <div className="empty"><div className="icon">🔬</div><p>Load a lab <code>_p.txt</code> file</p></div>}
+              {af && !af.isLab && <div className="empty" style={{height:120}}><p>Select a lab file from the sidebar to view its statistics</p></div>}
               {af && af.isLab && (
-                <div>
-                  <div style={{marginBottom:10}}>
-                    <div style={{fontFamily:'var(--font-mono)',fontSize:12,fontWeight:700,color:'var(--text)',marginBottom:3}}>{af.run}</div>
-                    <div style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)'}}>
-                      {af.labStats.length} xmt group{af.labStats.length!==1?'s':''} · {af.nPkts} packets total
-                    </div>
-                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',marginTop:2}}>
-                      col[0]=freq_Hz · col[1]=ch1-0_delta_rad · col[9]=ch1_mag_counts · std_dev ddof=1 · only ch1 recorded
-                    </div>
-                  </div>
-                  {af.labStats.map(function(grp){return (
-                    <div key={grp.xmt} style={{marginBottom:20}}>
-                      <div style={{fontFamily:'var(--font-mono)',fontSize:11,fontWeight:700,
-                        color:'var(--accent)',marginBottom:6,borderBottom:'1px solid var(--border)',paddingBottom:4}}>
-                        xmt = {grp.xmt}Hz · {grp.nPkts} packet{grp.nPkts!==1?'s':''}
-                      </div>
-                      <div style={{overflowX:'auto'}}>
-                        <table className="lab-tbl">
-                          <thead><tr>
-                            <th style={{textAlign:'left'}}>freq (Hz)</th>
-                            <th>ch1 Δφ mean (rad)</th>
-                            <th>ch1 Δφ std (rad)</th>
-                            <th>ch1 Δφ mean (mrad)</th>
-                            <th>ch1 mag mean (counts)</th>
-                            <th>N</th>
-                          </tr></thead>
-                          <tbody>
-                            {grp.rows.map(function(row){return (
-                              <tr key={row.freq}>
-                                <td style={{textAlign:'left'}}>{row.freq}</td>
-                                <td>{row.meanDp.toFixed(10)}</td>
-                                <td>{row.stdDp.toFixed(10)}</td>
-                                <td>{(row.meanDp*1000).toFixed(6)}</td>
-                                <td>{row.meanMag.toFixed(4)}</td>
-                                <td>{row.n}</td>
-                              </tr>
-                            );})}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );})}
+                <div className="section">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:12,fontWeight:700,marginBottom:3}}>{af.run}</div>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)',marginBottom:8}}>{af.labStats.length} xmt group{af.labStats.length!==1?'s':''} · {af.nPkts} packets · col[0]=freq · col[1]=ch1-0 Δφ rad · col[9]=ch1 mag · std ddof=1</div>
+                  {af.labStats.map(function(grp){
+                    var k=af.run+'|'+grp.xmt,sel=labTag[k]!==undefined?labTag[k]:(IPA.matchMaterial(af.run)||'');
+                    return (
+                      <div key={grp.xmt} style={{marginBottom:20}}>
+                        <div className="row" style={{borderBottom:'1px solid var(--border)',paddingBottom:6,marginBottom:6}}>
+                          <span style={{fontFamily:'var(--font-mono)',fontSize:11,fontWeight:700,color:'var(--accent)'}}>xmt = {grp.xmt}Hz · {grp.nPkts} packets</span>
+                          <div style={{flex:1}}/>
+                          <select className="confirm-sel" style={{flex:'0 0 180px'}} value={sel} onChange={function(e){var v=e.target.value;setLabTag(function(p){var n=Object.assign({},p);n[k]=v;return n;});}}>
+                            <option value="">— material —</option>
+                            {IPA.LAB_REF_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                          </select>
+                          <button className="btn btn-primary btn-sm" disabled={!sel} onClick={function(){addLabSig(grp,sel,af.run);}}>Use as reference</button>
+                        </div>
+                        <div style={{overflowX:'auto'}}>
+                          <table className="lab-tbl"><thead><tr><th style={{textAlign:'left'}}>freq (Hz)</th><th>ch1 Δφ mean (rad)</th><th>ch1 Δφ std (rad)</th><th>ch1 Δφ mean (mrad)</th><th>ch1 mag mean</th><th>N</th></tr></thead>
+                            <tbody>{grp.rows.map(function(row){var isH=getHarms(grp.xmt).indexOf(row.freq)>=0;return (
+                              <tr key={row.freq} style={isH?{fontWeight:700}:{}}><td style={{textAlign:'left'}}>{row.freq}{isH?' ●':''}</td><td>{row.meanDp.toFixed(10)}</td><td>{row.stdDp.toFixed(10)}</td>
+                                <td>{(row.meanDp*1000).toFixed(6)}</td><td>{row.meanMag.toFixed(4)}</td><td>{row.n}</td></tr>);})}</tbody></table>
+                        </div>
+                      </div>);})}
+                </div>)}
+            </div>)}
+
+          {mainTab==='layback' && (
+            <div>
+              <div className="section">
+                <h3>Layback & latency calibration</h3>
+                <div className="note">The GPS antenna is on the vessel but the IP response comes from the streamer electrodes, which trail behind. Raw detections therefore plot <b>ahead</b> of the true target along the vessel's heading. For each strong detection close to a known waypoint, the app measures the along-track offset in the direction of travel:
+                  <br/><code>along = L + τ·v + b·dir</code><br/>
+                  <b>L</b> = layback (m), <b>τ</b> = timing/processing latency (s) × speed-over-ground <b>v</b>, and <b>b</b> = waypoint-position bias along the line axis. <b>b</b> changes sign on reciprocal (opposite-heading) passes, so it can be separated from L, the same idea as a hydrographic patch test. Heading and speed come from the GPS track itself. Outliers beyond 3 robust σ are rejected.</div>
+                {!wps.length && <div className="warnbox">Load a waypoint file (CSV with name/lat/lon[/material] columns, or GPX) using <b>Known waypoints → Load</b> in the sidebar.</div>}
+                {wps.length>0 && !nField && <div className="warnbox">Load field runs that pass over the waypoints.</div>}
+                <div className="param-grid" style={{gridTemplateColumns:'repeat(3,1fr)',marginBottom:10}}>
+                  <Num label="Search radius (m, raw)" value={proc.matchRadiusM} onChange={function(v){setProc({matchRadiusM:v});}}/>
+                  <Num label="Max cross-track (m)" value={proc.maxCrossM} onChange={function(v){setProc({maxCrossM:v});}}/>
+                  <Num label="Min event SNR" step={0.5} value={proc.minSNRcal} onChange={function(v){setProc({minSNRcal:v});}}/>
                 </div>
-              )}
-            </div>
-          )}
+                {calib && !calib.ok && <div className="warnbox">{calib.msg} ({calib.n} matches). Try widening the search radius or lowering min SNR.</div>}
+                {calib && calib.ok && (
+                  <div>
+                    <div className="tiles">
+                      <Tile label="Layback L" value={fmt(calib.L)+' m'} sub={'± '+fmt(calib.seL)+' m (1σ)'}/>
+                      <Tile label="Latency τ" value={calib.usedSpeed?fmt(calib.tau,2)+' s':'not fitted'} sub={calib.usedSpeed?'± '+fmt(calib.seTau,2)+' s':'needs ≥5 matches w/ speed spread'}/>
+                      <Tile label="Eff. offset @ median v" value={fmt(calib.effOffset)+' m'} sub={'v = '+fmt(calib.medSog,2)+' m/s'}/>
+                      <Tile label="Waypoint bias b" value={calib.usedDir?fmt(calib.bias)+' m':'—'} sub={calib.usedDir?'along line axis '+fmt(calib.axisDeg,0)+'°':'needs reciprocal passes'}/>
+                      <Tile label="Reciprocal-pair L" value={calib.Lpairs!==null?fmt(calib.Lpairs)+' m':'—'} sub={calib.nPairs+' waypoint pair(s)'}/>
+                      <Tile label="Matches" value={calib.nInliers+'/'+calib.n} sub={calib.nFwd+' fwd · '+calib.nRev+' rev'}/>
+                      <Tile label="Residual RMS" value={fmt(calib.rms)+' m'} sub="along-track after fit"/>
+                      <Tile label="Cross-track mean" value={fmt(calib.crossMean)+' m'} sub={'σ '+fmt(calib.crossStd)+' m (feathering/current)'}/>
+                    </div>
+                    {(calib.nFwd===0||calib.nRev===0) && <div className="warnbox">All matched passes run in one direction, so layback cannot be separated from waypoint position error. Add reciprocal lines over the same waypoints.</div>}
+                    {calib.seL>5 && <div className="warnbox">Layback uncertainty is large (±{fmt(calib.seL)} m). More passes at different speeds and headings will tighten it.</div>}
+                    <div className="row" style={{marginBottom:10}}>
+                      <button className="btn btn-primary" onClick={function(){setProc({laybackM:+calib.L.toFixed(2),latencyS:+(calib.tau||0).toFixed(3),applyLayback:true});}}>Apply fitted L & τ</button>
+                      <button className="btn btn-ghost" onClick={function(){saveCalibrationDB(calib,proc).then(function(){alert('Calibration saved.');}).catch(function(e){alert('Save failed: '+e.message+'\nRun supabase_schema.sql first.');});}}>Save calibration to DB</button>
+                      <button className="btn btn-ghost" onClick={function(){downloadCSV('layback_matches.csv',calib.matches.map(function(m){return{run:m.run,waypoint:m.wp,event:m.ei+1,along_m:m.along.toFixed(2),cross_m:m.cross.toFixed(2),
+                        sog_ms:fmt(m.sog,2),cog_deg:fmt(m.cog,0),dir:m.dir,snr:m.snr.toFixed(1),resid_m:fmt(m.resid,2),inlier:m.inlier};}));}}>Export CSV</button>
+                    </div>
+                    <div className="two-col">
+                      <div className="chart-panel">
+                        <div className="chart-title">Along-track offset vs speed (fit line = L + τ·v)</div>
+                        <CanvasBox height={200} draw={function(cv){
+                          var xs=calib.matches.map(function(m){return m.sog;}),ys=calib.matches.map(function(m){return m.along;});
+                          var xr=rangeOf(xs.concat([0]),.1,1),yr=rangeOf(ys.concat([0]),.15,10);
+                          var lines=[{x0:xr[0],y0:calib.L+calib.tau*xr[0],x1:xr[1],y1:calib.L+calib.tau*xr[1],color:'#0071b8'}];
+                          drawScatter(cv,[{pts:calib.matches.map(function(m){return[m.sog,m.along,m.dir>0?'#1a8c4e':'#b02040',m.inlier];})}],{xr:xr,yr:yr,xlabel:'speed over ground (m/s)  ● fwd  ● rev',ylabel:'along (m)',lines:lines});
+                        }}/>
+                      </div>
+                      <div className="chart-panel">
+                        <div className="chart-title">Detection offsets from waypoint — grey raw, colour corrected</div>
+                        <CanvasBox height={200} draw={function(cv){
+                          var raw=calib.matches.map(function(m){return[m.cross,m.along,'#9aa8b8',m.inlier];});
+                          var cor=calib.matches.map(function(m){return[m.cross,m.along-(proc.laybackM+proc.latencyS*(isFinite(m.sog)?m.sog:0)),m.dir>0?'#1a8c4e':'#b02040',m.inlier];});
+                          var all=raw.concat(cor),lim=Math.max(10,Math.max.apply(null,all.map(function(p){return Math.max(Math.abs(p[0]),Math.abs(p[1]));}))*1.1);
+                          drawScatter(cv,[{pts:raw},{pts:cor},{pts:[[0,0,'#e0b000']],shape:'tri'}],{xr:[-lim,lim],yr:[-lim,lim],xlabel:'cross-track (m, +stbd)',ylabel:'along (m, +ahead)',
+                            lines:[{x0:-lim,y0:0,x1:lim,y1:0,color:'#c0ccd8',dash:[3,3]},{x0:0,y0:-lim,x1:0,y1:lim,color:'#c0ccd8',dash:[3,3]}]});
+                        }}/>
+                      </div>
+                    </div>
+                    <div className="section" style={{marginTop:10,padding:'8px 0 0'}}>
+                      <table className="mt"><thead><tr><th>Run</th><th>Waypoint</th><th className="num">Ev</th><th className="num">COG°</th><th className="num">SOG m/s</th><th className="num">Along m</th><th className="num">Cross m</th><th className="num">Resid m</th><th className="num">SNR</th><th>Class</th><th/></tr></thead>
+                        <tbody>{calib.matches.map(function(m,i){return (
+                          <tr key={i} style={{opacity:m.inlier?1:.45}}><td>{m.run}</td><td>{m.wp}</td><td className="num">{m.ei+1}</td><td className="num">{fmt(m.cog,0)}</td><td className="num">{fmt(m.sog,2)}</td>
+                            <td className="num">{fmt(m.along)}</td><td className="num">{fmt(m.cross)}</td><td className="num">{fmt(m.resid)}</td><td className="num">{fmt(m.snr)}</td>
+                            <td><span className={'badge '+badgeClass(m.cls)}>{m.cls}</span></td><td>{m.inlier?'':'outlier'}</td></tr>);})}</tbody></table>
+                    </div>
+                  </div>)}
+              </div>
+              <div className="section">
+                <h3>Applied correction</h3>
+                <div className="param-grid" style={{gridTemplateColumns:'repeat(3,1fr)'}}>
+                  <Num label="Layback L (m)" step={0.5} value={proc.laybackM} onChange={function(v){setProc({laybackM:v});}}/>
+                  <Num label="Latency τ (s)" step={0.1} value={proc.latencyS} onChange={function(v){setProc({latencyS:v});}}/>
+                  <div className="param"><label>Apply to map & metrics</label>
+                    <select value={proc.applyLayback?'1':'0'} onChange={function(e){setProc({applyLayback:e.target.value==='1'});}}><option value="1">On</option><option value="0">Off (raw GPS)</option></select></div>
+                </div>
+                <div className="note" style={{marginTop:8}}>Correction: each event (and the plotted sensor track) is shifted <b>back</b> along its course-over-ground by L + τ·v. Heading is taken from GPS positions ±3 packets around the peak.</div>
+              </div>
+            </div>)}
+
+          {mainTab==='metrics' && (
+            <div>
+              <div className="section">
+                <h3>Target corroboration across runs
+                  <div style={{flex:1}}/>
+                  <button className="btn btn-ghost btn-sm" disabled={!sites.length} onClick={function(){downloadCSV('ipa_sites.csv',sites.map(function(s,i){return{site:i+1,tier:s.tier,class:s.cls,lat:s.lat.toFixed(7),lon:s.lon.toFixed(7),
+                    detections:s.nDet,runs_detected:s.nRuns,runs_passed:s.nPass,repeatability:s.repeatability.toFixed(2),reciprocal:s.reciprocal,consensus:s.consensus.toFixed(2),
+                    family_consensus:s.famConsensus.toFixed(2),scatter_m:s.scatterM.toFixed(1),mean_snr:s.meanSNR.toFixed(1),nearest_wp:s.nearestWp||'',nearest_wp_m:s.nearestWpM!==null?s.nearestWpM.toFixed(1):'',runs:Object.values(s.runs).join(' | ')};}));}}>Export CSV</button>
+                </h3>
+                <div className="note">Detections from every loaded field run are grouped when their {proc.applyLayback?'layback-corrected':'raw'} positions fall within <b>{proc.mergeRadiusM} m</b> of each other. <b>Repeatability</b> = runs that detected the site ÷ runs whose sensor track passed within {Math.max(proc.mergeRadiusM,proc.passRadiusM)} m. <b>Confirmed</b> = detected on ≥3 runs, including opposite headings, with ≥67% agreement on material family. Reciprocal detections rule out along-track artefacts from layback or timing. <b>Corroborated</b> = ≥2 runs agreeing on family. <b>Conflicting</b> = ≥2 runs that disagree on family.</div>
+                <div className="param-grid" style={{gridTemplateColumns:'repeat(3,1fr)',marginBottom:10}}>
+                  <Num label="Merge radius (m)" value={proc.mergeRadiusM} onChange={function(v){setProc({mergeRadiusM:v});}}/>
+                  <Num label="Pass radius (m)" value={proc.passRadiusM} onChange={function(v){setProc({passRadiusM:v});}}/>
+                  <Num label="Detection radius vs waypoint (m)" value={proc.detRadiusM} onChange={function(v){setProc({detRadiusM:v});}}/>
+                </div>
+                {!sites.length && <div className="warnbox">Load two or more field runs over the same area to see corroboration.</div>}
+                {sites.length>0 && (
+                  <div>
+                    <div className="tiles">
+                      <Tile label="Sites" value={sites.length} sub={points.length+' detections · '+nField+' runs'}/>
+                      <Tile label="Confirmed" value={tiersCount['Confirmed']||0} color="var(--pos)" sub="≥3 runs, reciprocal"/>
+                      <Tile label="Corroborated" value={tiersCount['Corroborated']||0} sub="≥2 runs agree"/>
+                      <Tile label="Conflicting" value={tiersCount['Conflicting']||0} color="var(--neg)" sub="class disagrees"/>
+                      <Tile label="Single run" value={(tiersCount['Single run']||0)+(tiersCount['Weak repeat']||0)} sub={(tiersCount['Weak repeat']||0)+' weak repeats'}/>
+                      <Tile label="Mean repeatability" value={pct(IPA.mean(multi.map(function(s){return s.repeatability;})))} sub="multi-run sites"/>
+                      <Tile label="Mean scatter" value={fmt(IPA.mean(multi.map(function(s){return s.scatterM;})))+' m'} sub="RMS about centroid"/>
+                    </div>
+                    <div style={{maxHeight:320,overflowY:'auto'}}>
+                      <table className="mt"><thead><tr><th>#</th><th>Tier</th><th>Class</th><th className="num">Runs</th><th className="num">Passed</th><th className="num">Repeat.</th><th>Recip.</th><th className="num">Consensus</th><th className="num">Scatter m</th><th className="num">SNR</th><th>Nearest WP</th><th/></tr></thead>
+                        <tbody>{sites.map(function(s,i){return (
+                          <tr key={i}><td>{i+1}</td><td><span className={tierCls(s.tier)}>{s.tier}</span></td><td><span className={'badge '+badgeClass(s.cls)}>{s.cls}</span></td>
+                            <td className="num">{s.nRuns}</td><td className="num">{s.nPass}</td><td className="num">{pct(s.repeatability)}</td><td>{s.reciprocal?'✓':''}</td>
+                            <td className="num">{pct(s.consensus)}</td><td className="num">{fmt(s.scatterM)}</td><td className="num">{fmt(s.meanSNR)}</td>
+                            <td>{s.nearestWp?s.nearestWp+' @ '+fmt(s.nearestWpM)+' m':'—'}</td>
+                            <td><button className="btn btn-ghost btn-sm" style={{padding:'1px 6px'}} onClick={function(){setMapFocus([s.lat,s.lon]);setMainTab('map');}}>map</button></td></tr>);})}</tbody></table>
+                    </div>
+                  </div>)}
+              </div>
+
+              <div className="section">
+                <h3>Detection performance vs known waypoints</h3>
+                {!detMetrics && <div className="warnbox">Needs waypoints and field runs. Apply the layback correction first so positions line up.</div>}
+                {detMetrics && (
+                  <div>
+                    <div className="note">A <b>pass</b> is a run whose sensor track came within {proc.passRadiusM} m of a waypoint. A <b>hit</b> is a detection within {proc.detRadiusM} m. Pd (probability of detection) uses a 95% Wilson interval. Detections that are not near any waypoint count as <b>false alarms</b>. That count is only meaningful if every real target in the survey area is in your waypoint file.</div>
+                    <div className="tiles">
+                      <Tile label="Pd" value={pct(detMetrics.pd)} sub={detMetrics.hits+'/'+detMetrics.passes+' passes'+(detMetrics.pdCI?' · CI '+pct(detMetrics.pdCI[0])+'–'+pct(detMetrics.pdCI[1]):'')}/>
+                      <Tile label="False alarms" value={detMetrics.falseAlarms} color={detMetrics.falseAlarms?'#b07800':'var(--pos)'} sub={fmt(detMetrics.faPerKm,2)+' per km · '+fmt(detMetrics.trackKm,2)+' km'}/>
+                      <Tile label="Detection precision" value={pct(detMetrics.precision)} sub="detections near a waypoint"/>
+                      <Tile label="Material family acc." value={pct(detMetrics.famAcc)} sub={detMetrics.famN+' hits w/ known material'}/>
+                      <Tile label="Mean position error" value={fmt(detMetrics.meanPosErrM)+' m'} sub={proc.applyLayback?'after layback':'raw GPS'}/>
+                    </div>
+                    <table className="mt"><thead><tr><th>Waypoint</th><th>Material</th><th className="num">Passes</th><th className="num">Hits</th><th className="num">Pd</th><th className="num">Family OK</th><th className="num">Mean err m</th><th>Classes seen</th></tr></thead>
+                      <tbody>{detMetrics.perWp.map(function(w,i){return (
+                        <tr key={i}><td>{w.name}</td><td>{w.material||'—'}</td><td className="num">{w.passes}</td><td className="num">{w.hits}</td><td className="num">{pct(w.pd)}</td>
+                          <td className="num">{w.famN?w.famOk+'/'+w.famN:'—'}</td><td className="num">{fmt(w.meanErrM)}</td>
+                          <td>{Object.keys(w.classes).map(function(c){return c+' ×'+w.classes[c];}).join(', ')||'—'}</td></tr>);})}</tbody></table>
+                  </div>)}
+              </div>
+
+              <div className="section">
+                <h3>Classifier accuracy vs confirmed labels</h3>
+                <div className="note">Ground truth = material confirmations in the shared training table. Each new confirmation also stores what the rules, lab match, fused result and AI predicted at the time, so accuracy builds up automatically. <b>LOO k-NN</b> is leave-one-out 3-nearest-neighbour on the stored features. It checks whether confirmed classes form separable clusters, which is a proxy for how well a trained model could do. κ = Cohen's kappa (agreement beyond chance). Family level groups the labels into hydrocarbon, metallic, mixed, artifact and weak.</div>
+                <div className="row" style={{marginBottom:10}}>
+                  <select className="confirm-sel" style={{flex:'0 0 230px'}} value={metricPred} onChange={function(e){setMetricPred(e.target.value);}}>
+                    <option value="fused">Fused rules + lab (stored)</option><option value="rules">Rule engine (stored)</option>
+                    <option value="lab">Lab spectral match (stored)</option><option value="ai">Claude AI (stored)</option><option value="knn">LOO k-NN on training features</option>
+                  </select>
+                  <select className="confirm-sel" style={{flex:'0 0 150px'}} value={metricLevel} onChange={function(e){setMetricLevel(e.target.value);}}>
+                    <option value="family">Family level</option><option value="material">Material level</option>
+                  </select>
+                </div>
+                {!accuracy.n && <div className="warnbox">No confirmations with this prediction stored yet ({training.length} total confirmations). Older rows were saved before predictions were recorded; confirm new events in the Analysis tab{metricPred!=='knn'?' or try LOO k-NN':''}.</div>}
+                {accuracy.n>0 && (
+                  <div>
+                    <div className="tiles">
+                      <Tile label="Accuracy" value={pct(accuracy.accuracy)} sub={'n='+accuracy.n+(accuracy.accCI?' · CI '+pct(accuracy.accCI[0])+'–'+pct(accuracy.accCI[1]):'')}/>
+                      <Tile label="Cohen's κ" value={fmt(accuracy.kappa,2)} sub={accuracy.kappa>0.8?'almost perfect':accuracy.kappa>0.6?'substantial':accuracy.kappa>0.4?'moderate':accuracy.kappa>0.2?'fair':'slight'}/>
+                      <Tile label="Macro F1" value={fmt(accuracy.macroF1,2)} sub={accuracy.classes.length+' classes'}/>
+                    </div>
+                    <div className="two-col">
+                      <div style={{overflowX:'auto'}}>
+                        <div className="chart-title">Confusion matrix (rows = truth, cols = predicted)</div>
+                        <table className="mt cm"><thead><tr><th/>{accuracy.classes.map(function(c){return <th key={c} title={c}>{c.substring(0,7)}</th>;})}</tr></thead>
+                          <tbody>{accuracy.M.map(function(row,i){var tot=row.reduce(function(a,b){return a+b;},0);return (
+                            <tr key={i}><th style={{textAlign:'left'}}>{accuracy.classes[i].substring(0,14)}</th>
+                              {row.map(function(v,j){var a=tot?v/tot:0;return <td key={j} style={{background:v?(i===j?'rgba(26,140,78,'+(0.12+a*.5)+')':'rgba(204,34,51,'+(0.08+a*.4)+')'):'transparent',fontWeight:i===j?700:400}}>{v||''}</td>;})}</tr>);})}</tbody></table>
+                      </div>
+                      <div>
+                        <div className="chart-title">Per class</div>
+                        <table className="mt"><thead><tr><th>Class</th><th className="num">Precision</th><th className="num">Recall</th><th className="num">F1</th><th className="num">Support</th></tr></thead>
+                          <tbody>{accuracy.perClass.map(function(p){return <tr key={p.cls}><td>{p.cls}</td><td className="num">{pct(p.precision)}</td><td className="num">{pct(p.recall)}</td><td className="num">{fmt(p.f1,2)}</td><td className="num">{p.support}</td></tr>;})}</tbody></table>
+                        {accuracy.rel && (
+                          <div style={{marginTop:10}}>
+                            <div className="chart-title">Confidence calibration</div>
+                            <table className="mt"><thead><tr><th>Stated conf.</th><th className="num">n</th><th className="num">Mean stated</th><th className="num">Observed acc.</th></tr></thead>
+                              <tbody>{accuracy.rel.map(function(r){return <tr key={r.range}><td>{r.range}</td><td className="num">{r.n}</td><td className="num">{r.meanConf!==null?fmt(r.meanConf,0)+'%':'—'}</td><td className="num">{pct(r.acc)}</td></tr>;})}</tbody></table>
+                          </div>)}
+                      </div>
+                    </div>
+                  </div>)}
+              </div>
+
+              <div className="section">
+                <h3>Methods & references</h3>
+                <ul className="refs">
+                  <li><b>Spectral IP response</b>: Cole &amp; Cole (1941); Pelton et al. (1978), <i>Geophysics</i> 43. Phase-vs-frequency shape discriminates polarisation mechanisms. The app records the deviation-spectrum slope (mrad/decade) as a Cole-Cole shape proxy.</li>
+                  <li><b>Organic / hydrocarbon IP</b>: Olhoeft (1985), "Low-frequency electrical properties", <i>Geophysics</i> 50 (USGS pubs 70012963). Clay–organic reactions give a distinctive complex-resistivity response. See also Frontiers in Earth Science (2022) on IP of submarine hydrocarbons.</li>
+                  <li><b>Marine towed-streamer IP</b>: Wynn &amp; co-workers (USGS) for heavy minerals (ilmenite), metallic debris/UXO, and oil-in-seawater characterisation.</li>
+                  <li><b>Robust background</b>: running median + MAD (Hampel identifier; σ ≈ 1.4826·MAD). This removes drift from water depth, conductivity and temperature without letting targets inflate σ.</li>
+                  <li><b>Signature matching</b>: Kruse et al. (1993) spectral angle mapper, weighted by field and lab noise, with lab samples blank-subtracted.</li>
+                  <li><b>Layback calibration</b>: reciprocal-line practice from the hydrographic patch test (latency/offset separation), applied along-track to towed sensors.</li>
+                  <li><b>Accuracy statistics</b>: Cohen (1960) κ; precision, recall and F1; Wilson score intervals for Pd and accuracy.</li>
+                </ul>
+              </div>
+            </div>)}
         </div>
 
         <div className="ai-panel">
           <div className="ai-section-title">AI Classifier</div>
           <div>
-            <div style={{fontSize:11,color:'var(--dim2)',marginBottom:5,lineHeight:1.5}}>Anthropic API key</div>
-            <div className="api-key-row">
-              <input className="api-key-input" type="password" placeholder="sk-ant-..."
-                value={apiKey} onChange={function(e){setApiKey(e.target.value);}}/>
-            </div>
-            <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Session only, never stored.</div>
+            <div style={{fontSize:11,color:'var(--dim2)',marginBottom:5}}>Anthropic API key</div>
+            <div className="api-key-row"><input className="api-key-input" type="password" placeholder="sk-ant-..." value={apiKey} onChange={function(e){setApiKey(e.target.value);}}/></div>
+            <div style={{fontSize:11,color:'var(--dim2)',margin:'6px 0 3px'}}>Model</div>
+            <div className="api-key-row"><input className="api-key-input" value={aiModel} onChange={function(e){setAiModel(e.target.value);}}/></div>
+            <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Key is kept in memory for this session only and sent directly to api.anthropic.com.</div>
           </div>
-          <div className="sep" style={{height:1,background:'var(--border)'}}/>
+          <div className="sep" style={{height:1,width:'100%',background:'var(--border)'}}/>
           <div className="ai-section-title">Event Analysis</div>
-          {!activeEv && (
-            <div style={{fontSize:11,color:'var(--dim)',fontFamily:'var(--font-mono)',padding:'6px 0'}}>Select a row in Analysis tab.</div>
-          )}
+          {!activeEv && <div style={{fontSize:11,color:'var(--dim)',fontFamily:'var(--font-mono)',padding:'6px 0'}}>Select a row in Analysis tab.</div>}
           {activeEv && (
             <div>
               <div style={{fontSize:10,color:'var(--dim2)',fontFamily:'var(--font-mono)',lineHeight:1.6,marginBottom:8}}>
-                Event {(selEv||0)+1} · {activeEv.ts?activeEv.ts.split(' ')[1]?activeEv.ts.split(' ')[1].substring(0,8):'—':'—'} · {activeEv.nPkts}pkt · SNR {activeEv.maxSNR.toFixed(1)}
-                {activeEv.lat && <div>Lat {activeEv.lat.toFixed(6)}N · Lon {Math.abs(activeEv.lon||0).toFixed(6)}W</div>}
+                Event {(selEv||0)+1} · {activeEv.ts&&activeEv.ts.split(' ')[1]?activeEv.ts.split(' ')[1].substring(0,8):'—'} · {activeEv.nPkts}pkt · SNR {activeEv.maxSNRall.toFixed(1)} (fund {activeEv.maxSNR.toFixed(1)})
+                {activeEv.lat!==null && <div>Raw {activeEv.lat.toFixed(6)}, {activeEv.lon.toFixed(6)}</div>}
+                {activeEv.latC!==null && proc.applyLayback && <div>Corr {activeEv.latC.toFixed(6)}, {activeEv.lonC.toFixed(6)}</div>}
+                <div>COG {activeEv.cog!==null?Math.round(activeEv.cog)+'°':'—'} · SOG {fmt(activeEv.sog,2)} m/s · slope {fmt(activeEv.phaseSlope,1)} mrad/dec</div>
+              </div>
+              <div className="ai-classification" style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:'var(--dim2)',fontFamily:'var(--font-mono)',lineHeight:1.8}}>
+                  Rules: <b style={{color:MAT_COLORS[activeEv.cls]}}>{activeEv.cls}</b> ({activeEv.confPct}%)<br/>
+                  Fused: <b style={{color:MAT_COLORS[activeEv.fusedCls]}}>{activeEv.fusedCls}</b> ({activeEv.fusedConf}%, {activeEv.fusedSrc}){activeEv.labConflict?<span style={{color:'var(--neg)'}}> ⚠ lab suggests {activeEv.labBest.material}</span>:null}
+                </div>
+                {activeEv.labMatches.length>0 && (
+                  <table className="mt" style={{marginTop:6}}><thead><tr><th>Lab ref</th><th className="num">cos</th><th className="num">angle</th><th className="num">χ²ᵣ</th></tr></thead>
+                    <tbody>{activeEv.labMatches.slice(0,4).map(function(m,i){return <tr key={i}><td>{m.material}</td><td className="num">{m.cos.toFixed(3)}</td><td className="num">{m.angleDeg.toFixed(0)}°</td><td className="num">{fmt(m.chi2red,1)}</td></tr>;})}</tbody></table>)}
+                {!activeEv.labMatches.length && <div style={{fontSize:10,color:'var(--dim)',marginTop:4}}>No lab references for {af.xmt}Hz — add them in Lab Stats.</div>}
               </div>
               {aiRes && (
                 <div className="ai-classification">
@@ -1579,36 +1367,24 @@ function App(){
                   {aiRes.key_indicators && <div style={{fontSize:11,color:'var(--accent)',marginBottom:5,fontStyle:'italic'}}>{aiRes.key_indicators}</div>}
                   {aiRes.reasoning && <div style={{fontSize:11,color:'var(--dim3)',lineHeight:1.6,marginBottom:5}}>{aiRes.reasoning}</div>}
                   {aiRes.caution && <div style={{fontSize:10,color:'#b07800',lineHeight:1.5,borderTop:'1px solid var(--border)',paddingTop:5}}>⚠ {aiRes.caution}</div>}
-                </div>
-              )}
-              {!aiRes && (
-                <div>
-                  <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>
-                    Rules: <span style={{color:MAT_COLORS[activeEv.cls]||'var(--text)'}}>{activeEv.cls}</span> ({activeEv.confPct}%)
-                  </div>
-                  <button className="btn btn-ai" style={{width:'100%'}}
-                    onClick={function(){doAI(activeIdx,selEv);}} disabled={!apiKey||!!aiLoading}>
-                    {aiLoading===aiKey?'Analyzing...':'⚡ Analyze with Claude AI'}
-                  </button>
-                </div>
-              )}
-              <div className="sep" style={{height:1,background:'var(--border)',margin:'10px 0'}}/>
-              <div className="ai-section-title">Confirm Material</div>
-              <div className="confirm-row">
+                </div>)}
+              <button className="btn btn-ai" style={{width:'100%',marginTop:6}} onClick={function(){doAI(activeIdx,selEv);}} disabled={!apiKey||!!aiLoading}>
+                {aiLoading===aiKey?'Analyzing...':aiRes?'↻ Re-run Claude AI':'⚡ Analyze with Claude AI'}</button>
+              <div className="sep" style={{height:1,width:'100%',background:'var(--border)',margin:'10px 0'}}/>
+              <div className="ai-section-title">Confirm Material (ground truth)</div>
+              <div className="confirm-row" style={{marginTop:5}}>
                 <select className="confirm-sel" value={confMat} onChange={function(e){setConfMat(e.target.value);}}>
                   <option value="">— material —</option>
-                  {MAT_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                  {CONFIRM_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
                 </select>
                 <button className="confirm-btn" onClick={function(){saveTraining(activeIdx,selEv);}} disabled={!confMat}>✓</button>
               </div>
-            </div>
-          )}
+              <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Use “No anomaly” for false alarms so they count in accuracy.</div>
+            </div>)}
           {training.length>0 && (
-            <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',
-              borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
-              {training.length} confirmed → included in next AI call
-            </div>
-          )}
+            <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
+              {training.length} confirmed → included in next AI call</div>)}
+          {dbNote && <div className="warnbox" style={{marginTop:8,fontSize:10}}>{dbNote}</div>}
         </div>
       </div>
 
@@ -1617,51 +1393,31 @@ function App(){
           <div className="modal" onClick={function(e){e.stopPropagation();}}>
             <h3>New Run Group</h3>
             <label>Name</label>
-            <input autoFocus value={newGroupName} onChange={function(e){setNewGroupName(e.target.value);}}
-              placeholder="e.g. Eagle Harbor Day 1"
-              onKeyDown={function(e){if(e.key==='Enter')createGroup();}}/>
+            <input autoFocus value={newGroupName} onChange={function(e){setNewGroupName(e.target.value);}} placeholder="e.g. Eagle Harbor Day 1" onKeyDown={function(e){if(e.key==='Enter')createGroup();}}/>
             <label>Color</label>
-            <div className="color-row">
-              {SWATCH_COLORS.map(function(c){return (
-                <div key={c} className={newGroupColor===c?'cswatch sel':'cswatch'}
-                  style={{background:c}} onClick={function(){setNewGroupColor(c);}}/>
-              );})}
-            </div>
+            <div className="color-row">{SWATCH_COLORS.map(function(c){return <div key={c} className={newGroupColor===c?'cswatch sel':'cswatch'} style={{background:c}} onClick={function(){setNewGroupColor(c);}}/>;})}</div>
             <div className="modal-btns">
               <button className="btn btn-ghost" onClick={function(){setNewGroupModal(false);}}>Cancel</button>
               <button className="btn btn-primary" onClick={createGroup} disabled={!newGroupName.trim()}>Create</button>
             </div>
           </div>
-        </div>
-      )}
-
+        </div>)}
       {addToGroupModal!==null && (
         <div className="modal-bg" onClick={function(){setAddToGroupModal(null);}}>
           <div className="modal" onClick={function(e){e.stopPropagation();}}>
             <h3>Add to Run Group</h3>
-            <p style={{fontSize:11,color:'var(--dim2)',marginBottom:8}}>
-              {files[addToGroupModal]?files[addToGroupModal].run:''}
-            </p>
+            <p style={{fontSize:11,color:'var(--dim2)',marginBottom:8}}>{files[addToGroupModal]?files[addToGroupModal].run:''}</p>
             {!runGroups.length && <div style={{fontSize:11,color:'var(--dim2)'}}>No groups yet — create one first.</div>}
-            {runGroups.length>0 && (
-              <div>
-                <label>Group</label>
-                <select value={selGroupId} onChange={function(e){setSelGroupId(e.target.value);}}>
-                  <option value="">— select —</option>
-                  {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name}</option>;})}
-                </select>
-              </div>
-            )}
+            {runGroups.length>0 && (<div><label>Group</label>
+              <select value={selGroupId} onChange={function(e){setSelGroupId(e.target.value);}}><option value="">— select —</option>
+                {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name}</option>;})}</select></div>)}
             <div className="modal-btns">
               <button className="btn btn-ghost" onClick={function(){setAddToGroupModal(null);}}>Cancel</button>
-              {runGroups.length>0 && <button className="btn btn-primary"
-                onClick={function(){addToGroup(addToGroupModal,selGroupId);}} disabled={!selGroupId}>Add</button>}
-              <button className="btn btn-primary" style={{background:'var(--accent)'}}
-                onClick={function(){setNewGroupModal(true);setAddToGroupModal(null);}}>+ New Group</button>
+              {runGroups.length>0 && <button className="btn btn-primary" onClick={function(){addToGroup(addToGroupModal,selGroupId);}} disabled={!selGroupId}>Add</button>}
+              <button className="btn btn-primary" onClick={function(){setNewGroupModal(true);setAddToGroupModal(null);}}>+ New Group</button>
             </div>
           </div>
-        </div>
-      )}
+        </div>)}
     </div>
   );
 }

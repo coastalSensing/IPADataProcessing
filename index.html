@@ -250,14 +250,16 @@ canvas{display:block;width:100%;}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="ipa-core.js?v=27"></script>
+<script src="ipa-core.js?v=__BUILD__"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v27';
+const APP_VERSION='v28';
+const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
+const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
 const CONFIRM_OPTIONS=MAT_OPTIONS.concat(['No anomaly']);
 const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
@@ -271,25 +273,53 @@ var supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
 function q(p){return p.then(function(res){if(res.error)throw new Error(res.error.message);return res.data;});}
 function isSchemaErr(e){return /column|schema cache|does not exist|relation/i.test(e&&e.message||'');}
 
+// ── Training cohorts ──────────────────────────────────────────────────────────
+// 'legacy'  = saved by v26 or earlier: features are RAW phase (not deviation from background),
+//             no AI was ever used (the v26 API call never succeeded), no stored predictions.
+// 'current' = saved by v27+: features are deviations from the running-median background,
+//             with rules / lab / fused / AI predictions recorded at confirmation time.
+// Legacy rows are kept for the record but, by default, are NOT used as AI few-shot examples
+// or as k-NN training data, because their features are on a different basis.
+function parseNotesMeta(n){try{var o=JSON.parse(n);return o&&typeof o==='object'?o:{};}catch(e){return {};}}
+function rowCohort(r,meta){
+  if(r.cohort)return r.cohort==='legacy'?'legacy':'current';
+  if(r.app_version||meta.app)return 'current';
+  return 'legacy';
+}
 function loadTrainingFromDB(){
-  return q(supabase.from('training_confirmations').select('*').order('confirmed_at',{ascending:true}).limit(2000))
-    .then(function(rows){return (rows||[]).map(function(r){return{
-      material:r.material,run:r.run_name,ts:r.confirmed_at,id:r.id,
+  return q(supabase.from('training_confirmations').select('*').order('confirmed_at',{ascending:true}).limit(5000))
+    .then(function(rows){return (rows||[]).map(function(r){
+      var meta=parseNotesMeta(r.notes),cohort=rowCohort(r,meta);
+      return{
+      material:r.material,run:r.run_name,ts:r.confirmed_at,id:r.id,cohort:cohort,
+      featureBasis:r.feature_basis||meta.basis||(cohort==='legacy'?'raw_v26':'deviation'),
+      aiUsed:r.ai_used!==undefined&&r.ai_used!==null?!!r.ai_used:(meta.ai_used!==undefined?!!meta.ai_used:!!r.ai_class),
+      excluded:!!r.excluded,appVersion:r.app_version||meta.app||null,
       fv:{dp1:r.dp_fund_mrad||0,dp3:r.dp_mid_mrad||0,dp_last:r.dp_high_mrad||0,magPct:r.mag_pct||0,maxSNR:r.max_snr||0,slope:r.phase_slope},
-      aiConf:r.ai_conf_pct||0,rulesCls:r.rules_class||null,aiCls:r.ai_class||null,labCls:r.lab_class||null,
+      aiConf:cohort==='legacy'?null:r.ai_conf_pct,rulesCls:r.rules_class||null,aiCls:r.ai_class||null,labCls:r.lab_class||null,
       labCos:r.lab_cos,fusedCls:r.fused_class||null,predConf:r.pred_conf_pct};});});
 }
 function saveTrainingToDB(entry,harms){
+  var meta={app:APP_VERSION,basis:'deviation',ai_used:!!entry.aiUsed};
   var legacy={material:entry.material,run_name:entry.run,xmt_hz:harms[0]===4?4:harms[0]===2?2:8,
     dp_fund_mrad:entry.fv.dp1,dp_mid_mrad:entry.fv.dp3,dp_high_mrad:entry.fv.dp_last,mag_pct:entry.fv.magPct,
-    max_snr:entry.fv.maxSNR,fund_freq_hz:harms[0],mid_freq_hz:harms[2],high_freq_hz:harms[5],ai_conf_pct:entry.aiConf||0,notes:null};
+    max_snr:entry.fv.maxSNR,fund_freq_hz:harms[0],mid_freq_hz:harms[2],high_freq_hz:harms[5],ai_conf_pct:entry.aiConf||0,
+    notes:JSON.stringify(meta)};  // metadata survives even if the migration hasn't been run yet
   var ext=Object.assign({},legacy,{rules_class:entry.rulesCls,ai_class:entry.aiCls,lab_class:entry.labCls,lab_cos:entry.labCos,
     fused_class:entry.fusedCls,pred_conf_pct:entry.predConf,phase_slope:entry.fv.slope,dp_dev_json:entry.dpDev,
-    lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION});
+    lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION,
+    cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false});
   return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true};})
     .catch(function(e){if(!isSchemaErr(e))throw e;
       return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false};});});
 }
+function setTrainingExcludedDB(ids,excluded){return q(supabase.from('training_confirmations').update({excluded:excluded}).in('id',ids).select('id'));}
+// Which confirmations are allowed to influence new classifications
+var TRAIN_POLICIES={
+  current:{label:'Current only (v27+, deviation features)',test:function(t){return t.cohort==='current';}},
+  ai:{label:'AI-reviewed only',test:function(t){return t.cohort==='current'&&t.aiUsed;}},
+  all:{label:'All incl. legacy (mixed feature basis ⚠)',test:function(){return true;}}
+};
 function deleteTrainingFromDB(id){return q(supabase.from('training_confirmations').delete().eq('id',id));}
 function loadLabSigsDB(){return q(supabase.from('lab_signatures').select('*').order('created_at',{ascending:true})).then(function(rows){
   return rows.map(function(r){return{id:r.id,material:r.material,xmt:r.xmt_hz,freqs:r.freqs_hz,mean:r.mean_mrad,std:r.std_mrad,n:r.n_pkts,run:r.run_name,src:'db'};});});}
@@ -323,7 +353,7 @@ function badgeClass(cls){cls=cls||'';var f=IPA.family(cls);
 async function classifyWithClaude(ev,harms,bg,training,apiKey,model){
   var ctx='';
   if(training.length){
-    ctx='\nCONFIRMED FIELD EXAMPLES (ground truth from this team):\n'+training.slice(-25).map(function(t){
+    ctx='\nCONFIRMED FIELD EXAMPLES (ground truth from this team; features are deviations from local background):\n'+training.slice(-25).map(function(t){
       return '- '+t.material+': dev'+harms[0]+'Hz='+(+t.fv.dp1).toFixed(2)+', dev'+harms[2]+'Hz='+(+t.fv.dp3).toFixed(2)+
         ', dev'+harms[5]+'Hz='+(+t.fv.dp_last).toFixed(2)+', mag%='+(+t.fv.magPct).toFixed(1)+', SNR='+(+t.fv.maxSNR).toFixed(1);}).join('\n');
   }
@@ -453,6 +483,7 @@ function App(){
   var [files,setFiles]=useState([]);
   var [activeIdx,setActiveIdx]=useState(null);
   var [training,setTraining]=useState([]);
+  var [trainPolicy,setTrainPolicy]=useState(lsGet('ipa_train_policy','current'));
   var [apiKey,setApiKey]=useState('');
   var [aiModel,setAiModel]=useState(lsGet('ipa_ai_model','claude-sonnet-4-5'));
   var [selEv,setSelEv]=useState(null);
@@ -488,6 +519,19 @@ function App(){
 
   function setProc(patch){setProcState(function(p){var n=Object.assign({},p,patch);lsSet('ipa_proc',n);return n;});}
   useEffect(function(){lsSet('ipa_ai_model',aiModel);},[aiModel]);
+  useEffect(function(){lsSet('ipa_train_policy',trainPolicy);},[trainPolicy]);
+  // Confirmations allowed to influence NEW classifications (AI few-shot examples, k-NN)
+  var eligibleTraining=useMemo(function(){
+    var pol=TRAIN_POLICIES[trainPolicy]||TRAIN_POLICIES.current;
+    return training.filter(function(t){return t.material&&!t.excluded&&pol.test(t);});
+  },[training,trainPolicy]);
+  var cohortCounts=useMemo(function(){var c={current:0,legacy:0,excluded:0,ai:0};
+    training.forEach(function(t){c[t.cohort]++;if(t.excluded)c.excluded++;if(t.aiUsed)c.ai++;});return c;},[training]);
+  function toggleExcluded(rows,val){
+    var ids=rows.filter(function(t){return t.id;}).map(function(t){return t.id;});
+    setTraining(function(p){return p.map(function(t){return rows.indexOf(t)>=0?Object.assign({},t,{excluded:val}):t;});});
+    if(ids.length)setTrainingExcludedDB(ids,val).catch(function(e){setDbNote('Exclusion kept for this session only ('+e.message+'). Run supabase_schema.sql to share it.');});
+  }
 
   var fileRef=useRef(),wpRef=useRef(),mapRef=useRef(),leafletMap=useRef(null),leafletLayers=useRef({});
   var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
@@ -694,7 +738,7 @@ function App(){
   function runAI(fi,ei){
     var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return Promise.resolve();
     var key=fi+'-'+ei;setAiLoading(key);
-    return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,training,apiKey,aiModel).then(function(r){
+    return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,eligibleTraining,apiKey,aiModel).then(function(r){
       setAiResults(function(p){var n=Object.assign({},p);n[key]=r;return n;});
     }).catch(function(e){
       setAiResults(function(p){var n=Object.assign({},p);n[key]={classification:'Error',confidence_pct:0,confidence_label:'Error',key_indicators:'',reasoning:e.message,caution:null};return n;});
@@ -716,7 +760,8 @@ function App(){
       fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
       aiConf:ar?ar.confidence_pct:null,rulesCls:ev.cls,aiCls:ar&&ar.classification!=='Error'?ar.classification:null,
       labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
-      dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode};
+      dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,
+      cohort:'current',featureBasis:'deviation',aiUsed:!!(ar&&ar.classification!=='Error'),excluded:false};
     setTraining(function(p){return p.concat([entry]);});
     setConfMat('');setDbStatus('loading');
     saveTrainingToDB(entry,harms).then(function(res){
@@ -746,8 +791,8 @@ function App(){
 
   // ── Classifier accuracy data ──────────────────────────────────────────────
   var accuracy=useMemo(function(){
-    var rows=training.filter(function(t){return t.material;}),pred,conf;
-    if(metricPred==='knn'){var k=IPA.looKnn(rows,3);if(!k)return{n:0,rows:rows.length};pred=k;conf=null;}
+    var rows=training.filter(function(t){return t.material&&!t.excluded;}),pred,conf;
+    if(metricPred==='knn'){rows=eligibleTraining;var k=IPA.looKnn(rows,3);if(!k)return{n:0,rows:rows.length};pred=k;conf=null;}
     else{
       var fld={fused:'fusedCls',rules:'rulesCls',ai:'aiCls',lab:'labCls'}[metricPred];
       var cf={fused:'predConf',ai:'aiConf'}[metricPred];
@@ -760,7 +805,7 @@ function App(){
     var c=IPA.confusion(truth,pred);
     c.rel=conf?IPA.reliability(truth,pred,conf):null;
     return c;
-  },[training,metricPred,metricLevel]);
+  },[training,eligibleTraining,metricPred,metricLevel]);
 
   // Derived render values
   var af=analysis;
@@ -801,7 +846,7 @@ function App(){
         <div className="sep"/>
         <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>{files.length} files · {wps.length} wp · {labSigs.length} lab refs</span>
         <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:training.length?'var(--pos)':'var(--dim2)'}}>{training.length} training</span>
+        <span title={cohortCounts.legacy+' legacy (v26) confirmations are kept but not used for new classifications under the current policy'} style={{fontFamily:'var(--font-mono)',fontSize:11,color:eligibleTraining.length?'var(--pos)':'var(--dim2)'}}>{eligibleTraining.length}/{training.length} training in use</span>
         <div className="sep"/>
         <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:proc.mode==='legacy'?'#b07800':'var(--dim2)'}}>{proc.mode==='legacy'?'LEGACY v26 detection':'robust detection'}{proc.applyLayback&&(proc.laybackM||proc.latencyS)?' · layback '+fmt(proc.laybackM)+' m':''}</span>
         <div style={{flex:1}}/>
@@ -810,7 +855,7 @@ function App(){
           {dbStatus==='loading'?'⟳ syncing':dbStatus==='ok'?(dbNote?'⚠ DB partial':'✓ DB synced'):'✗ DB offline'}
         </span>
         <div className="sep"/>
-        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7 · {APP_VERSION}</span>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7 · {APP_VERSION} · {BUILD_LABEL}</span>
         <div className="sep"/>
         <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim3)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
           {authUser.email||(authUser.user_metadata&&authUser.user_metadata.user_name)||''}</span>
@@ -928,13 +973,19 @@ function App(){
           {training.length>0 && (
             <div>
               <div className="sep" style={{height:1,width:'100%',background:'var(--border)',margin:'4px 0'}}/>
-              <div className="sidebar-label">Training ({training.length})</div>
+              <div className="sidebar-label">Training ({eligibleTraining.length} in use / {training.length})</div>
               <div style={{display:'flex',flexDirection:'column',gap:3,maxHeight:100,overflowY:'auto'}}>
                 {training.map(function(t,i){return (
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)'}}>
+                  <div key={i} title={(t.cohort==='legacy'?'Legacy v26 confirmation (raw-phase features, no AI)':'v27+ confirmation'+(t.aiUsed?' · AI reviewed':''))+(t.excluded?' · excluded':'')}
+                    style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)',
+                    opacity:eligibleTraining.indexOf(t)>=0?1:.45}}>
                     <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,background:MAT_COLORS[t.material]||'#8099b0'}}/>
                     <span style={{fontWeight:700,color:MAT_COLORS[t.material]||'var(--dim2)'}}>{t.material}</span>
                     <span style={{flex:1,fontSize:9,color:'var(--dim)',marginLeft:4}}>{(t.run||'').substring(0,10)}</span>
+                    {t.cohort==='legacy' && <span className="pill" style={{fontSize:8,padding:'0 4px'}}>v26</span>}
+                    {t.aiUsed && <span className="pill" style={{fontSize:8,padding:'0 4px'}}>AI</span>}
+                    <button title={t.excluded?'Include again':'Exclude from training'} onClick={function(){toggleExcluded([t],!t.excluded);}}
+                      style={{background:'none',border:'none',color:t.excluded?'var(--neg)':'var(--dim)',cursor:'pointer',fontSize:10,padding:'0 2px'}}>⊘</button>
                     <button onClick={function(){setTraining(function(p){return p.filter(function(_,j){return j!==i;});});if(t.id)deleteTrainingFromDB(t.id).catch(function(e){console.warn(e);});}}
                       style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
                   </div>);})}
@@ -1270,6 +1321,32 @@ function App(){
               </div>
 
               <div className="section">
+                <h3>Training data in use</h3>
+                <div className="note">All confirmations stay in the shared database. Only the ones allowed by this policy are fed back into <b>new</b> classifications: they become the Claude AI few-shot examples and the k-NN training set. <b>Legacy</b> confirmations were saved by v26 and earlier. They store <i>raw</i> phase values rather than deviations from the local background, and none of them were AI-reviewed, because the v26 AI call never reached the API. Mixing them in would give the classifier examples on a different feature scale. Use ⊘ in the sidebar to exclude any single confirmation for everyone.</div>
+                <div className="row" style={{marginBottom:10}}>
+                  <select className="confirm-sel" style={{flex:'0 0 300px'}} value={trainPolicy} onChange={function(e){setTrainPolicy(e.target.value);}}>
+                    {Object.keys(TRAIN_POLICIES).map(function(k){return <option key={k} value={k}>{TRAIN_POLICIES[k].label}</option>;})}
+                  </select>
+                  {cohortCounts.legacy>0 && <button className="btn btn-ghost btn-sm" onClick={function(){
+                    var leg=training.filter(function(t){return t.cohort==='legacy'&&!t.excluded;});
+                    if(window.confirm('Mark all '+leg.length+' legacy confirmations as excluded for every user? They stay in the database and can be re-included.'))toggleExcluded(leg,true);}}>Exclude all legacy (shared)</button>}
+                </div>
+                <div className="tiles">
+                  <Tile label="In use" value={eligibleTraining.length} color="var(--pos)" sub={'of '+training.length+' confirmations'}/>
+                  <Tile label="Current (v27+)" value={cohortCounts.current} sub="deviation features"/>
+                  <Tile label="Legacy (v26)" value={cohortCounts.legacy} sub="raw-phase features"/>
+                  <Tile label="AI reviewed" value={cohortCounts.ai} sub="AI result at confirm time"/>
+                  <Tile label="Excluded" value={cohortCounts.excluded} color={cohortCounts.excluded?'var(--neg)':undefined} sub="manually, shared"/>
+                </div>
+                {training.length>0 && (function(){
+                  var mats={};training.forEach(function(t){var m=mats[t.material]=mats[t.material]||{current:0,legacy:0,use:0};m[t.cohort]++;if(eligibleTraining.indexOf(t)>=0)m.use++;});
+                  return (
+                    <table className="mt"><thead><tr><th>Material</th><th className="num">Current</th><th className="num">Legacy</th><th className="num">In use</th></tr></thead>
+                      <tbody>{Object.keys(mats).sort().map(function(k){return <tr key={k}><td style={{color:MAT_COLORS[k]}}>{k}</td><td className="num">{mats[k].current}</td><td className="num">{mats[k].legacy}</td><td className="num">{mats[k].use}</td></tr>;})}</tbody></table>);
+                })()}
+              </div>
+
+              <div className="section">
                 <h3>Classifier accuracy vs confirmed labels</h3>
                 <div className="note">Ground truth = material confirmations in the shared training table. Each new confirmation also stores what the rules, lab match, fused result and AI predicted at the time, so accuracy builds up automatically. <b>LOO k-NN</b> is leave-one-out 3-nearest-neighbour on the stored features. It checks whether confirmed classes form separable clusters, which is a proxy for how well a trained model could do. κ = Cohen's kappa (agreement beyond chance). Family level groups the labels into hydrocarbon, metallic, mixed, artifact and weak.</div>
                 <div className="row" style={{marginBottom:10}}>
@@ -1383,7 +1460,8 @@ function App(){
             </div>)}
           {training.length>0 && (
             <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
-              {training.length} confirmed → included in next AI call</div>)}
+              {eligibleTraining.length} of {training.length} confirmations used as AI examples<br/>
+              <span style={{color:'var(--dim)'}}>policy: {(TRAIN_POLICIES[trainPolicy]||TRAIN_POLICIES.current).label} · change in Metrics</span></div>)}
           {dbNote && <div className="warnbox" style={{marginTop:8,fontSize:10}}>{dbNote}</div>}
         </div>
       </div>

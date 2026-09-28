@@ -1,5 +1,6 @@
--- IPA MIP Classifier Portal v27 — Supabase schema migration
--- Run once in Supabase Dashboard → SQL Editor. Safe to re-run (idempotent).
+-- IPA MIP Classifier Portal — Supabase schema (cumulative, idempotent)
+-- Run in Supabase Dashboard → SQL Editor after any app update that changes this file.
+-- Safe to re-run: every statement is IF NOT EXISTS / guarded.
 -- Adds prediction columns to training_confirmations (for accuracy metrics) and
 -- creates shared tables for lab reference signatures, known waypoints and layback calibrations.
 -- Access: any signed-in (GitHub OAuth) user can read/write, matching the existing training table.
@@ -77,6 +78,44 @@ begin
     end if;
     if not exists (select 1 from pg_policies where tablename = t and policyname = t || '_auth_delete') then
       execute format('create policy %I on public.%I for delete to authenticated using (true)', t || '_auth_delete', t);
+    end if;
+  end loop;
+end $$;
+
+-- 6. Training cohorts: keep legacy (v26) confirmations from influencing new ones ----
+alter table public.training_confirmations
+  add column if not exists cohort        text,     -- 'legacy' | 'current'
+  add column if not exists feature_basis text,     -- 'raw_v26' | 'deviation'
+  add column if not exists ai_used       boolean,
+  add column if not exists excluded      boolean not null default false;
+
+-- Backfill: rows without an app version (and without v27 metadata in notes) are legacy.
+update public.training_confirmations
+   set cohort = case when app_version is not null or coalesce(notes,'') like '{"app":"v%' then 'current' else 'legacy' end
+ where cohort is null;
+update public.training_confirmations
+   set feature_basis = case when cohort = 'current' then 'deviation' else 'raw_v26' end
+ where feature_basis is null;
+update public.training_confirmations
+   set ai_used = (ai_class is not null) or coalesce(notes,'') like '%"ai_used":true%'
+ where ai_used is null;
+
+create index if not exists training_confirmations_cohort_idx on public.training_confirmations (cohort, excluded);
+
+-- 7. Shared access: every signed-in team member sees and can curate ALL confirmations --
+alter table public.training_confirmations enable row level security;
+do $$
+declare op text;
+begin
+  foreach op in array array['select','insert','update','delete'] loop
+    if not exists (select 1 from pg_policies where tablename = 'training_confirmations' and policyname = 'tc_auth_' || op) then
+      if op = 'insert' then
+        execute 'create policy tc_auth_insert on public.training_confirmations for insert to authenticated with check (true)';
+      elsif op = 'update' then
+        execute 'create policy tc_auth_update on public.training_confirmations for update to authenticated using (true) with check (true)';
+      else
+        execute format('create policy %I on public.training_confirmations for %s to authenticated using (true)', 'tc_auth_' || op, op);
+      end if;
     end if;
   end loop;
 end $$;

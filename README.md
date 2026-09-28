@@ -20,3 +20,5 @@ Browser app for processing marine IP (IPA) streamer data, classifying anomalies,
    - Classifier accuracy against confirmed labels: confusion matrix, κ, F1, and confidence calibration
 
 Set Processing → *Legacy v26* to reproduce the previous detection behaviour for comparison.
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for hosting on `ipa.coastalsensing.com`, the release checklist, keeping Supabase awake, and the training-data policy.

@@ -75,6 +75,12 @@ Free-tier Supabase projects pause after about a week with no activity. The workf
 
 ---
 
+## Where the data lives
+- **Code** → this GitHub repo (public).
+- **Raw data files** (`_p.txt`, lab runs, waypoint CSV/GPX) → private Supabase Storage bucket `ipa-data`, catalogued in the `data_files` table. Upload by dropping files into the app, with *Automatically share files I load* on in the Data Library tab.
+- **Confirmations, lab references, waypoints, layback calibrations** → Supabase tables.
+- Free-tier limits: 1 GB file storage and 500 MB database. Check under Supabase → Project Settings → Usage.
+
 ## Releasing a new version (routine)
 1. Edit `index.html` and/or `ipa-core.js`: upload the new files with GitHub's **Add file → Upload files**, or edit in the browser. Bump `APP_VERSION` in `index.html` for user-visible releases.
 2. **Commit to `main`.** The *Deploy static content to Pages* action runs automatically, taking about 1 minute. It stamps the commit SHA into the page, so browsers fetch the new `ipa-core.js` rather than a cached copy.

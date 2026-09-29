@@ -140,5 +140,67 @@ begin
   end loop;
 end $$;
 
+-- 8. Shared data library: raw _p.txt / waypoint files ----------------------------
+-- Files live in a PRIVATE Storage bucket; this table describes each one.
+-- sha256 is unique, so the same file is never stored twice.
+create table if not exists public.data_files (
+  id                uuid primary key default gen_random_uuid(),
+  storage_path      text not null unique,
+  sha256            text not null unique,
+  file_name         text not null,
+  file_kind         text not null,          -- 'field' | 'lab' | 'waypoints'
+  run_name          text,
+  xmt_hz            integer,
+  n_packets         integer,
+  n_waypoints       integer,
+  first_ts          text,
+  last_ts           text,
+  lat_min           double precision,
+  lat_max           double precision,
+  lon_min           double precision,
+  lon_max           double precision,
+  bytes             integer,
+  notes             text,
+  uploaded_by       uuid default auth.uid(),
+  uploaded_by_email text,
+  created_at        timestamptz not null default now()
+);
+create index if not exists data_files_kind_idx on public.data_files (file_kind, created_at desc);
+alter table public.data_files enable row level security;
+do $$
+declare op text;
+begin
+  foreach op in array array['select','insert','update','delete'] loop
+    if not exists (select 1 from pg_policies where tablename = 'data_files' and policyname = 'df_auth_' || op) then
+      if op = 'insert' then
+        execute 'create policy df_auth_insert on public.data_files for insert to authenticated with check (true)';
+      elsif op = 'update' then
+        execute 'create policy df_auth_update on public.data_files for update to authenticated using (true) with check (true)';
+      else
+        execute format('create policy %I on public.data_files for %s to authenticated using (true)', 'df_auth_' || op, op);
+      end if;
+    end if;
+  end loop;
+end $$;
+
+-- Private storage bucket (50 MB per file) + access for signed-in users only
+do $$
+begin
+  if to_regclass('storage.buckets') is not null then
+    insert into storage.buckets (id, name, public, file_size_limit)
+    values ('ipa-data', 'ipa-data', false, 52428800)
+    on conflict (id) do nothing;
+    if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'ipa_data_select') then
+      create policy ipa_data_select on storage.objects for select to authenticated using (bucket_id = 'ipa-data');
+    end if;
+    if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'ipa_data_insert') then
+      create policy ipa_data_insert on storage.objects for insert to authenticated with check (bucket_id = 'ipa-data');
+    end if;
+    if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'ipa_data_delete') then
+      create policy ipa_data_delete on storage.objects for delete to authenticated using (bucket_id = 'ipa-data');
+    end if;
+  end if;
+end $$;
+
 -- Make PostgREST pick up new columns immediately
 notify pgrst, 'reload schema';

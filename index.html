@@ -965,7 +965,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v28';
+const APP_VERSION='v29';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1037,6 +1037,40 @@ function loadWaypointsDB(){return q(supabase.from('waypoints').select('*').order
   return rows.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db'};});});}
 function saveWaypointsDB(wps){return q(supabase.from('waypoints').insert(wps.map(function(w){return{name:w.name,lat:w.lat,lon:w.lon,material:w.material,source:w.source};})).select());}
 function deleteWaypointsDB(ids){return q(supabase.from('waypoints').delete().in('id',ids));}
+// ── Shared data library (raw files in a private Storage bucket + data_files table) ──
+var BUCKET='ipa-data';
+function sha256Hex(text){
+  if(!(window.crypto&&crypto.subtle))return Promise.resolve(null);
+  return crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)).then(function(b){
+    return Array.from(new Uint8Array(b)).map(function(x){return x.toString(16).padStart(2,'0');}).join('');});
+}
+function fileMeta(kind,pkts,wps){
+  var m={file_kind:kind};
+  if(pkts&&pkts.length){
+    m.run_name=pkts[0].run||null;m.xmt_hz=pkts[0].xmt;m.n_packets=pkts.length;m.first_ts=pkts[0].ts||null;m.last_ts=pkts[pkts.length-1].ts||null;
+    var la=pkts.map(function(p){return p.lat;}).filter(function(v){return v!==null&&isFinite(v);}),lo=pkts.map(function(p){return p.lon;}).filter(function(v){return v!==null&&isFinite(v);});
+    if(la.length){m.lat_min=Math.min.apply(null,la);m.lat_max=Math.max.apply(null,la);m.lon_min=Math.min.apply(null,lo);m.lon_max=Math.max.apply(null,lo);}
+  }
+  if(wps)m.n_waypoints=wps.length;
+  return m;
+}
+function listLibraryDB(){return q(supabase.from('data_files').select('*').order('created_at',{ascending:false}).limit(10000));}
+function uploadToLibrary(rec,email){
+  var path=rec.kind+'/'+rec.hash.slice(0,16)+'_'+rec.name.replace(/[^A-Za-z0-9._-]/g,'_');
+  return supabase.storage.from(BUCKET).upload(path,new Blob([rec.text],{type:'text/plain'}),{upsert:false,contentType:'text/plain'})
+    .then(function(res){
+      if(res.error&&!/exist|duplicate/i.test(res.error.message))throw new Error(res.error.message);
+      return q(supabase.from('data_files').insert(Object.assign({storage_path:path,sha256:rec.hash,file_name:rec.name,bytes:rec.text.length,uploaded_by_email:email||null},rec.meta)).select());
+    }).then(function(rows){return rows&&rows[0];})
+    .catch(function(e){if(/duplicate key|unique/i.test(e.message))return null;throw e;});
+}
+function downloadFromLibrary(path){return supabase.storage.from(BUCKET).download(path).then(function(res){if(res.error)throw new Error(res.error.message);return res.data.text();});}
+function deleteFromLibrary(rows){
+  return supabase.storage.from(BUCKET).remove(rows.map(function(r){return r.storage_path;})).then(function(res){
+    if(res&&res.error)throw new Error(res.error.message);
+    return q(supabase.from('data_files').delete().in('id',rows.map(function(r){return r.id;})));});
+}
+function sameWaypoint(a,b){return a.name===b.name&&Math.abs(a.lat-b.lat)<1e-5&&Math.abs(a.lon-b.lon)<1e-5;}
 function saveCalibrationDB(fit,proc){return q(supabase.from('layback_calibrations').insert({layback_m:fit.L,latency_s:fit.tau,bias_m:fit.bias,
   se_layback_m:fit.seL,n_matches:fit.nInliers,rms_m:fit.rms,cross_mean_m:fit.crossMean,params:{matchRadiusM:proc.matchRadiusM,maxCrossM:proc.maxCrossM,minSNRcal:proc.minSNRcal,mode:proc.mode}}).select());}
 function signInWithGitHub(){return supabase.auth.signInWithOAuth({provider:'github',options:{redirectTo:window.location.origin+window.location.pathname}});}
@@ -1205,6 +1239,13 @@ function App(){
   var [authUser,setAuthUser]=useState(null);
   var [proc,setProcState]=useState(Object.assign({},IPA.DEFAULT_PROC,lsGet('ipa_proc',{})));
   var [showProc,setShowProc]=useState(false);
+  var [library,setLibrary]=useState([]);
+  var [libStatus,setLibStatus]=useState('');
+  var [shareState,setShareState]=useState({});   // sha256 -> 'uploading' | 'error:<msg>'
+  var [autoShare,setAutoShare]=useState(lsGet('ipa_auto_share',true));
+  var [libSel,setLibSel]=useState({});
+  var [libFilter,setLibFilter]=useState({kind:'all',text:''});
+  var [libBusy,setLibBusy]=useState('');
   var [labSigs,setLabSigs]=useState([]);
   var [labTag,setLabTag]=useState({});
   var [waypoints,setWaypoints]=useState([]);
@@ -1259,7 +1300,8 @@ function App(){
       loadLabSigsDB().then(function(r){setLabSigs(function(prev){return r.concat(prev.filter(function(s){return s.src!=='db';}));});})
         .catch(function(e){notes.push('lab_signatures: '+e.message);}),
       loadWaypointsDB().then(function(r){if(r.length)setWaypoints(function(prev){return r.concat(prev.filter(function(w){return !w.id;}));});})
-        .catch(function(e){notes.push('waypoints: '+e.message);})
+        .catch(function(e){notes.push('waypoints: '+e.message);}),
+      listLibraryDB().then(function(r){setLibrary(r);}).catch(function(e){notes.push('data_files: '+e.message);})
     ]).then(function(){setDbStatus('ok');setDbNote(notes.length?'Run supabase_schema.sql to enable: '+notes.join('; '):'');})
       .catch(function(e){console.warn('Supabase load failed:',e.message);setDbStatus('error');setDbNote(e.message);});
   },[authUser]);
@@ -1424,23 +1466,86 @@ function App(){
   },[mainTab,files,fileAnalyses,activeIdx,runGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,mapLayer,mapFocus]);
 
   // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
-  var loadFiles=useCallback(function(fileList,forceWp){
+  useEffect(function(){lsSet('ipa_auto_share',autoShare);},[autoShare]);
+  var libraryHashes=useMemo(function(){var m={};library.forEach(function(r){m[r.sha256]=r;});return m;},[library]);
+  var userEmail=authUser&&(authUser.email||(authUser.user_metadata&&authUser.user_metadata.user_name))||null;
+  function parseText(name,text,hash,forceWp){
+    var pkts=forceWp?[]:IPA.parseAnyFile(text);
+    if(pkts.length)return{kind:'ipa',f:{name:name,run:pkts[0].run||name,packets:pkts,xmt:pkts[0].xmt,type:pkts[0].type,text:text,hash:hash},
+      rec:{name:name,text:text,hash:hash,kind:pkts[0].type,meta:fileMeta(pkts[0].type,pkts)}};
+    var w=IPA.parseWaypoints(text,name);
+    if(w.length)return{kind:'wp',w:w,rec:{name:name,text:text,hash:hash,kind:'waypoints',meta:fileMeta('waypoints',null,w)}};
+    return null;
+  }
+  function addParsed(res){
+    var nf=res.filter(function(r){return r&&r.kind==='ipa';}).map(function(r){return r.f;});
+    var nw=[];res.forEach(function(r){if(r&&r.kind==='wp')nw=nw.concat(r.w);});
+    if(nf.length)setFiles(function(prev){
+      var have={};prev.forEach(function(f){if(f.hash)have[f.hash]=1;});
+      var add=nf.filter(function(f){if(f.hash&&have[f.hash])return false;if(f.hash)have[f.hash]=1;return true;});
+      var u=prev.concat(add);if(!prev.length&&u.length)setActiveIdx(0);return u;});
+    if(nw.length)setWaypoints(function(prev){return prev.concat(nw.filter(function(w){return !prev.some(function(p){return sameWaypoint(p,w);});}));});
+    return nw;
+  }
+  function shareRecords(recs){
+    var todo=recs.filter(function(r){return r&&r.hash&&!libraryHashes[r.hash]&&shareState[r.hash]!=='uploading';});
+    if(!todo.length)return Promise.resolve(0);
+    setShareState(function(p){var n=Object.assign({},p);todo.forEach(function(r){n[r.hash]='uploading';});return n;});
+    var done=0;
+    return todo.reduce(function(chain,r){return chain.then(function(){
+      return uploadToLibrary(r,userEmail).then(function(row){
+        done++;if(row)setLibrary(function(p){return [row].concat(p);});
+        setShareState(function(p){var n=Object.assign({},p);delete n[r.hash];return n;});
+      }).catch(function(e){setShareState(function(p){var n=Object.assign({},p);n[r.hash]='error:'+e.message;return n;});});
+    });},Promise.resolve()).then(function(){
+      listLibraryDB().then(setLibrary).catch(function(){});return done;});
+  }
+  function shareWaypointsNow(list){
+    var loc=list.filter(function(w){return !w.id;});if(!loc.length)return;
+    saveWaypointsDB(IPA.alignWaypointHemisphere(loc,refLon)).then(function(d){
+      setWaypoints(function(p){return p.filter(function(w){return w.id||!loc.some(function(l){return sameWaypoint(l,w);});})
+        .concat(d.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source};}));});
+    }).catch(function(e){setDbNote('Waypoints kept locally ('+e.message+').');});
+  }
+  var loadFiles=function(fileList,forceWp){
     var arr=Array.prototype.slice.call(fileList);
     Promise.all(arr.map(function(file){return file.text().then(function(text){
-      var pkts=forceWp?[]:IPA.parseAnyFile(text);
-      if(pkts.length)return{kind:'ipa',f:{name:file.name,run:pkts[0].run||file.name,packets:pkts,xmt:pkts[0].xmt,type:pkts[0].type}};
-      var w=IPA.parseWaypoints(text,file.name);
-      if(w.length)return{kind:'wp',w:w};
-      return null;
+      return sha256Hex(text).then(function(h){return parseText(file.name,text,h,forceWp);});
     });})).then(function(res){
-      var nf=res.filter(function(r){return r&&r.kind==='ipa';}).map(function(r){return r.f;});
-      var nw=[];res.forEach(function(r){if(r&&r.kind==='wp')nw=nw.concat(r.w);});
-      if(nf.length)setFiles(function(prev){var u=prev.concat(nf);if(!prev.length)setActiveIdx(0);return u;});
-      if(nw.length)setWaypoints(function(prev){return prev.concat(nw);});
+      var nw=addParsed(res);
       var bad=res.filter(function(r){return !r;}).length;
       if(bad)alert(bad+' file(s) could not be parsed as IPA packets or waypoints.');
+      if(autoShare&&authUser){
+        shareRecords(res.filter(Boolean).map(function(r){return r.rec;}));
+        if(nw.length)shareWaypointsNow(nw);
+      }
     });
-  },[]);
+  };
+  function shareAllLoaded(){
+    var recs=files.filter(function(f){return f.hash&&f.text;}).map(function(f){return{name:f.name,text:f.text,hash:f.hash,kind:f.type,meta:fileMeta(f.type,f.packets)};});
+    setLibBusy('Uploading…');
+    shareRecords(recs).then(function(n){setLibBusy('');setLibStatus(n+' file(s) added to the shared library.');});
+    shareWaypointsNow(waypoints);
+  }
+  function loadFromLibrary(rows){
+    var have={};files.forEach(function(f){if(f.hash)have[f.hash]=1;});
+    var todo=rows.filter(function(r){return !have[r.sha256];});
+    if(!todo.length){setLibStatus('Those files are already loaded.');return;}
+    setLibBusy('Downloading '+todo.length+' file(s)…');
+    var out=[],errs=0;
+    todo.reduce(function(chain,r){return chain.then(function(){
+      return downloadFromLibrary(r.storage_path).then(function(text){out.push(parseText(r.file_name,text,r.sha256,r.file_kind==='waypoints'));})
+        .catch(function(){errs++;});});},Promise.resolve())
+    .then(function(){addParsed(out);setLibBusy('');setLibSel({});
+      setLibStatus('Loaded '+out.filter(Boolean).length+' file(s)'+(errs?' · '+errs+' failed':'')+'.');});
+  }
+  function removeFromLibrary(rows){
+    if(!rows.length)return;
+    if(!window.confirm('Permanently delete '+rows.length+' file(s) from the shared library for everyone?'))return;
+    setLibBusy('Deleting…');
+    deleteFromLibrary(rows).then(function(){setLibrary(function(p){return p.filter(function(r){return rows.indexOf(r)<0;});});setLibSel({});setLibBusy('');setLibStatus('Deleted '+rows.length+' file(s).');})
+      .catch(function(e){setLibBusy('');setLibStatus('Delete failed: '+e.message);});
+  }
 
   // ── AI classification ─────────────────────────────────────────────────────
   function runAI(fi,ei){
@@ -1591,7 +1696,12 @@ function App(){
                 <div className="file-dot" style={{background:grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0')}}/>
                 <div style={{flex:1,overflow:'hidden'}}>
                   <div className="file-name">{f.run}</div>
-                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}{fa?' · '+fa.events.length+' ev':''}</div>
+                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}{fa?' · '+fa.events.length+' ev':''}
+                    {' · '}{(function(){var st=f.hash&&shareState[f.hash];
+                      if(f.hash&&libraryHashes[f.hash])return <span title="In the shared library" style={{color:'var(--pos)'}}>☁ shared</span>;
+                      if(st==='uploading')return <span style={{color:'#b07800'}}>⬆ uploading</span>;
+                      if(st&&st.indexOf('error:')===0)return <span title={st.slice(6)} style={{color:'var(--neg)'}}>✗ not shared</span>;
+                      return <span title="Only on this computer" style={{color:'var(--dim)'}}>local</span>;})()}</div>
                 </div>
                 <button title="Add to group" onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
                   style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
@@ -1705,7 +1815,7 @@ function App(){
 
         <div className="content">
           <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
-            {[['analysis','Analysis'],['map','Map'],['lab','Lab Stats'],['layback','Layback'],['metrics','Metrics']].map(function(t){
+            {[['analysis','Analysis'],['map','Map'],['lab','Lab Stats'],['layback','Layback'],['metrics','Metrics'],['library','Data Library ('+library.length+')']].map(function(t){
               return <div key={t[0]} className={mainTab===t[0]?'tab active':'tab'} onClick={function(){setMainTab(t[0]);if(t[0]!=='map')setMapFocus(null);}}>{t[1]}</div>;})}
           </div>
 
@@ -1967,6 +2077,66 @@ function App(){
                 <div className="note" style={{marginTop:8}}>Correction: each event (and the plotted sensor track) is shifted <b>back</b> along its course-over-ground by L + τ·v. Heading is taken from GPS positions ±3 packets around the peak.</div>
               </div>
             </div>)}
+
+          {mainTab==='library' && (function(){
+            var q=libFilter.text.trim().toLowerCase();
+            var rows=library.filter(function(r){return (libFilter.kind==='all'||r.file_kind===libFilter.kind)&&
+              (!q||[r.file_name,r.run_name,r.uploaded_by_email,r.first_ts].join(' ').toLowerCase().indexOf(q)>=0);});
+            var loadedH={};files.forEach(function(f){if(f.hash)loadedH[f.hash]=1;});
+            var sel=rows.filter(function(r){return libSel[r.id];});
+            var unshared=files.filter(function(f){return f.hash&&!libraryHashes[f.hash];}).length;
+            var counts={field:0,lab:0,waypoints:0},mb=0;library.forEach(function(r){counts[r.file_kind]=(counts[r.file_kind]||0)+1;mb+=(r.bytes||0)/1048576;});
+            return (
+            <div>
+              <div className="section">
+                <h3>Shared data library</h3>
+                <div className="note">Raw <code>_p.txt</code> runs, lab files and waypoint files are stored once in a <b>private</b> Supabase Storage bucket. Only signed-in team members can see or download them, and nothing goes into the public GitHub repo. Every team member sees the full library and can load any file. Files are identified by content hash, so loading the same file twice never stores a duplicate.</div>
+                <div className="tiles">
+                  <Tile label="Files in library" value={library.length} sub={fmt(mb,1)+' MB total'}/>
+                  <Tile label="Field runs" value={counts.field||0}/>
+                  <Tile label="Lab files" value={counts.lab||0}/>
+                  <Tile label="Waypoint files" value={counts.waypoints||0}/>
+                  <Tile label="Loaded, not shared" value={unshared} color={unshared?'#b07800':'var(--pos)'} sub="on this computer only"/>
+                </div>
+                <div className="row" style={{marginBottom:8}}>
+                  <label style={{display:'flex',alignItems:'center',gap:6,fontSize:11,fontFamily:'var(--font-mono)',color:'var(--dim3)'}}>
+                    <input type="checkbox" checked={autoShare} onChange={function(e){setAutoShare(e.target.checked);}}/> Automatically share files I load</label>
+                  <div style={{flex:1}}/>
+                  <button className="btn btn-primary btn-sm" disabled={!unshared||!!libBusy} onClick={shareAllLoaded}>⬆ Share {unshared} loaded file{unshared===1?'':'s'}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={function(){listLibraryDB().then(setLibrary).catch(function(e){setLibStatus(e.message);});}}>Refresh</button>
+                </div>
+                {(libBusy||libStatus) && <div className="warnbox" style={{background:'var(--panel2)',borderColor:'var(--border2)',color:'var(--dim3)'}}>{libBusy||libStatus}</div>}
+                {Object.keys(shareState).some(function(h){return shareState[h].indexOf('error:')===0;}) &&
+                  <div className="warnbox">Some uploads failed: {Object.keys(shareState).filter(function(h){return shareState[h].indexOf('error:')===0;}).map(function(h){return shareState[h].slice(6);}).filter(function(v,i,a){return a.indexOf(v)===i;}).join('; ')}. If it mentions a bucket or policy, run the latest <code>supabase_schema.sql</code>.</div>}
+                <div className="row" style={{marginBottom:8}}>
+                  <select className="confirm-sel" style={{flex:'0 0 150px'}} value={libFilter.kind} onChange={function(e){setLibFilter(Object.assign({},libFilter,{kind:e.target.value}));}}>
+                    <option value="all">All types</option><option value="field">Field runs</option><option value="lab">Lab files</option><option value="waypoints">Waypoints</option></select>
+                  <input className="api-key-input" style={{flex:'0 0 260px'}} placeholder="Search name, run, uploader, date…" value={libFilter.text} onChange={function(e){setLibFilter(Object.assign({},libFilter,{text:e.target.value}));}}/>
+                  <div style={{flex:1}}/>
+                  <button className="btn btn-primary btn-sm" disabled={!sel.length||!!libBusy} onClick={function(){loadFromLibrary(sel);}}>Load selected ({sel.length})</button>
+                  <button className="btn btn-ghost btn-sm" disabled={!rows.length||!!libBusy} onClick={function(){loadFromLibrary(rows);}}>Load all shown ({rows.length})</button>
+                  <button className="btn btn-ghost btn-sm" style={{color:'var(--neg)'}} disabled={!sel.length||!!libBusy} onClick={function(){removeFromLibrary(sel);}}>Delete selected</button>
+                </div>
+                {!library.length && <div className="warnbox">The library is empty. Drop your <code>_p.txt</code> and waypoint files anywhere in the app (sidebar upload zone). With auto-share on, they are uploaded here automatically.</div>}
+                {rows.length>0 && (
+                  <div style={{maxHeight:460,overflowY:'auto'}}>
+                    <table className="mt"><thead><tr>
+                      <th><input type="checkbox" checked={rows.length>0&&rows.every(function(r){return libSel[r.id];})} onChange={function(e){var n={};if(e.target.checked)rows.forEach(function(r){n[r.id]=true;});setLibSel(n);}}/></th>
+                      <th>File</th><th>Type</th><th>Run</th><th className="num">xmt</th><th className="num">Pkts / WPs</th><th>Recorded</th><th>Uploaded by</th><th>Added</th><th className="num">KB</th><th/></tr></thead>
+                      <tbody>{rows.map(function(r){return (
+                        <tr key={r.id}>
+                          <td><input type="checkbox" checked={!!libSel[r.id]} onChange={function(e){var n=Object.assign({},libSel);if(e.target.checked)n[r.id]=true;else delete n[r.id];setLibSel(n);}}/></td>
+                          <td title={r.file_name} style={{maxWidth:220,overflow:'hidden',textOverflow:'ellipsis'}}>{r.file_name}</td>
+                          <td><span className="pill">{r.file_kind}</span></td><td>{r.run_name||'—'}</td><td className="num">{r.xmt_hz?r.xmt_hz+'Hz':'—'}</td>
+                          <td className="num">{r.file_kind==='waypoints'?r.n_waypoints:r.n_packets}</td>
+                          <td>{r.first_ts?String(r.first_ts).substring(0,16):'—'}</td><td>{r.uploaded_by_email||'—'}</td>
+                          <td>{r.created_at?new Date(r.created_at).toLocaleDateString():'—'}</td><td className="num">{fmt((r.bytes||0)/1024,0)}</td>
+                          <td>{loadedH[r.sha256]?<span style={{color:'var(--pos)'}}>loaded</span>:<button className="btn btn-ghost btn-sm" style={{padding:'1px 6px'}} disabled={!!libBusy} onClick={function(){loadFromLibrary([r]);}}>load</button>}</td>
+                        </tr>);})}</tbody></table>
+                  </div>)}
+              </div>
+            </div>);
+          })()}
 
           {mainTab==='metrics' && (
             <div>

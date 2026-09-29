@@ -7,9 +7,10 @@ Browser app for processing marine IP (IPA) streamer data, classifying anomalies,
 |---|---|
 | `index.html` | The whole app in one self-contained file (UI + inlined analysis engine). Works on GitHub Pages or opened directly from a download. |
 | `ipa-core.js` | Standalone copy of the analysis engine for Node testing. **When changing the engine, update the inlined copy in `index.html` too.** |
-| `supabase_schema.sql` | One-time migration: run in Supabase → SQL Editor |
+| `supabase_schema.sql` | Database + private file bucket setup. Re-run in Supabase → SQL Editor whenever it changes (safe to repeat). |
 
 ## Workflow
+0. **Data Library**: every `_p.txt`, lab and waypoint file you load is uploaded once to a private Supabase Storage bucket (signed-in team only) so the whole team can browse and load it. Nothing is stored in this public repo.
 1. **Lab Stats**: load lab `_p.txt` runs and tag each one with its material. Add a *Seawater blank* for each transmit frequency. These become shared reference signatures.
 2. **Waypoints**: load a CSV (`name,lat,lon,material`; decimal degrees, DDMM.mmmm or `47 37.123 N` are all accepted) or a GPX file.
 3. **Analysis**: load field runs. Events are detected against a running-median background (robust σ = 1.4826·MAD). An event is flagged when the fundamental exceeds the threshold, or when at least N harmonics do. Each event is classified by the rule tree, matched against lab signatures (weighted spectral angle), and optionally by Claude.

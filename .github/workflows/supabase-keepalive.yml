@@ -17,8 +17,8 @@ jobs:
     steps:
       - name: Ping Supabase REST API
         env:
-          SUPA_URL: https://ztrtrymaqrrquxpcjcsp.supabase.co
-          SUPA_KEY: sb_publishable_GliclnRAR4DK2rhPpv-DJw_di5zsiOe
+          SUPA_URL: https://cregneohqyqnllcylaof.supabase.co
+          SUPA_KEY: sb_publishable_8VsxLgCQQ5yWnEK1g37s6Q_6mLFr-FB
         run: |
           code=$(curl -s -o /dev/null -w "%{http_code}" \
             "$SUPA_URL/rest/v1/training_confirmations?select=id&limit=1" \

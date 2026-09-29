@@ -5,8 +5,8 @@ Browser app for processing marine IP (IPA) streamer data, classifying anomalies,
 ## Files
 | File | Purpose |
 |---|---|
-| `index.html` | React UI (Analysis, Map, Lab Stats, Layback, Metrics tabs) |
-| `ipa-core.js` | Pure analysis engine (parsing, background, detection, lab matching, layback fit, corroboration, metrics). Also loads in Node for testing. |
+| `index.html` | The whole app in one self-contained file (UI + inlined analysis engine). Works on GitHub Pages or opened directly from a download. |
+| `ipa-core.js` | Standalone copy of the analysis engine for Node testing. **When changing the engine, update the inlined copy in `index.html` too.** |
 | `supabase_schema.sql` | One-time migration: run in Supabase → SQL Editor |
 
 ## Workflow

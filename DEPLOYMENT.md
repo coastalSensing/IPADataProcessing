@@ -51,7 +51,7 @@ In Supabase Dashboard → **Authentication → URL Configuration**:
   - `https://ipa.coastalsensing.com/**`
   - `https://coastalsensing.github.io/IPADataProcessing/**` (keep this during the switch-over)
 
-The GitHub OAuth App's callback URL stays `https://ztrtrymaqrrquxpcjcsp.supabase.co/auth/v1/callback`. Don't change it.
+The GitHub OAuth App's **Authorization callback URL** must be `https://cregneohqyqnllcylaof.supabase.co/auth/v1/callback` (the Supabase project, not the website). It doesn't change when the website address changes.
 
 ### 5. Add the short link on the main site
 Squarespace → **Settings → Developer Tools → URL Mappings**, add the line:

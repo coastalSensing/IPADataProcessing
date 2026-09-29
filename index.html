@@ -975,8 +975,8 @@ const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f'
 const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','minPkts','labCosMin'];
 
 // ── Supabase client (handles auth + data) ─────────────────────────────────────
-var SUPA_URL='https://ztrtrymaqrrquxpcjcsp.supabase.co';
-var SUPA_KEY='sb_publishable_GliclnRAR4DK2rhPpv-DJw_di5zsiOe';
+var SUPA_URL='https://cregneohqyqnllcylaof.supabase.co';
+var SUPA_KEY='sb_publishable_8VsxLgCQQ5yWnEK1g37s6Q_6mLFr-FB';
 var supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
 function q(p){return p.then(function(res){if(res.error)throw new Error(res.error.message);return res.data;});}
 function isSchemaErr(e){return /column|schema cache|does not exist|relation/i.test(e&&e.message||'');}

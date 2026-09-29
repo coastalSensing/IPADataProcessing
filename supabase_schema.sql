@@ -1,9 +1,29 @@
 -- IPA MIP Classifier Portal — Supabase schema (cumulative, idempotent)
--- Run in Supabase Dashboard → SQL Editor after any app update that changes this file.
+-- Run in Supabase Dashboard → SQL Editor on a NEW project, or after any app update that changes this file.
 -- Safe to re-run: every statement is IF NOT EXISTS / guarded.
 -- Adds prediction columns to training_confirmations (for accuracy metrics) and
 -- creates shared tables for lab reference signatures, known waypoints and layback calibrations.
 -- Access: any signed-in (GitHub OAuth) user can read/write, matching the existing training table.
+
+-- 0. Base table (only created on a brand-new project; existing projects skip this) --
+create table if not exists public.training_confirmations (
+  id            uuid primary key default gen_random_uuid(),
+  material      text not null,
+  run_name      text,
+  xmt_hz        integer,
+  dp_fund_mrad  real,
+  dp_mid_mrad   real,
+  dp_high_mrad  real,
+  mag_pct       real,
+  max_snr       real,
+  fund_freq_hz  real,
+  mid_freq_hz   real,
+  high_freq_hz  real,
+  ai_conf_pct   real,
+  notes         text,
+  created_by    uuid default auth.uid(),
+  confirmed_at  timestamptz not null default now()
+);
 
 -- 1. Extend training confirmations ------------------------------------------------
 alter table public.training_confirmations

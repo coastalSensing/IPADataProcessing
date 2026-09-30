@@ -12,14 +12,14 @@ Browser app for processing marine IP (IPA) streamer data, classifying anomalies,
 ## Workflow
 0. **Data Library**: every `_p.txt`, lab and waypoint file you load is uploaded once to a private Supabase Storage bucket (signed-in team only) so the whole team can browse and load it. Nothing is stored in this public repo.
 1. **Lab Stats**: load lab `_p.txt` runs and tag each one with its material. Add a *Seawater blank* for each transmit frequency. These become shared reference signatures.
-2. **Waypoints**: load a CSV (`name,lat,lon,material`; decimal degrees, DDMM.mmmm or `47 37.123 N` are all accepted) or a GPX file.
-3. **Analysis**: load field runs. Events are detected against a running-median background (robust σ = 1.4826·MAD). An event is flagged when the fundamental exceeds the threshold, or when at least N harmonics do. Each event is classified by the rule tree, matched against lab signatures (weighted spectral angle), and optionally by Claude.
-4. **Layback**: strong detections near waypoints are fitted to `along = L + τ·v + b·dir`, using heading and speed from the GPS track. Apply the fitted L and τ to correct positions.
+2. **Waypoints → targets**: load a CSV (`name,lat,lon,material`), GPX, KML or KMZ. Waypoints within 10 m become one *target* (a segment). Names like `2C-6` carry a deploy-day code, so that target is only scored against lines from survey day 2.
+3. **Analysis**: load field lines. They are **auto-grouped by survey date**, and split by area when lines that day are more than 1 km apart; double-click a group to rename it. Events are detected against a running-median background (robust σ = 1.4826·MAD). A packet is flagged when the fundamental exceeds the threshold, or when at least N harmonics do. Flagged packets are merged into one *crossing* when they are within 25 m along the path, with phase-wrap/dropout packets split out as artifacts. Each crossing is classified on SNR-weighted integrated values. Each event is classified by the rule tree, matched against lab signatures (weighted spectral angle), and optionally by Claude.
+4. **Layback (linear, path-following)**: for every line passing a target, the offset along the smoothed GPS path from the boat's closest approach to the strongest crossing is fitted by least squares: `along = L + τ·v + b_target·dir`. Anchors can be excluded individually. Corrections move each crossing back along the recorded path by L + τ·v.
 5. **Metrics**:
    - Multi-run corroboration tiers
-   - Pd and false alarms against the waypoints
+   - Known-target coverage: PASS / HIT / FAIL per line × target, Pd, and unattributed crossings (false alarms)
    - Classifier accuracy against confirmed labels: confusion matrix, κ, F1, and confidence calibration
 
-Set Processing → *Legacy v26* to reproduce the previous detection behaviour for comparison.
+Set Processing → *Legacy* to use fundamental-only 3σ detection against a fixed background. Loaded files are cached in this browser (IndexedDB) and restored after a refresh. `oldversion` is kept in the repo for reference only.
 
 See **[DEPLOYMENT.md](DEPLOYMENT.md)** for hosting on `ipa.coastalsensing.com`, the release checklist, keeping Supabase awake, and the training-data policy.

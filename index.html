@@ -25,6 +25,7 @@ body{overflow:hidden;}
 .sep{width:1px;height:20px;background:var(--border2);}
 .main{display:grid;grid-template-columns:260px 1fr 320px;overflow:hidden;}
 .sidebar{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;}
+.sidebar>*{flex-shrink:0;}
 .content{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
 .ai-panel{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
 
@@ -250,6 +251,7 @@ canvas{display:block;width:100%;}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- Analysis engine (inlined copy of ipa-core.js so this file works standalone, e.g. opened from Downloads) -->
 <script>
 /* ipa-core.js — pure analysis functions for the IPA MIP Classifier Portal.
@@ -265,6 +267,8 @@ canvas{display:block;width:100%;}
  *  - Hampel/Huber robust statistics — running median + MAD background, 1.4826 scale factor.
  *  - Hydrographic "patch test" practice — reciprocal lines over a known target separate
  *    along-track sensor offset (layback) and latency from target-position error.
+ *  - Layback is modelled LINEARLY along the boat's own recorded path: the towed sensor
+ *    follows the path, sitting L + τ·v metres behind the GPS antenna (no heading projection).
  *  - Cohen (1960) kappa; standard precision/recall/F1 for classifier accuracy.
  */
 (function (root) {
@@ -279,10 +283,10 @@ canvas{display:block;width:100%;}
     'ITB Rebel Crude': '#1a8c4e', 'Metallic IP': '#b02040', 'Steel': '#cc2233',
     'Ilmenite': '#a04010', 'Galvanized Steel': '#807030', 'Mixed': '#5a50c8',
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
-    'Seawater blank': '#90a0b0'
+    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc'
   };
   var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Artifact', 'Weak/Inconclusive'];
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
   var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
     'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Metallic IP', 'Mixed'];
 
@@ -290,28 +294,37 @@ canvas{display:block;width:100%;}
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
     'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
-    'Mixed': 'mixed', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
+    'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
   function family(cls) { return FAMILY[cls] || 'other'; }
 
   var DEFAULT_PROC = {
-    mode: 'robust',        // 'robust' | 'legacy' (v26 behaviour)
+    mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
     zThresh: 3.0,          // robust z threshold for anomalous packet
     minHarmHits: 2,        // harmonics (excl. fundamental) that must exceed zThresh
-    gapPkts: 5,            // max packet-index gap inside one event
-    minPkts: 1,            // min packets per event
+    gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
+    mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
+    minPkts: 1,            // min packets per crossing
     labCosMin: 0.90,       // spectral-angle cosine required to accept a lab match
     applyLayback: true,
-    laybackM: 0,           // along-track sensor offset behind GPS (m)
-    latencyS: 0,           // processing / timing latency (s) -> v*tau extra offset
-    matchRadiusM: 60,      // calibration: search radius event<->waypoint (raw positions)
-    maxCrossM: 20,         // calibration: max cross-track distance to accept
-    minSNRcal: 6,          // calibration: min event SNR (any harmonic)
-    mergeRadiusM: 15,      // corroboration: cluster radius between runs
-    passRadiusM: 12,       // metrics: track must pass this close to count as a pass
-    detRadiusM: 20         // metrics: detection within this radius counts as a hit
+    laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
+    latencyS: 0,           // τ: extra offset per m/s of speed (s) — timing latency, half-packet, cable lift
+    gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
+    cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
+    targetLinkM: 10,       // waypoints within this distance form one target
+    dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
+    autoGroup: true,       // group field lines automatically by survey date and area
+    areaM: 1000,           // auto-grouping: lines on the same date further apart than this are separate areas
+    anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
+    minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
+    maxLeadM: 80,          // calibration: ... and trail it by at most this
+    minSNRcal: 6,          // calibration: min crossing SNR
+    mergeRadiusM: 15,      // corroboration: cluster radius between runs (corrected positions)
+    passRadiusM: 12,       // corroboration: track within this of a site counts as a pass
+    detRadiusM: 15         // coverage: detection within this of a target = HIT
   };
+
 
   // ── Small maths helpers ────────────────────────────────────────────────────
   function finite(v) { return typeof v === 'number' && isFinite(v); }
@@ -457,6 +470,17 @@ canvas{display:block;width:100%;}
   }
   function parseWaypoints(text, fileName) {
     var wps = [];
+    if (/<kml|<Placemark/i.test(text)) {
+      var pm = /<Placemark\b[\s\S]*?<\/Placemark>/gi, mm;
+      while ((mm = pm.exec(text))) {
+        var blk = mm[0], nm0 = blk.match(/<name>([\s\S]*?)<\/name>/i), co = blk.match(/<coordinates>\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)/i);
+        if (!co) continue;
+        var ds0 = blk.match(/<description>([\s\S]*?)<\/description>/i);
+        var nmv = nm0 ? nm0[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim() : 'WP' + (wps.length + 1);
+        wps.push({ name: nmv, lat: +co[2], lon: +co[1], material: matchMaterial((ds0 ? ds0[1] : '') + ' ' + nmv), source: fileName });
+      }
+      return wps;
+    }
     if (/<gpx|<wpt/i.test(text)) {
       var re = /<(wpt|rtept|trkpt)\b([^>]*)>([\s\S]*?)<\/\1>|<(wpt|rtept)\b([^>]*)\/>/gi, m;
       while ((m = re.exec(text))) {
@@ -543,6 +567,8 @@ canvas{display:block;width:100%;}
   }
 
   // ── Background ─────────────────────────────────────────────────────────────
+  // legacy: per-harmonic mean/std of |dp|<15 mrad packets (v26 behaviour)
+  // robust: running-median baseline + 1.4826·MAD noise (drift-tolerant)
   function computeBG(packets, harms, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var perHz = {}, f0 = harms[0];
@@ -552,130 +578,208 @@ canvas{display:block;width:100%;}
         var bgV = dps.filter(function (v) { return !isNaN(v) && Math.abs(v) < 15; });
         if (bgV.length < 3) bgV = dps.filter(function (v) { return !isNaN(v); });
         if (!bgV.length) { perHz[f] = { mean: 0, std: 1, base: null }; return; }
-        var m = mean(bgV), s = bgV.length > 1 ? std(bgV) : 1;
-        perHz[f] = { mean: m, std: s || 1, base: null };
+        var s = bgV.length > 1 ? std(bgV) : 1;
+        perHz[f] = { mean: mean(bgV), std: s || 1, base: null };
       });
       var d1 = packets.map(function (pk) { var v = pk.freqs[f0]; return v ? v[0] * 1000 : NaN; });
       var mBg = packets.map(function (pk, i) { var v = pk.freqs[f0]; return v && !isNaN(d1[i]) && Math.abs(d1[i]) < 15 ? v[1] : NaN; }).filter(finite);
-      var magMean = mBg.length ? mean(mBg) : 1;
-      return { mode: 'legacy', mean: perHz[f0].mean, std: perHz[f0].std, magMean: magMean, magBase: null, perHz: perHz };
+      return { mode: 'legacy', mean: perHz[f0].mean, std: perHz[f0].std, magMean: mBg.length ? mean(mBg) : 1, magBase: null, perHz: perHz };
     }
-    // Robust: running-median detrend + MAD noise (Hampel-style)
     harms.forEach(function (f) {
       var dps = packets.map(function (pk) { var v = pk.freqs[f]; return v ? v[0] * 1000 : NaN; });
       var base = runningMedian(dps, opts.detrendWin);
       var resid = dps.map(function (v, i) { return v - base[i]; });
-      var s = 1.4826 * mad(resid, 0 + median(resid));
+      var s = 1.4826 * mad(resid, median(resid));
       if (!finite(s) || s <= 1e-6) s = std(resid) || 1;
       perHz[f] = { mean: median(dps), std: s, base: base };
     });
     var mags = packets.map(function (pk) { var v = pk.freqs[f0]; return v ? v[1] : NaN; });
-    var magBase = runningMedian(mags, opts.detrendWin);
-    return { mode: 'robust', mean: perHz[f0].mean, std: perHz[f0].std, magMean: median(mags) || 1, magBase: magBase, perHz: perHz };
+    return { mode: 'robust', mean: perHz[f0].mean, std: perHz[f0].std, magMean: median(mags) || 1,
+      magBase: runningMedian(mags, opts.detrendWin), perHz: perHz };
   }
   function bgAt(bg, f, i) {
     var p = bg.perHz[f]; if (!p) return bg.mean;
     return p.base && finite(p.base[i]) ? p.base[i] : p.mean;
   }
+  function magRefAt(bg, i) { return bg.magBase && finite(bg.magBase[i]) ? bg.magBase[i] : bg.magMean; }
 
-  // ── Detection ──────────────────────────────────────────────────────────────
-  function detectAnomalies(packets, harms, bg, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var f0 = harms[0], s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std, T = opts.zThresh, anomalies = [];
-    for (var i = 0; i < packets.length; i++) {
-      var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
-      var z0 = Math.abs(v0[0] * 1000 - bgAt(bg, f0, i)) / s0;
-      if (opts.mode === 'legacy') { if (z0 >= 3.0) anomalies.push({ i: i, pk: pk, snr: z0, snr0: z0, hits: 0 }); continue; }
-      var zmax = z0, hits = 0;
-      for (var h = 1; h < harms.length; h++) {
-        var v = pk.freqs[harms[h]]; if (!v) continue;
-        var ph = bg.perHz[harms[h]], z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / ph.std;
-        if (z >= T) hits++; if (z > zmax) zmax = z;
+  // ── Track kinematics along the RAW GPS path ────────────────────────────────
+  // cum[i]  : cumulative distance travelled (m) — the 1-D coordinate everything uses
+  // sog[i]  : speed over ground from a centred ≥12 m window (m/s)
+  // cog[i]  : course over ground over the same window (deg)
+  // Positions are first smoothed with a centred moving average (±smoothK fixes):
+  // summing raw 1 Hz GPS steps adds the jitter to the distance (≈25% too long at
+  // 1 m/s with 0.5 m noise), which would bias every along-path measurement.
+  function computeKinematics(packets, winM, smoothK) {
+    winM = winM || 12; smoothK = smoothK === undefined ? 5 : smoothK;
+    var n = packets.length, cum = new Array(n), t = new Array(n), last = null, acc = 0, i, j;
+    var sm = new Array(n);
+    for (i = 0; i < n; i++) {
+      if (packets[i].lat === null) { sm[i] = null; continue; }
+      var sl = 0, so = 0, c = 0;
+      for (j = Math.max(0, i - smoothK); j <= Math.min(n - 1, i + smoothK); j++) {
+        var q = packets[j]; if (q.lat === null) continue;
+        if (Math.abs(q.lat - packets[i].lat) > 0.001) continue;   // ignore GPS spikes (>100 m)
+        sl += q.lat; so += q.lon; c++;
       }
-      if (z0 >= T || hits >= opts.minHarmHits) anomalies.push({ i: i, pk: pk, snr: zmax, snr0: z0, hits: hits });
+      sm[i] = { lat: sl / c, lon: so / c };
     }
-    var gap = opts.mode === 'legacy' ? 5 : opts.gapPkts, clusters = [], cur = [];
-    anomalies.forEach(function (a) {
-      if (!cur.length || a.pk.idx - cur[cur.length - 1].pk.idx <= gap) cur.push(a);
-      else { clusters.push(cur); cur = [a]; }
-    });
-    if (cur.length) clusters.push(cur);
-    if (opts.mode !== 'legacy' && opts.minPkts > 1) clusters = clusters.filter(function (c) { return c.length >= opts.minPkts; });
-    return clusters;
-  }
-
-  // ── Track kinematics (course/speed over ground from GPS) ───────────────────
-  function computeKinematics(packets, k) {
-    k = k || 3;
-    var n = packets.length, out = new Array(n);
-    // median dt per index step for files with bad timestamps
     var steps = [];
-    for (var i = 1; i < n; i++) {
-      var dt = packets[i].t - packets[i - 1].t, di = packets[i].idx - packets[i - 1].idx;
-      if (finite(dt) && dt > 0 && di > 0 && dt < 60) steps.push(dt / di);
+    for (i = 1; i < n; i++) {
+      var dt0 = packets[i].t - packets[i - 1].t, di = packets[i].idx - packets[i - 1].idx;
+      if (finite(dt0) && dt0 > 0 && di > 0 && dt0 < 60) steps.push(dt0 / di);
     }
     var secPerIdx = median(steps); if (!finite(secPerIdx) || secPerIdx <= 0) secPerIdx = 1;
+    var t0 = finite(packets[0] && packets[0].t) ? packets[0].t : 0, idx0 = packets[0] ? packets[0].idx : 0;
     for (i = 0; i < n; i++) {
-      var a = null, b = null;
-      for (var j = Math.max(0, i - k); j <= i; j++) if (packets[j].lat !== null) { a = j; break; }
-      for (j = Math.min(n - 1, i + k); j >= i; j--) if (packets[j].lat !== null) { b = j; break; }
-      if (a === null || b === null || a === b) { out[i] = { cog: null, sog: null }; continue; }
-      var pa = packets[a], pb = packets[b], d = haversine(pa.lat, pa.lon, pb.lat, pb.lon);
-      var dtt = pb.t - pa.t; if (!(finite(dtt) && dtt > 0 && dtt < 120)) dtt = (pb.idx - pa.idx) * secPerIdx;
-      out[i] = d < 0.5 ? { cog: null, sog: d / dtt } : { cog: bearing(pa.lat, pa.lon, pb.lat, pb.lon), sog: d / dtt };
+      var pk = packets[i];
+      t[i] = finite(pk.t) ? pk.t : t0 + (pk.idx - idx0) * secPerIdx;
+      if (sm[i]) {
+        if (last) { var d = haversine(last.lat, last.lon, sm[i].lat, sm[i].lon); if (d < 200) acc += d; }
+        last = sm[i];
+      }
+      cum[i] = acc;
     }
+    var out = new Array(n), half = winM / 2;
+    for (i = 0; i < n; i++) {
+      if (!sm[i]) { out[i] = { cum: cum[i], t: t[i], sog: null, cog: null, slat: null, slon: null }; continue; }
+      var a = i, b = i;
+      for (j = i; j >= 0; j--) { if (packets[j].lat !== null) a = j; if (cum[i] - cum[j] >= half) break; }
+      for (j = i; j < n; j++) { if (packets[j].lat !== null) b = j; if (cum[j] - cum[i] >= half) break; }
+      var dd = cum[b] - cum[a], dtt = t[b] - t[a];
+      var sog = dtt > 0 && dd > 0 ? dd / dtt : null;
+      var cog = dd >= 2 ? bearing(sm[a].lat, sm[a].lon, sm[b].lat, sm[b].lon) : null;
+      out[i] = { cum: cum[i], t: t[i], sog: sog, cog: cog, slat: sm[i].lat, slon: sm[i].lon };
+    }
+    var lastS = null, lastC = null;
+    for (i = 0; i < n; i++) { if (out[i].sog !== null) lastS = out[i].sog; else out[i].sog = lastS; if (out[i].cog !== null) lastC = out[i].cog; else out[i].cog = lastC; }
+    for (i = n - 1; i >= 0; i--) { if (out[i].sog === null && i < n - 1) out[i].sog = out[i + 1].sog; if (out[i].cog === null && i < n - 1) out[i].cog = out[i + 1].cog; }
     return out;
   }
-  function laybackShift(lat, lon, cog, sog, L, tau) {
-    if (lat === null || lon === null || !finite(cog)) return [lat, lon];
-    var d = (L || 0) + (tau || 0) * (finite(sog) ? sog : 0);
-    if (!d) return [lat, lon];
-    return offsetLL(lat, lon, -d * Math.sin(cog * D2R), -d * Math.cos(cog * D2R));
+  // Position on the recorded boat path at cumulative distance `target`.
+  // The towed sensor FOLLOWS the boat's path, so this is where the sensor was.
+  function pointAtCum(packets, kin, target) {
+    var lo = -1, hi = -1, i;
+    for (i = 0; i < packets.length; i++) if (packets[i].lat !== null) { if (lo < 0) lo = i; hi = i; }
+    if (lo < 0) return [null, null];
+    if (target <= kin[lo].cum) {   // before the start of the recorded path: extend backwards
+      var c0 = kin[lo].cog, back = kin[lo].cum - target;
+      if (!finite(c0) || back <= 0) return [kin[lo].slat, kin[lo].slon];
+      return offsetLL(kin[lo].slat, kin[lo].slon, -back * Math.sin(c0 * D2R), -back * Math.cos(c0 * D2R));
+    }
+    var a = lo, b = hi;
+    while (b - a > 1) { var m = (a + b) >> 1; if (kin[m].cum <= target) a = m; else b = m; }
+    while (a > lo && packets[a].lat === null) a--;
+    while (b < hi && packets[b].lat === null) b++;
+    var seg = kin[b].cum - kin[a].cum, f = seg > 0 ? (target - kin[a].cum) / seg : 0;
+    f = Math.max(0, Math.min(1, f));
+    return [kin[a].slat + f * (kin[b].slat - kin[a].slat), kin[a].slon + f * (kin[b].slon - kin[a].slon)];
+  }
+  // Linear layback model: offset behind the GPS antenna along the path = L + τ·v
+  function laybackDist(v, L, tau) { return Math.max(0, (L || 0) + (tau || 0) * (finite(v) ? v : 0)); }
+
+  // ── Detection: packets → crossings ─────────────────────────────────────────
+  // 1. flag packets (fundamental z ≥ T, or robust: ≥N harmonics z ≥ T)
+  // 2. split phase-wrap / magnitude-dropout packets out as Artifact crossings
+  // 3. contiguous packets (index gap ≤ gapPkts) form sub-clusters
+  // 4. consecutive sub-clusters within mergeGapM metres of path merge into ONE crossing
+  function detectAnomalies(packets, harms, bg, opts, kin) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var legacy = opts.mode === 'legacy', f0 = harms[0], s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
+    var T = legacy ? 3 : opts.zThresh, normal = [], artifacts = [];
+    for (var i = 0; i < packets.length; i++) {
+      var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
+      var dev0 = v0[0] * 1000 - bgAt(bg, f0, i), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
+      if (!legacy) for (var h = 1; h < harms.length; h++) {
+        var v = pk.freqs[harms[h]]; if (!v) continue;
+        var z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / bg.perHz[harms[h]].std;
+        if (z >= T) hits++; if (z > zmax) zmax = z;
+      }
+      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits))) continue;
+      var ref = magRefAt(bg, i), magPct = ref ? (v0[1] - ref) / ref * 100 : 0;
+      var rec = { i: i, pk: pk, snr: zmax, snr0: z0, hits: hits };
+      if (Math.abs(dev0) > 150 || magPct < -30) artifacts.push(rec); else normal.push(rec);
+    }
+    var gap = legacy ? 2 : opts.gapPkts;
+    function sub(items) {
+      var out = [], cur = [];
+      items.forEach(function (a) { if (!cur.length || a.pk.idx - cur[cur.length - 1].pk.idx <= gap) cur.push(a); else { out.push(cur); cur = [a]; } });
+      if (cur.length) out.push(cur); return out;
+    }
+    function merge(subs) {
+      var out = [];
+      subs.forEach(function (s) {
+        if (out.length && kin) {
+          var prev = out[out.length - 1], a = prev[prev.length - 1].i, b = s[0].i;
+          if (packets[a].lat !== null && packets[b].lat !== null && Math.abs(kin[b].cum - kin[a].cum) <= opts.mergeGapM) {
+            out[out.length - 1] = prev.concat(s); return;
+          }
+        }
+        out.push(s);
+      });
+      return out;
+    }
+    var clusters = merge(sub(normal));
+    if (opts.minPkts > 1 && !legacy) clusters = clusters.filter(function (c) { return c.length >= opts.minPkts; });
+    var art = sub(artifacts); art.forEach(function (c) { c.isArtifact = true; });
+    return clusters.concat(art).sort(function (a, b) { return a[0].pk.idx - b[0].pk.idx; });
   }
 
-  // ── Rule classifier (v26 rule tree, with detrended per-packet background) ──
+  // ── Crossing classifier: integrated over the whole crossing ────────────────
   function classifyRules(cluster, harms, bg, kin) {
-    var rep = cluster[0];
+    var rep = cluster[0], n = cluster.length, f0 = harms[0];
     cluster.forEach(function (a) { if (a.snr > rep.snr) rep = a; });
-    var pk = rep.pk, i = rep.i, dp = {}, dpDev = {};
-    harms.forEach(function (f) { var v = pk.freqs[f]; dp[f] = v ? v[0] * 1000 : 0; dpDev[f] = dp[f] - bgAt(bg, f, i); });
-    var mag0 = pk.freqs[harms[0]];
-    var magRef = bg.magBase && finite(bg.magBase[i]) ? bg.magBase[i] : bg.magMean;
-    var magPct = mag0 ? ((mag0[1] - magRef) / magRef) * 100 : 0;
-    var dp1dev = dpDev[harms[0]];
-    var posHigh = 0; for (var h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
-    var negLow = 0; for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
-    var altPol = (dp[harms[0]] * dp[harms[1]] < 0 && dp[harms[1]] * dp[harms[2]] < 0);
-    var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, maxSNRall = maxSNR;
+    var s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
+    var wSum = cluster.reduce(function (s, a) { return s + a.snr; }, 0) || 1, dpDev = {}, dp = {};
+    harms.forEach(function (f) {
+      var acc = 0;
+      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += ((v ? v[0] * 1000 : b) - b) * a.snr; });
+      dpDev[f] = acc / wSum;
+      dp[f] = dpDev[f] + bgAt(bg, f, rep.i);
+    });
+    var dp1dev = dpDev[f0];
+    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += (v ? v[0] * 1000 : b) - b; });
+    var snrInt = Math.abs(mAcc / n) / (s0 / Math.sqrt(n));
+    var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, eff = Math.max(maxSNR, snrInt), maxSNRall = eff;
     harms.forEach(function (f) { var p = bg.perHz[f]; if (p) { var z = Math.abs(dpDev[f]) / p.std; if (z > maxSNRall) maxSNRall = z; } });
-    var cls, confPct;
-    if (Math.abs(dp1dev) > 150) { cls = 'Artifact'; confPct = 99; }
-    else if (magPct < -30) { cls = 'Artifact'; confPct = 99; }
-    else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; confPct = Math.min(95, 80 + maxSNRall / 5); }
-    else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; confPct = Math.min(80, 60 + maxSNRall / 4); }
-    else if (dp1dev < -8 && negLow >= 2 && !altPol && maxSNR > 8) { cls = 'Metallic IP'; confPct = Math.min(92, 75 + maxSNR / 8); }
-    else if (dp1dev < -5 && negLow >= 1 && maxSNR > 5) { cls = 'Metallic IP'; confPct = Math.min(75, 55 + maxSNR / 6); }
-    else if (dp1dev < -5 && posHigh >= 2) { cls = 'Mixed'; confPct = Math.min(70, 55 + maxSNR / 8); }
-    else if (posHigh >= 2 && maxSNRall > 3) { cls = 'Hydrocarbon IP'; confPct = Math.min(60, 40 + maxSNRall / 3); }
-    else { cls = 'Weak/Inconclusive'; confPct = Math.min(35, 15 + maxSNR * 3); }
-    // Spectral slope of deviation vs log10(f) — mrad/decade (Cole-Cole shape proxy)
+    maxSNRall = Math.max(maxSNRall, rep.snr);
+    var mag0 = rep.pk.freqs[f0], ref = magRefAt(bg, rep.i), magPct = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
+    var posHigh = 0, negLow = 0, h;
+    for (h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
+    for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
+    var altPol = dpDev[harms[0]] * dpDev[harms[1]] < 0 && dpDev[harms[1]] * dpDev[harms[2]] < 0;
+    var cls, conf;
+    if (cluster.isArtifact || Math.abs(dp1dev) > 150 || magPct < -30) { cls = 'Artifact'; conf = 99; }
+    else if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); }
+    else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; conf = Math.min(95, 80 + maxSNRall / 5); }
+    else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; conf = Math.min(80, 60 + maxSNRall / 4); }
+    else if (dp1dev < -8 && negLow >= 2 && !altPol && eff > 8) { cls = 'Metallic IP'; conf = Math.min(92, 75 + eff / 8); }
+    else if (dp1dev < -5 && negLow >= 1 && eff > 5) { cls = 'Metallic IP'; conf = Math.min(75, 55 + eff / 6); }
+    else if (dp1dev < -5 && posHigh >= 2) { cls = 'Mixed'; conf = Math.min(70, 55 + eff / 8); }
+    else if (posHigh >= 2 && maxSNRall > 3) { cls = 'Hydrocarbon IP'; conf = Math.min(60, 40 + maxSNRall / 3); }
+    else if (snrInt >= 8 && n >= 4) { cls = 'Strong Anomaly'; conf = Math.min(85, 50 + snrInt * 2); }
+    else { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); }
+    // spectral slope of the deviation vs log10(f)
     var xs = harms.map(function (f) { return Math.log10(f); }), ys = harms.map(function (f) { return dpDev[f]; });
     var mx = mean(xs), my = mean(ys), sxy = 0, sxx = 0;
     xs.forEach(function (x, k) { sxy += (x - mx) * (ys[k] - my); sxx += (x - mx) * (x - mx); });
-    var kk = kin && kin[i] ? kin[i] : { cog: null, sog: null };
-    return { cls: cls, confPct: Math.round(confPct), dp: dp, dpDev: dpDev, magPct: magPct,
-      maxSNR: maxSNR, maxSNRall: maxSNRall, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow,
-      pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: pk.idx, i: i,
-      ts: pk.ts, t: pk.t, nPkts: cluster.length, lat: pk.lat, lon: pk.lon, cog: kk.cog, sog: kk.sog };
+    // SNR-weighted position of the crossing: raw centroid + along-path coordinate
+    var la = 0, lo = 0, cu = 0, w = 0;
+    cluster.forEach(function (a) { if (a.pk.lat === null) return; la += a.pk.lat * a.snr; lo += a.pk.lon * a.snr; if (kin) cu += kin[a.i].cum * a.snr; w += a.snr; });
+    var k = kin && kin[rep.i] ? kin[rep.i] : { cog: null, sog: null };
+    return { cls: cls, confPct: Math.round(conf), dp: dp, dpDev: dpDev, magPct: magPct, maxSNR: maxSNR, maxSNRall: maxSNRall,
+      snrInt: Math.round(snrInt * 10) / 10, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow, isArtifact: !!cluster.isArtifact,
+      pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: rep.pk.idx, i: rep.i,
+      ts: rep.pk.ts, t: rep.pk.t, nPkts: n, lat: w ? la / w : rep.pk.lat, lon: w ? lo / w : rep.pk.lon,
+      cum: w && kin ? cu / w : (kin && kin[rep.i] ? kin[rep.i].cum : null), cog: k.cog, sog: k.sog };
   }
 
-  // ── Lab signature matching (weighted spectral-angle) ───────────────────────
+  // ── Lab signature matching (weighted spectral angle) ───────────────────────
   function labMatch(ev, harms, bg, sigs) {
     if (!sigs || !sigs.length) return [];
     var xmt = harms[0] === 2 ? 2 : harms[0] === 8 ? 8 : 4;
     var blanks = sigs.filter(function (s) { return s.material === 'Seawater blank' && s.xmt === xmt; });
-    var blank = blanks.length ? blanks[blanks.length - 1] : null;
-    var out = [];
+    var blank = blanks.length ? blanks[blanks.length - 1] : null, out = [];
     sigs.forEach(function (s) {
       if (s.material === 'Seawater blank' || s.xmt !== xmt) return;
       var sx = 0, ss = 0, xx = 0, n = 0, W = [], X = [], S = [];
@@ -701,111 +805,284 @@ canvas{display:block;width:100%;}
     if (!best || best.cos < opts.labCosMin || best.scale <= 0 || ev.cls === 'Artifact') return base;
     var rf = family(ev.cls), lf = family(best.material);
     if (rf === lf) return { cls: best.material, conf: Math.round(Math.min(97, Math.max(ev.confPct, 50 + 45 * best.cos * Math.min(1, ev.maxSNRall / 10)))), src: 'rules+lab', conflict: false };
-    if (rf === 'weak' && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
+    if ((rf === 'weak' || rf === 'strong') && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(rf === 'strong' ? 80 : 70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
     return { cls: ev.cls, conf: Math.max(10, ev.confPct - 20), src: 'rules', conflict: true, labCls: best.material };
   }
 
-  // ── Full per-file analysis ─────────────────────────────────────────────────
+  // ── Per-file analysis (raw frame; layback applied separately) ──────────────
   function analyzeField(packets, opts, labSigs) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var xmt = packets[0].xmt, harms = getHarms(xmt), bg = computeBG(packets, harms, opts);
     var kin = computeKinematics(packets);
-    var clusters = detectAnomalies(packets, harms, bg, opts);
+    var clusters = detectAnomalies(packets, harms, bg, opts, kin);
     var events = clusters.map(function (cl) {
       var ev = classifyRules(cl, harms, bg, kin);
       ev.labMatches = labMatch(ev, harms, bg, labSigs);
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
-      var c = opts.applyLayback ? laybackShift(ev.lat, ev.lon, ev.cog, ev.sog, opts.laybackM, opts.latencyS) : [ev.lat, ev.lon];
-      ev.latC = c[0]; ev.lonC = c[1];
       return ev;
     });
-    // corrected sensor track (for pass counting)
-    var track = [], lenM = 0, prev = null;
+    var lenM = kin.length ? kin[kin.length - 1].cum : 0;
+    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM };
+  }
+  // Apply the linear layback model: every event and packet is moved BACK along the
+  // recorded path by L + τ·v. L=τ=0 returns raw positions.
+  function correctFile(fa, packets, L, tau) {
+    var kin = fa.kin, on = (L || 0) !== 0 || (tau || 0) !== 0;
+    var events = fa.events.map(function (ev) {
+      var p = on && finite(ev.cum) ? pointAtCum(packets, kin, ev.cum - laybackDist(ev.sog, L, tau)) : [ev.lat, ev.lon];
+      return Object.assign({}, ev, { latC: p[0], lonC: p[1] });
+    });
+    var track = [];
     packets.forEach(function (pk, i) {
       if (pk.lat === null) return;
-      var c = opts.applyLayback ? laybackShift(pk.lat, pk.lon, kin[i].cog, kin[i].sog, opts.laybackM, opts.latencyS) : [pk.lat, pk.lon];
-      track.push({ lat: c[0], lon: c[1], cog: kin[i].cog, i: i });
-      if (prev) { var d = haversine(prev[0], prev[1], pk.lat, pk.lon); if (d < 200) lenM += d; }
-      prev = [pk.lat, pk.lon];
+      var p = on ? pointAtCum(packets, kin, kin[i].cum - laybackDist(kin[i].sog, L, tau)) : [pk.lat, pk.lon];
+      track.push({ lat: p[0], lon: p[1], cog: kin[i].cog, i: i });
     });
-    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, track: track, trackLenM: lenM };
+    return Object.assign({}, fa, { events: events, track: track });
   }
 
-  // ── Layback calibration ────────────────────────────────────────────────────
-  // fileEvents: [{fi, run, events:[ev]}]  (events carry RAW lat/lon + cog/sog)
-  function collectCalibrationMatches(fileEvents, waypoints, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var best = {};
-    fileEvents.forEach(function (fe) {
-      fe.events.forEach(function (ev, ei) {
-        if (ev.lat === null || !finite(ev.cog) || ev.maxSNRall < opts.minSNRcal || ev.cls === 'Artifact') return;
-        var nw = null, nd = Infinity;
-        waypoints.forEach(function (w, wi) { var d = haversine(w.lat, w.lon, ev.lat, ev.lon); if (d < nd) { nd = d; nw = wi; } });
-        if (nw === null || nd > opts.matchRadiusM) return;
-        var w = waypoints[nw], e = enu(w.lat, w.lon, ev.lat, ev.lon);
-        var uE = Math.sin(ev.cog * D2R), uN = Math.cos(ev.cog * D2R);
-        var along = e[0] * uE + e[1] * uN, cross = e[0] * uN - e[1] * uE;
-        if (Math.abs(cross) > opts.maxCrossM) return;
-        var key = fe.fi + '|' + nw, m = { fi: fe.fi, run: fe.run, ei: ei, wi: nw, wp: w.name, along: along, cross: cross,
-          sog: ev.sog, cog: ev.cog, snr: ev.maxSNRall, dist: nd, cls: ev.fusedCls || ev.cls };
-        if (!best[key] || best[key].snr < m.snr) best[key] = m;
+  // ── Known targets: waypoints → physical target sites ───────────────────────
+  // Waypoints within linkM of each other are one target. A target is a segment between
+  // its two most distant members, so a long/linear target is judged along its length.
+  // Deploy-day code from names like 1A-3 / 2C-6 (leading digit + letter); 0 = unknown.
+  function waypointDayCode(name) { var m = /^([1-9])[A-Za-z]/.exec(String(name || '').trim()); return m ? parseInt(m[1], 10) : 0; }
+  function buildTargets(waypoints, linkM) {
+    linkM = linkM || 10;
+    var n = waypoints.length; if (!n) return [];
+    var parent = waypoints.map(function (_, i) { return i; });
+    function fnd(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
+    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++)
+      if (haversine(waypoints[i].lat, waypoints[i].lon, waypoints[j].lat, waypoints[j].lon) <= linkM) { var ra = fnd(i), rb = fnd(j); if (ra !== rb) parent[rb] = ra; }
+    var groups = {};
+    waypoints.forEach(function (w, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(w); });
+    var targets = Object.keys(groups).map(function (key, ti) {
+      var g = groups[key], A = g[0], B = g[0], best = 0;
+      for (var a = 0; a < g.length; a++) for (var b = a + 1; b < g.length; b++) { var d = haversine(g[a].lat, g[a].lon, g[b].lat, g[b].lon); if (d > best) { best = d; A = g[a]; B = g[b]; } }
+      var names = g.map(function (w) { return String(w.name); });
+      var alpha = names.filter(function (s) { return /^[0-9]+[A-Za-z]/.test(s); });
+      var label = alpha.length ? alpha[0].match(/^[0-9]+[A-Za-z]/)[0] : (g.length > 1 ? names[0] + '…' + names[g.length - 1] : names[0]);
+      var votes = {}, mats = {};
+      names.forEach(function (nm) { var d = waypointDayCode(nm); if (d) votes[d] = (votes[d] || 0) + 1; });
+      g.forEach(function (w) { if (w.material) mats[w.material] = (mats[w.material] || 0) + 1; });
+      var day = +Object.keys(votes).sort(function (x, y) { return votes[y] - votes[x]; })[0] || 0;
+      var mat = Object.keys(mats).sort(function (x, y) { return mats[y] - mats[x]; })[0] || null;
+      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, material: mat,
+        lat: mean(g.map(function (w) { return w.lat; })), lon: mean(g.map(function (w) { return w.lon; })),
+        aLat: A.lat, aLon: A.lon, bLat: B.lat, bLon: B.lon, lenM: best };
+    });
+    return targets.sort(function (a, b) { return b.lat - a.lat; }).map(function (t, i) { t.id = 'T' + i; return t; });
+  }
+  function distToTarget(lat, lon, T) {
+    var p = enu(T.aLat, T.aLon, lat, lon), b = enu(T.aLat, T.aLon, T.bLat, T.bLon), L2 = b[0] * b[0] + b[1] * b[1];
+    var t = L2 ? Math.max(0, Math.min(1, (p[0] * b[0] + p[1] * b[1]) / L2)) : 0;
+    return Math.hypot(p[0] - t * b[0], p[1] - t * b[1]);
+  }
+
+  // ── Survey days & automatic grouping ───────────────────────────────────────
+  function dateOf(pk) {
+    var m = String(pk && pk.ts || '').match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+    if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+    if (pk && finite(pk.t) && pk.t > 1e8) return new Date(pk.t * 1000).toISOString().slice(0, 10);
+    return null;
+  }
+  function samplePts(packets, k) {
+    var v = packets.filter(function (p) { return p.lat !== null; }); if (!v.length) return [];
+    var step = Math.max(1, Math.floor(v.length / (k || 12))), out = [];
+    for (var i = 0; i < v.length; i += step) out.push([v[i].lat, v[i].lon]);
+    out.push([v[v.length - 1].lat, v[v.length - 1].lon]); return out;
+  }
+  function nearTargets(pts, targets, maxM) {
+    if (!targets || !targets.length) return true;
+    return pts.some(function (p) { return targets.some(function (T) { return haversine(p[0], p[1], T.lat, T.lon) <= (maxM || 2000); }); });
+  }
+  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, dayRank, near}
+  // dayRank = 1-based rank of the file's date among dates of files near the targets
+  // (files from another survey area don't shift the ranking; their rank is 0).
+  function surveyDays(fileInfos, targets) {
+    var info = {}, dates = [];
+    fileInfos.forEach(function (f) {
+      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), near = nearTargets(pts, targets, 2000);
+      info[f.fi] = { date: d, near: near, pts: pts };
+      if (near && d && dates.indexOf(d) < 0) dates.push(d);
+    });
+    dates.sort();
+    Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
+    return { byFile: info, dates: dates };
+  }
+  // One group per survey date; a date is split further if its lines are > areaM apart.
+  function autoGroups(fileInfos, days, targets, areaM) {
+    areaM = areaM || 1000;
+    var byDate = {};
+    fileInfos.forEach(function (f) { var d = days.byFile[f.fi]; (byDate[(d && d.date) || 'undated'] = byDate[(d && d.date) || 'undated'] || []).push(f.fi); });
+    var allDates = Object.keys(byDate).sort(), groups = [];
+    allDates.forEach(function (date, di) {
+      var fis = byDate[date], parent = {};
+      fis.forEach(function (fi) { parent[fi] = fi; });
+      function fnd(a) { while (parent[a] !== a) a = parent[a]; return a; }
+      for (var a = 0; a < fis.length; a++) for (var b = a + 1; b < fis.length; b++) {
+        var pa = days.byFile[fis[a]].pts, pb = days.byFile[fis[b]].pts, close = false;
+        for (var i = 0; i < pa.length && !close; i++) for (var j = 0; j < pb.length; j++) if (haversine(pa[i][0], pa[i][1], pb[j][0], pb[j][1]) <= areaM) { close = true; break; }
+        if (close) parent[fnd(fis[b])] = fnd(fis[a]);
+      }
+      var areas = {};
+      fis.forEach(function (fi) { (areas[fnd(fi)] = areas[fnd(fi)] || []).push(fi); });
+      var keys = Object.keys(areas);
+      keys.forEach(function (k, ai) {
+        var ids = areas[k].sort(function (x, y) { return x - y; }), pts = [];
+        ids.forEach(function (fi) { pts = pts.concat(days.byFile[fi].pts); });
+        var cLat = mean(pts.map(function (p) { return p[0]; })), cLon = mean(pts.map(function (p) { return p[1]; }));
+        var nt = null, nd = Infinity;
+        (targets || []).forEach(function (T) { var d = haversine(cLat, cLon, T.lat, T.lon); if (d < nd) { nd = d; nt = T; } });
+        var rank = days.byFile[ids[0]].dayRank;
+        var area = nt && nd <= 2000 ? 'near ' + nt.label : (finite(cLat) ? cLat.toFixed(3) + ', ' + cLon.toFixed(3) : '');
+        var name = (date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date) + (keys.length > 1 || !rank ? (area ? ' · ' + area : '') : '');
+        groups.push({ id: 'auto-' + date + '-' + ai, name: name, auto: true, date: date, dayRank: rank, fileIds: ids, lat: cLat, lon: cLon });
       });
     });
-    return Object.keys(best).map(function (k) { return best[k]; });
+    return groups;
+  }
+
+  // ── Layback calibration anchors (all in the RAW path frame) ────────────────
+  // For each line that passes a known target: the boat's closest approach defines
+  // cum_close; the strongest crossing after it defines cum_det. The measured offset
+  //   along = cum_det − cum_close
+  // is exactly the distance the sensor trails the GPS (plus timing), independent of
+  // heading noise and of whatever correction is currently applied.
+  function collectAnchors(files, targets, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var out = [];
+    files.forEach(function (F) {
+      var pk = F.packets, kin = F.fa.kin;
+      targets.forEach(function (T, ti) {
+        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        var dmin = Infinity, imin = -1;
+        for (var i = 0; i < pk.length; i++) { if (kin[i].slat === null) continue; var d = distToTarget(kin[i].slat, kin[i].slon, T); if (d < dmin) { dmin = d; imin = i; } }
+        if (imin < 0 || dmin > opts.anchorPassM) return;
+        var c0 = kin[imin].cum, best = null;
+        F.fa.events.forEach(function (ev, ei) {
+          if (ev.isArtifact || ev.cls === 'Artifact' || !finite(ev.cum) || ev.maxSNRall < opts.minSNRcal) return;
+          var lead = ev.cum - c0;
+          if (lead < opts.minLeadM || lead > opts.maxLeadM) return;
+          if (!best || ev.maxSNRall > best.ev.maxSNRall) best = { ev: ev, ei: ei, lead: lead };
+        });
+        if (!best) return;
+        out.push({ key: F.key + '|' + T.label, fi: F.fi, run: F.run, ei: best.ei, wi: ti, wp: T.label, target: T.label,
+          along: best.lead, cross: dmin, sog: best.ev.sog, cog: best.ev.cog, snr: best.ev.maxSNRall,
+          cls: best.ev.fusedCls || best.ev.cls, dayRank: F.dayRank });
+      });
+    });
+    return out;
   }
   function axialMean(degs) {
     var s = 0, c = 0; degs.forEach(function (d) { s += Math.sin(2 * d * D2R); c += Math.cos(2 * d * D2R); });
     return ((Math.atan2(s, c) / D2R / 2) + 360) % 180;
   }
+  // Linear least squares: along = L + τ·v (+ b·dir when reciprocal lines exist),
+  // with 3-robust-σ outlier rejection. Returns L, τ, b with standard errors.
   function fitLayback(matches) {
     var res = { n: matches.length, ok: false };
-    if (matches.length < 2) { res.msg = 'Need at least 2 strong detections matched to waypoints.'; return res; }
-    var axis = axialMean(matches.map(function (m) { return m.cog; }));
-    matches.forEach(function (m) { m.dir = Math.cos((m.cog - axis) * D2R) >= 0 ? 1 : -1; m.inlier = true; });
+    if (matches.length < 2) { res.msg = 'Need at least 2 line/target crossings with a detection.'; return res; }
+    var axis = axialMean(matches.map(function (m) { return finite(m.cog) ? m.cog : 0; }));
+    matches.forEach(function (m) { m.dir = Math.cos(((finite(m.cog) ? m.cog : 0) - axis) * D2R) >= 0 ? 1 : -1; m.inlier = true; });
     var nF = matches.filter(function (m) { return m.dir > 0; }).length, nR = matches.length - nF;
     var sogs = matches.map(function (m) { return m.sog; }).filter(finite);
     var useV = sogs.length === matches.length && matches.length >= 5 && std(sogs) >= 0.15;
-    var useS = nF >= 1 && nR >= 1 && matches.length >= 3;
-    var fit = null, cols;
+    // Reciprocal-bias terms: one per target that was crossed in BOTH directions (its own
+    // waypoint position error along the line cancels), else a single shared term.
+    var recipT = {};
+    matches.forEach(function (m) { var r = recipT[m.wi] = recipT[m.wi] || { f: 0, r: 0 }; if (m.dir > 0) r.f++; else r.r++; });
+    var biasIds = Object.keys(recipT).filter(function (k) { return recipT[k].f && recipT[k].r; });
+    var fit = null, cols, p, mode;
     for (var iter = 0; iter < 3; iter++) {
       var use = matches.filter(function (m) { return m.inlier; });
-      var p = 1 + (useV ? 1 : 0) + (useS ? 1 : 0);
-      if (use.length < p + 1) { useV = false; p = 1 + (useS ? 1 : 0); }
-      if (use.length < p + 1) { useS = false; p = 1; }
-      cols = ['L'].concat(useV ? ['tau'] : []).concat(useS ? ['bias'] : []);
-      var X = use.map(function (m) { var r = [1]; if (useV) r.push(m.sog); if (useS) r.push(m.dir); return r; });
-      var y = use.map(function (m) { return m.along; });
-      fit = lstsq(X, y); if (!fit) break;
-      var rr = matches.map(function (m) { var r = [1]; if (useV) r.push(m.sog); if (useS) r.push(m.dir);
-        return m.along - r.reduce(function (s, v, k) { return s + v * fit.beta[k]; }, 0); });
-      var sc = 1.4826 * mad(rr, 0 + median(rr));
+      mode = biasIds.length >= 1 && use.length >= 2 + biasIds.length + (useV ? 1 : 0) + 1 ? 'target' : (nF && nR && use.length >= 3 ? 'shared' : 'none');
+      var nb = mode === 'target' ? biasIds.length : mode === 'shared' ? 1 : 0;
+      p = 1 + (useV ? 1 : 0) + nb;
+      if (use.length < p + 1 && useV) { useV = false; p--; }
+      cols = ['L'].concat(useV ? ['tau'] : []);
+      if (mode === 'target') biasIds.forEach(function (k) { cols.push('b' + k); }); else if (mode === 'shared') cols.push('bias');
+      var row = function (m) {
+        var r = [1]; if (useV) r.push(m.sog);
+        if (mode === 'target') biasIds.forEach(function (k) { r.push(String(m.wi) === k ? m.dir : 0); });
+        else if (mode === 'shared') r.push(m.dir);
+        return r;
+      };
+      fit = lstsq(use.map(row), use.map(function (m) { return m.along; })); if (!fit) break;
+      var rr = matches.map(function (m) { return m.along - row(m).reduce(function (s, v, k) { return s + v * fit.beta[k]; }, 0); });
+      var sc = 1.4826 * mad(rr, median(rr));
       matches.forEach(function (m, k) { m.resid = rr[k]; m.inlier = !(sc > 0.5 && Math.abs(rr[k]) > 3 * sc && use.length > p + 2); });
     }
     if (!fit) { res.msg = 'Fit failed (degenerate geometry).'; return res; }
     var inl = matches.filter(function (m) { return m.inlier; }), dof = Math.max(1, inl.length - cols.length);
     var sse = inl.reduce(function (s, m) { return s + m.resid * m.resid; }, 0), s2 = sse / dof;
-    var get = function (name) { var k = cols.indexOf(name); return k < 0 ? null : { v: fit.beta[k], se: Math.sqrt(Math.max(0, fit.inv[k][k] * s2)) }; };
-    // Per-waypoint reciprocal-pair estimate (waypoint error cancels): mean of fwd & rev means
+    var get = function (nm) { var k = cols.indexOf(nm); return k < 0 ? null : { v: fit.beta[k], se: Math.sqrt(Math.max(0, fit.inv[k][k] * s2)) }; };
+    var biases = cols.filter(function (c) { return c === 'bias' || c[0] === 'b'; }).map(function (c) { var g = get(c); return { id: c === 'bias' ? 'all' : c.slice(1), v: g.v, se: g.se }; });
     var byWp = {};
     inl.forEach(function (m) { (byWp[m.wi] = byWp[m.wi] || { f: [], r: [] })[m.dir > 0 ? 'f' : 'r'].push(m.along); });
-    var pairs = Object.keys(byWp).filter(function (k) { return byWp[k].f.length && byWp[k].r.length; })
-      .map(function (k) { return (mean(byWp[k].f) + mean(byWp[k].r)) / 2; });
-    var L = get('L'), tau = get('tau'), bias = get('bias');
-    var medSog = median(inl.map(function (m) { return m.sog; }));
+    var pairs = Object.keys(byWp).filter(function (k) { return byWp[k].f.length && byWp[k].r.length; }).map(function (k) { return (mean(byWp[k].f) + mean(byWp[k].r)) / 2; });
+    var L = get('L'), tau = get('tau'), medSog = median(inl.map(function (m) { return m.sog; }));
     return { ok: true, n: matches.length, nInliers: inl.length, nFwd: nF, nRev: nR, axisDeg: axis,
-      L: L.v, seL: L.se, tau: tau ? tau.v : 0, seTau: tau ? tau.se : null, bias: bias ? bias.v : null,
-      seBias: bias ? bias.se : null, usedSpeed: !!tau, usedDir: !!bias, rms: Math.sqrt(sse / Math.max(1, inl.length)),
-      medSog: medSog, effOffset: L.v + (tau ? tau.v * (finite(medSog) ? medSog : 0) : 0),
+      L: L.v, seL: L.se, tau: tau ? tau.v : 0, seTau: tau ? tau.se : null, usedSpeed: !!tau, usedDir: biases.length > 0,
+      biasMode: mode, biases: biases, bias: biases.length ? mean(biases.map(function (b) { return b.v; })) : null,
+      rms: Math.sqrt(sse / Math.max(1, inl.length)), medSog: medSog,
+      effOffset: L.v + (tau ? tau.v * (finite(medSog) ? medSog : 0) : 0),
       Lpairs: pairs.length ? median(pairs) : null, nPairs: pairs.length,
       crossMean: mean(inl.map(function (m) { return m.cross; })), crossStd: std(inl.map(function (m) { return m.cross; })),
       alongMedianRaw: median(matches.map(function (m) { return m.along; })), matches: matches };
   }
 
-  // ── Corroboration (multi-run sites) ────────────────────────────────────────
-  // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}]
-  function buildSites(points, fileTracks, waypoints, opts) {
+  // ── Coverage: did each line pass each known target, and detect it? ─────────
+  // Uses CORRECTED positions. PASS = sensor track within detRadiusM of the target;
+  // HIT = a (non-artifact) crossing within detRadiusM; FAIL = passed, nothing detected;
+  // UNATTRIB = a crossing not near any target.
+  function evaluateCoverage(files, targets, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var rows = [], R = opts.detRadiusM;
+    files.forEach(function (F) {
+      var evs = F.events.filter(function (e) { return !e.isArtifact && e.cls !== 'Artifact' && e.latC !== null && e.latC !== undefined; });
+      var used = {};
+      targets.forEach(function (T) {
+        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        var dmin = Infinity;
+        F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
+        if (dmin > R) return;
+        var hit = null, hd = Infinity;
+        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
+        if (hit) used[F.events.indexOf(hit)] = 1;
+        rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
+          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null });
+      });
+      evs.forEach(function (e) {
+        if (used[F.events.indexOf(e)]) return;
+        var nt = null, nd = Infinity;
+        targets.forEach(function (T) { var d = distToTarget(e.latC, e.lonC, T); if (d < nd) { nd = d; nt = T; } });
+        if (nt && nd <= R) return;   // near a target on a filtered day: not a false alarm
+        rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: nt ? nt.label : '—', targetId: nt ? nt.id : null, closest: null,
+          status: 'UNATTRIB', cls: e.finalCls || e.fusedCls || e.cls, evDist: nd, snr: e.maxSNRall });
+      });
+    });
+    var perT = targets.map(function (T) {
+      var r = rows.filter(function (x) { return x.targetId === T.id && x.status !== 'UNATTRIB'; });
+      var h = r.filter(function (x) { return x.status === 'HIT'; }), cls = {}, famOk = 0, famN = 0;
+      h.forEach(function (x) { cls[x.cls] = (cls[x.cls] || 0) + 1; if (T.material && T.material !== 'Seawater blank' && T.material !== 'No anomaly') { famN++; if (family(x.cls) === family(T.material)) famOk++; } });
+      return { id: T.id, label: T.label, material: T.material, day: T.day, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
+        classes: cls, famOk: famOk, famN: famN, meanErrM: h.length ? mean(h.map(function (x) { return x.evDist; })) : null };
+    });
+    var P = perT.reduce(function (s, t) { return s + t.passes; }, 0), H = perT.reduce(function (s, t) { return s + t.hits; }, 0);
+    var fOk = perT.reduce(function (s, t) { return s + t.famOk; }, 0), fN = perT.reduce(function (s, t) { return s + t.famN; }, 0);
+    var ua = rows.filter(function (x) { return x.status === 'UNATTRIB'; }), uaReal = ua.filter(function (x) { var f = family(x.cls); return f !== 'weak' && f !== 'artifact'; });
+    var km = files.reduce(function (s, F) { return s + (F.trackLenM || 0); }, 0) / 1000;
+    var errs = perT.map(function (t) { return t.meanErrM; }).filter(finite);
+    return { rows: rows, perTarget: perT, passes: P, hits: H, pd: P ? H / P : null, pdCI: wilson(H, P),
+      unattributed: ua.length, falseAlarms: uaReal.length, trackKm: km, faPerKm: km > 0 ? uaReal.length / km : null,
+      famAcc: fN ? fOk / fN : null, famN: fN, meanPosErrM: errs.length ? mean(errs) : null };
+  }
+
+  // ── Corroboration of detections across runs (known AND unknown targets) ────
+  // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}] (corrected positions)
+  function buildSites(points, fileTracks, targets, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var n = points.length, parent = points.map(function (_, i) { return i; });
     function fnd(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
@@ -826,7 +1103,6 @@ canvas{display:block;width:100%;}
       var cogs = g.map(function (p) { return p.cog; }).filter(finite), recip = false;
       for (var a = 0; a < cogs.length && !recip; a++) for (var b = a + 1; b < cogs.length; b++) if (angDiff(cogs[a], cogs[b]) > 120) { recip = true; break; }
       var scatter = Math.sqrt(mean(g.map(function (p) { var d = haversine(la, lo, p.lat, p.lon); return d * d; })) || 0);
-      // runs whose (corrected) sensor track passed over the site
       var passR = Math.max(opts.mergeRadiusM, opts.passRadiusM), passed = {};
       (fileTracks || []).forEach(function (ft) {
         for (var q = 0; q < ft.track.length; q++) {
@@ -836,53 +1112,22 @@ canvas{display:block;width:100%;}
       });
       Object.keys(runs).forEach(function (fi) { passed[fi] = runs[fi]; });
       var nRuns = Object.keys(runs).length, nPass = Object.keys(passed).length;
-      var consensus = cls[top] / g.length, famConsensus = fam[topFam] / g.length;
-      var nw = null, nd = Infinity;
-      (waypoints || []).forEach(function (w) { var d = haversine(w.lat, w.lon, la, lo); if (d < nd) { nd = d; nw = w; } });
+      var nt = null, nd = Infinity;
+      (targets || []).forEach(function (T) { var d = distToTarget(la, lo, T); if (d < nd) { nd = d; nt = T; } });
       var weakSite = topFam === 'weak' || topFam === 'artifact' || topFam === 'none';
+      var famConsensus = fam[topFam] / g.length;
       var tier = nRuns < 2 ? 'Single run' : weakSite ? 'Weak repeat' :
         nRuns >= 3 && famConsensus >= 0.67 && recip ? 'Confirmed' : famConsensus >= 0.5 ? 'Corroborated' : 'Conflicting';
       return { lat: la, lon: lo, members: g, nDet: g.length, nRuns: nRuns, nPass: nPass, runs: runs,
-        repeatability: nPass ? nRuns / nPass : 0, cls: top, consensus: consensus, famConsensus: famConsensus,
+        repeatability: nPass ? nRuns / nPass : 0, cls: top, consensus: cls[top] / g.length, famConsensus: famConsensus,
         reciprocal: recip, scatterM: scatter, meanSNR: mean(g.map(function (p) { return p.snr; })),
         maxConf: Math.max.apply(null, g.map(function (p) { return p.conf || 0; })),
-        nearestWp: nw ? nw.name : null, nearestWpM: nw ? nd : null, tier: tier };
+        nearestWp: nt ? nt.label : null, nearestWpM: nt ? nd : null, knownTarget: !!(nt && nd <= opts.detRadiusM), tier: tier };
     });
     var order = { 'Confirmed': 0, 'Corroborated': 1, 'Conflicting': 2, 'Weak repeat': 3, 'Single run': 4 };
     return sites.sort(function (a, b) { return order[a.tier] - order[b.tier] || b.nRuns - a.nRuns || b.meanSNR - a.meanSNR; });
   }
 
-  // ── Detection performance vs known waypoints ───────────────────────────────
-  function detectionMetrics(fileTracks, points, waypoints, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var perWp = waypoints.map(function (w) {
-      var passes = 0, hits = 0, famOk = 0, famN = 0, classes = {};
-      fileTracks.forEach(function (ft) {
-        var passed = ft.track.some(function (tp) { return Math.abs(tp.lat - w.lat) < 0.0005 && haversine(w.lat, w.lon, tp.lat, tp.lon) <= opts.passRadiusM; });
-        var dets = points.filter(function (p) { return p.fi === ft.fi && haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; });
-        if (!passed && !dets.length) return;
-        passes++;
-        if (dets.length) {
-          hits++;
-          var bestP = dets.reduce(function (a, b) { return (b.snr || 0) > (a.snr || 0) ? b : a; });
-          classes[bestP.cls] = (classes[bestP.cls] || 0) + 1;
-          if (w.material && w.material !== 'Seawater blank' && w.material !== 'No anomaly') { famN++; if (family(bestP.cls) === family(w.material)) famOk++; }
-        }
-      });
-      var errs = points.filter(function (p) { return haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; })
-        .map(function (p) { return haversine(w.lat, w.lon, p.lat, p.lon); });
-      return { name: w.name, material: w.material, passes: passes, hits: hits, pd: passes ? hits / passes : null,
-        famOk: famOk, famN: famN, classes: classes, meanErrM: errs.length ? mean(errs) : null };
-    });
-    var isFA = function (p) { return !waypoints.some(function (w) { return haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; }); };
-    var fa = points.filter(isFA), km = fileTracks.reduce(function (s, ft) { return s + ft.trackLenM; }, 0) / 1000;
-    var P = perWp.reduce(function (s, w) { return s + w.passes; }, 0), H = perWp.reduce(function (s, w) { return s + w.hits; }, 0);
-    var fOk = perWp.reduce(function (s, w) { return s + w.famOk; }, 0), fN = perWp.reduce(function (s, w) { return s + w.famN; }, 0);
-    var errsAll = []; perWp.forEach(function (w) { if (w.meanErrM !== null) errsAll.push(w.meanErrM); });
-    return { perWp: perWp, passes: P, hits: H, pd: P ? H / P : null, pdCI: wilson(H, P), falseAlarms: fa.length, trackKm: km,
-      faPerKm: km > 0 ? fa.length / km : null, famAcc: fN ? fOk / fN : null, famN: fN, meanPosErrM: errsAll.length ? mean(errsAll) : null,
-      precision: points.length ? (points.length - fa.length) / points.length : null };
-  }
   function wilson(k, n) {
     if (!n) return null; var z = 1.96, p = k / n, d = 1 + z * z / n;
     var c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
@@ -949,11 +1194,15 @@ canvas{display:block;width:100%;}
     alignWaypointHemisphere: alignWaypointHemisphere, matchMaterial: matchMaterial,
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
-    laybackShift: laybackShift, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass, analyzeField: analyzeField,
-    collectCalibrationMatches: collectCalibrationMatches, fitLayback: fitLayback, axialMean: axialMean,
-    buildSites: buildSites, detectionMetrics: detectionMetrics, wilson: wilson,
+    pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
+    analyzeField: analyzeField, correctFile: correctFile,
+    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
+    dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
+    collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,
+    evaluateCoverage: evaluateCoverage, buildSites: buildSites, wilson: wilson,
     confusion: confusion, looKnn: looKnn, reliability: reliability
   };
+
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   root.IPA = API;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -965,14 +1214,15 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v29';
+const APP_VERSION='v30';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
 const CONFIRM_OPTIONS=MAT_OPTIONS.concat(['No anomaly']);
 const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
 const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
-const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','minPkts','labCosMin'];
+const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','mergeGapM','minPkts','labCosMin'];
+const GROUP_COLORS=['#0071b8','#1d9e75','#d8641e','#7f77dd','#b03a5b','#846b00','#2d6a4f','#c77d0a'];
 
 // ── Supabase client (handles auth + data) ─────────────────────────────────────
 var SUPA_URL='https://cregneohqyqnllcylaof.supabase.co';
@@ -1070,9 +1320,22 @@ function deleteFromLibrary(rows){
     if(res&&res.error)throw new Error(res.error.message);
     return q(supabase.from('data_files').delete().in('id',rows.map(function(r){return r.id;})));});
 }
+// ── Local session cache (IndexedDB, this browser only) — loaded files survive a refresh ──
+var IDB_NAME='ipa_local_v30';
+function idbRun(mode,fn){return new Promise(function(res){
+  try{if(!window.indexedDB)return res(null);
+    var rq=indexedDB.open(IDB_NAME,1);
+    rq.onupgradeneeded=function(){rq.result.createObjectStore('files',{keyPath:'hash'});};
+    rq.onerror=function(){res(null);};
+    rq.onsuccess=function(){try{var tx=rq.result.transaction('files',mode),r=fn(tx.objectStore('files'));
+      tx.oncomplete=function(){res(r&&'result' in r?r.result:true);};tx.onerror=function(){res(null);};}catch(e){res(null);}};
+  }catch(e){res(null);}});}
+function idbSaveFiles(recs){return idbRun('readwrite',function(st){recs.forEach(function(r){st.put(r);});});}
+function idbLoadFiles(){return idbRun('readonly',function(st){return st.getAll();});}
+function idbClearFiles(){return idbRun('readwrite',function(st){st.clear();});}
 function sameWaypoint(a,b){return a.name===b.name&&Math.abs(a.lat-b.lat)<1e-5&&Math.abs(a.lon-b.lon)<1e-5;}
 function saveCalibrationDB(fit,proc){return q(supabase.from('layback_calibrations').insert({layback_m:fit.L,latency_s:fit.tau,bias_m:fit.bias,
-  se_layback_m:fit.seL,n_matches:fit.nInliers,rms_m:fit.rms,cross_mean_m:fit.crossMean,params:{matchRadiusM:proc.matchRadiusM,maxCrossM:proc.maxCrossM,minSNRcal:proc.minSNRcal,mode:proc.mode}}).select());}
+  se_layback_m:fit.seL,n_matches:fit.nInliers,rms_m:fit.rms,cross_mean_m:fit.crossMean,params:{model:'along = L + tau*v + b_target*dir (path)',anchorPassM:proc.anchorPassM,maxLeadM:proc.maxLeadM,minSNRcal:proc.minSNRcal,mode:proc.mode,biases:fit.biases,gpsOffsetM:proc.gpsOffsetM,cableM:proc.cableM}}).select());}
 function signInWithGitHub(){return supabase.auth.signInWithOAuth({provider:'github',options:{redirectTo:window.location.origin+window.location.pathname}});}
 function signOut(){return supabase.auth.signOut();}
 
@@ -1237,7 +1500,7 @@ function App(){
   var [dbStatus,setDbStatus]=useState('loading');
   var [dbNote,setDbNote]=useState('');
   var [authUser,setAuthUser]=useState(null);
-  var [proc,setProcState]=useState(Object.assign({},IPA.DEFAULT_PROC,lsGet('ipa_proc',{})));
+  var [proc,setProcState]=useState(function(){var sv=lsGet('ipa_proc',{});return Object.assign({},IPA.DEFAULT_PROC,sv&&sv._v===30?sv:{},{_v:30});});
   var [showProc,setShowProc]=useState(false);
   var [library,setLibrary]=useState([]);
   var [libStatus,setLibStatus]=useState('');
@@ -1253,6 +1516,10 @@ function App(){
   var [metricLevel,setMetricLevel]=useState('family');
   var [mapFocus,setMapFocus]=useState(null);
   var [runGroups,setRunGroups]=useState([]);
+  var [groupNames,setGroupNames]=useState(lsGet('ipa_group_names',{}));
+  var [anchorOff,setAnchorOff]=useState(lsGet('ipa_anchor_off',{}));
+  var [mapGroup,setMapGroup]=useState('all');
+  var [stepIdx,setStepIdx]=useState(-1);
   var [expandedGroup,setExpandedGroup]=useState(null);
   var [newGroupModal,setNewGroupModal]=useState(false);
   var [newGroupName,setNewGroupName]=useState('');
@@ -1268,6 +1535,8 @@ function App(){
 
   function setProc(patch){setProcState(function(p){var n=Object.assign({},p,patch);lsSet('ipa_proc',n);return n;});}
   useEffect(function(){lsSet('ipa_ai_model',aiModel);},[aiModel]);
+  useEffect(function(){lsSet('ipa_group_names',groupNames);},[groupNames]);
+  useEffect(function(){lsSet('ipa_anchor_off',anchorOff);},[anchorOff]);
   useEffect(function(){lsSet('ipa_train_policy',trainPolicy);},[trainPolicy]);
   // Confirmations allowed to influence NEW classifications (AI few-shot examples, k-NN)
   var eligibleTraining=useMemo(function(){
@@ -1310,20 +1579,14 @@ function App(){
   var detKey=DET_KEYS.map(function(k){return proc[k];}).join('|');
   useEffect(function(){setAiResults({});setSelEv(null);},[detKey]);
   var baseAnalyses=useMemo(function(){
-    var o=Object.assign({},proc,{applyLayback:false});
     return files.map(function(f){
       if(f.type!=='field'||!f.packets.length)return null;
-      try{return IPA.analyzeField(f.packets,o,labSigs);}catch(e){console.error(e);return null;}
+      try{return IPA.analyzeField(f.packets,proc,labSigs);}catch(e){console.error(e);return null;}
     });
   },[files,detKey,labSigs]);
   var fileAnalyses=useMemo(function(){
-    return baseAnalyses.map(function(fa,fi){
-      if(!fa)return null;
-      var L=proc.applyLayback?proc.laybackM:0,tau=proc.applyLayback?proc.latencyS:0;
-      var events=fa.events.map(function(ev){var c=IPA.laybackShift(ev.lat,ev.lon,ev.cog,ev.sog,L,tau);return Object.assign({},ev,{latC:c[0],lonC:c[1]});});
-      var track=fa.track.map(function(tp){var k=fa.kin[tp.i];var c=IPA.laybackShift(tp.lat,tp.lon,tp.cog,k.sog,L,tau);return{lat:c[0],lon:c[1],cog:tp.cog,i:tp.i};});
-      return Object.assign({},fa,{events:events,track:track});
-    });
+    var L=proc.applyLayback?proc.laybackM:0,tau=proc.applyLayback?proc.latencyS:0;
+    return baseAnalyses.map(function(fa,fi){return fa?IPA.correctFile(fa,files[fi].packets,L,tau):null;});
   },[baseAnalyses,proc.applyLayback,proc.laybackM,proc.latencyS]);
 
   function finalCls(fi,ei,ev){var ar=aiResults[fi+'-'+ei];return ar&&ar.classification!=='Error'?ar.classification:ev.fusedCls;}
@@ -1331,26 +1594,50 @@ function App(){
 
   var refLon=useMemo(function(){for(var i=0;i<files.length;i++){var p=files[i].packets.find(function(pk){return pk.lon!==null;});if(p)return p.lon;}return NaN;},[files]);
   var wps=useMemo(function(){return IPA.alignWaypointHemisphere(waypoints,refLon);},[waypoints,refLon]);
+  // Known targets: waypoints within targetLinkM merged into one physical target (segment)
+  var targets=useMemo(function(){return IPA.buildTargets(wps,proc.targetLinkM);},[wps,proc.targetLinkM]);
 
   var fieldIdx=useMemo(function(){return fileAnalyses.map(function(fa,fi){return fa?fi:-1;}).filter(function(fi){return fi>=0;});},[fileAnalyses]);
+  // Survey day of each line (rank among dates of lines near the targets) + auto groups
+  var days=useMemo(function(){return IPA.surveyDays(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,packets:files[fi].packets};}),targets);},[fieldIdx,targets]);
+  var autoGroupList=useMemo(function(){
+    if(!proc.autoGroup)return [];
+    return IPA.autoGroups(fieldIdx.map(function(fi){return{fi:fi};}),days,targets,proc.areaM).map(function(g,i){
+      return Object.assign({},g,{name:groupNames[g.id]||g.name,color:GROUP_COLORS[i%GROUP_COLORS.length]});});
+  },[fieldIdx,days,targets,proc.autoGroup,proc.areaM,groupNames]);
+  var allGroups=useMemo(function(){return autoGroupList.concat(runGroups);},[autoGroupList,runGroups]);
+  function groupOf(fi){for(var i=0;i<allGroups.length;i++)if(allGroups[i].fileIds.indexOf(fi)>=0)return allGroups[i];return null;}
+  function dayRankOf(fi){var d=days.byFile[fi];return d?d.dayRank:0;}
+
   var fileTracks=useMemo(function(){return fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,track:fileAnalyses[fi].track,trackLenM:fileAnalyses[fi].trackLenM};});},[fieldIdx,fileAnalyses]);
   var points=useMemo(function(){
     var pts=[];
     fieldIdx.forEach(function(fi){fileAnalyses[fi].events.forEach(function(ev,ei){
-      if(ev.latC===null||ev.latC===undefined)return;
+      if(ev.latC===null||ev.latC===undefined||ev.isArtifact)return;
       pts.push({lat:ev.latC,lon:ev.lonC,cls:finalCls(fi,ei,ev),conf:finalConf(fi,ei,ev),fi:fi,ei:ei,run:files[fi].run,cog:ev.cog,snr:ev.maxSNRall});
     });});
     return pts;
   },[fieldIdx,fileAnalyses,aiResults]);
-  var sites=useMemo(function(){return IPA.buildSites(points,fileTracks,wps,proc);},[points,fileTracks,wps,proc.mergeRadiusM,proc.passRadiusM]);
+  var sites=useMemo(function(){return IPA.buildSites(points,fileTracks,targets,proc);},[points,fileTracks,targets,proc.mergeRadiusM,proc.passRadiusM,proc.detRadiusM]);
+  // Layback calibration: automatic line/target anchors in the RAW path frame, user can exclude any
+  var anchors=useMemo(function(){
+    if(!targets.length)return [];
+    return IPA.collectAnchors(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,key:files[fi].hash||files[fi].run,packets:files[fi].packets,fa:baseAnalyses[fi],dayRank:dayRankOf(fi)};}),targets,proc);
+  },[targets,fieldIdx,baseAnalyses,days,proc.anchorPassM,proc.minLeadM,proc.maxLeadM,proc.minSNRcal,proc.dayFilter]);
   var calib=useMemo(function(){
-    if(!wps.length)return null;
-    var fe=fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,events:baseAnalyses[fi].events};});
-    var m=IPA.collectCalibrationMatches(fe,wps,proc);
-    return IPA.fitLayback(m);
-  },[wps,fieldIdx,baseAnalyses,proc.matchRadiusM,proc.maxCrossM,proc.minSNRcal]);
-  var detMetrics=useMemo(function(){return wps.length&&fileTracks.length?IPA.detectionMetrics(fileTracks,points,wps,proc):null;},
-    [fileTracks,points,wps,proc.passRadiusM,proc.detRadiusM]);
+    if(!targets.length)return null;
+    var use=anchors.filter(function(a){return !anchorOff[a.key];}).map(function(a){return Object.assign({},a);});
+    var fit=IPA.fitLayback(use);
+    fit.excluded=anchors.filter(function(a){return anchorOff[a.key];});
+    return fit;
+  },[anchors,anchorOff,targets]);
+  // Coverage of known targets (corrected positions)
+  var coverage=useMemo(function(){
+    if(!targets.length||!fieldIdx.length)return null;
+    return IPA.evaluateCoverage(fieldIdx.map(function(fi){var fa=fileAnalyses[fi];
+      return{fi:fi,run:files[fi].run,dayRank:dayRankOf(fi),track:fa.track,trackLenM:fa.trackLenM,
+        events:fa.events.map(function(ev,ei){return Object.assign({},ev,{finalCls:finalCls(fi,ei,ev)});})};}),targets,proc);
+  },[targets,fieldIdx,fileAnalyses,days,aiResults,proc.detRadiusM,proc.dayFilter]);
 
   // Active-file analysis & chart series
   var analysis=useMemo(function(){
@@ -1425,13 +1712,12 @@ function App(){
         var fa=fileAnalyses[fi];if(!fa||!fa.track.length)return;
         var lls=fa.track.map(function(tp){return[tp.lat,tp.lon];});
         lls.forEach(function(ll){bounds.push(ll);});
-        var col=RUN_COLORS[fi%RUN_COLORS.length];
-        runGroups.forEach(function(g){if(g.fileIds.indexOf(fi)>=0)col=g.color;});
+        var gg=groupOf(fi),col=gg?gg.color:RUN_COLORS[fi%RUN_COLORS.length];
         var isA=fi===activeIdx;
         var pl=L.polyline(lls,{color:col,weight:isA?4:2.5,opacity:isA?1:.7});
         L.circleMarker(lls[0],{radius:5,fillColor:col,color:'#fff',weight:1.5,fillOpacity:1}).addTo(LL.tracks);
         pl.on('click',function(){setActiveIdx(fi);setMainTab('analysis');setSelEv(null);});
-        pl.bindTooltip('<div style="font-family:monospace;font-size:11px"><b>'+f.run+'</b><br>'+f.packets.length+' pkts · '+f.xmt+'Hz'+
+        pl.bindTooltip('<div style="font-family:monospace;font-size:11px"><b>'+f.run+'</b>'+(gg?'<br>'+gg.name:'')+'<br>'+f.packets.length+' pkts · '+f.xmt+'Hz'+
           (proc.applyLayback&&(proc.laybackM||proc.latencyS)?'<br>sensor track (layback '+fmt(proc.laybackM)+' m)':'')+'</div>',{sticky:true});
         pl.addTo(LL.tracks);
       });
@@ -1454,7 +1740,19 @@ function App(){
       });
     }
     if(showWps){
-      wps.forEach(function(w){
+      var covBy={};if(coverage)coverage.perTarget.forEach(function(t){covBy[t.id]=t;});
+      targets.forEach(function(T){
+        var cv=covBy[T.id],col=!cv||!cv.passes?'#8a94a6':cv.hits===cv.passes?'#1a8c4e':cv.hits?'#c77d0a':'#cc2233';
+        bounds.push([T.lat,T.lon]);
+        if(T.lenM>0.5)L.polyline([[T.aLat,T.aLon],[T.bLat,T.bLon]],{color:col,weight:5,opacity:.85}).addTo(LL.wps);
+        L.circle([T.lat,T.lon],{radius:proc.detRadiusM,color:col,weight:1.5,dashArray:'4,4',fill:false}).addTo(LL.wps)
+          .bindTooltip('<div style="font-family:monospace;font-size:11px"><b>Target '+T.label+'</b>'+(T.day?' · day '+T.day:'')+(T.material?'<br>'+T.material:'')+
+            '<br>'+T.n+' waypoint'+(T.n>1?'s':'')+(T.lenM>0.5?' · '+fmt(T.lenM)+' m long':'')+
+            (cv?'<br>'+cv.hits+'/'+cv.passes+' passes detected':'')+'</div>',{sticky:true});
+        L.marker([T.lat,T.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[80,14],iconAnchor:[40,24],
+          html:'<div style="font-family:monospace;font-size:10px;font-weight:bold;color:'+col+';text-align:center;text-shadow:0 0 3px #fff,0 0 3px #fff">▲ '+T.label+'</div>'})}).addTo(LL.wps);
+      });
+      if(false)wps.forEach(function(w){
         bounds.push([w.lat,w.lon]);
         L.marker([w.lat,w.lon],{icon:L.divIcon({className:'',iconSize:[14,14],iconAnchor:[7,7],
           html:'<div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:12px solid #ffcc00;filter:drop-shadow(0 0 1px #000)"></div>'})})
@@ -1463,7 +1761,7 @@ function App(){
     }
     if(mapFocus){map.setView(mapFocus,18);}
     else if(bounds.length>=2){try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}}
-  },[mainTab,files,fileAnalyses,activeIdx,runGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,mapLayer,mapFocus]);
+  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus]);
 
   // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
   useEffect(function(){lsSet('ipa_auto_share',autoShare);},[autoShare]);
@@ -1477,7 +1775,8 @@ function App(){
     if(w.length)return{kind:'wp',w:w,rec:{name:name,text:text,hash:hash,kind:'waypoints',meta:fileMeta('waypoints',null,w)}};
     return null;
   }
-  function addParsed(res){
+  function addParsed(res,noCache){
+    if(!noCache){var now=Date.now();idbSaveFiles(res.filter(function(r){return r&&r.rec&&r.rec.hash;}).map(function(r,k){return{hash:r.rec.hash,name:r.rec.name,text:r.rec.text,kind:r.rec.kind,at:now+k};}));}
     var nf=res.filter(function(r){return r&&r.kind==='ipa';}).map(function(r){return r.f;});
     var nw=[];res.forEach(function(r){if(r&&r.kind==='wp')nw=nw.concat(r.w);});
     if(nf.length)setFiles(function(prev){
@@ -1487,6 +1786,17 @@ function App(){
     if(nw.length)setWaypoints(function(prev){return prev.concat(nw.filter(function(w){return !prev.some(function(p){return sameWaypoint(p,w);});}));});
     return nw;
   }
+  // Restore this browser's last session once signed in
+  var restoredRef=useRef(false);
+  useEffect(function(){
+    if(!authUser||restoredRef.current)return;restoredRef.current=true;
+    idbLoadFiles().then(function(recs){
+      if(!recs||!recs.length)return;
+      recs.sort(function(a,b){return (a.at||0)-(b.at||0);});
+      addParsed(recs.map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
+      setLibStatus('Restored '+recs.length+' file(s) from this browser\'s last session.');
+    });
+  },[authUser]);
   function shareRecords(recs){
     var todo=recs.filter(function(r){return r&&r.hash&&!libraryHashes[r.hash]&&shareState[r.hash]!=='uploading';});
     if(!todo.length)return Promise.resolve(0);
@@ -1507,9 +1817,19 @@ function App(){
         .concat(d.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source};}));});
     }).catch(function(e){setDbNote('Waypoints kept locally ('+e.message+').');});
   }
+  // KMZ = zipped KML; everything else is read as text
+  function readFileText(file){
+    if(!/\.kmz$/i.test(file.name))return file.text();
+    if(typeof JSZip==='undefined')return Promise.reject(new Error('JSZip not loaded'));
+    return file.arrayBuffer().then(function(buf){return JSZip.loadAsync(buf);}).then(function(zip){
+      var names=Object.keys(zip.files).filter(function(n){return /\.kml$/i.test(n)&&!zip.files[n].dir;})
+        .sort(function(a,b){return (/doc\.kml$/i.test(b)?1:0)-(/doc\.kml$/i.test(a)?1:0)||a.split('/').length-b.split('/').length;});
+      return names.length?zip.files[names[0]].async('string'):'';
+    });
+  }
   var loadFiles=function(fileList,forceWp){
     var arr=Array.prototype.slice.call(fileList);
-    Promise.all(arr.map(function(file){return file.text().then(function(text){
+    Promise.all(arr.map(function(file){return readFileText(file).then(function(text){
       return sha256Hex(text).then(function(h){return parseText(file.name,text,h,forceWp);});
     });})).then(function(res){
       var nw=addParsed(res);
@@ -1684,12 +2004,12 @@ function App(){
             <div className="icon">📡</div>
             <p>Drop <code>_p.txt</code> files (lab or field)<br/>or waypoint <code>.csv/.gpx</code> · <span>click to browse</span></p>
           </div>
-          <input ref={fileRef} type="file" accept=".txt,.csv,.gpx" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
-          <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
+          <input ref={fileRef} type="file" accept=".txt,.csv,.gpx,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
+          <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
 
           {files.length>0 && <div className="sidebar-label">Files</div>}
           {files.map(function(f,i){
-            var grp=runGroups.find(function(g){return g.fileIds.indexOf(i)>=0;});
+            var grp=groupOf(i);
             var fa=fileAnalyses[i];
             return (
               <div key={i} className={activeIdx===i?'file-item active':'file-item'} onClick={function(){setActiveIdx(i);setSelEv(null);}}>
@@ -1710,18 +2030,25 @@ function App(){
 
           {files.length>0 && (
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
-              <span className="sidebar-label">Run Groups</span>
+              <span className="sidebar-label">Run groups</span>
+              <label title="Group lines automatically by survey date, split by area" style={{fontSize:9,fontFamily:'var(--font-mono)',color:'var(--dim2)',display:'flex',alignItems:'center',gap:3}}>
+                <input type="checkbox" checked={!!proc.autoGroup} onChange={function(e){setProc({autoGroup:e.target.checked});}}/>auto</label>
               <button className="btn btn-primary btn-sm" onClick={function(){setNewGroupModal(true);}}>+ Group</button>
             </div>)}
-          {runGroups.map(function(g){
+          {allGroups.map(function(g){
             var isExp=expandedGroup===g.id;
             return (
               <div key={g.id} className="run-group">
                 <div className="run-group-hdr" onClick={function(){setExpandedGroup(isExp?null:g.id);}}>
                   <div className="run-swatch" style={{background:g.color}}/>
-                  <span className="run-group-name">{g.name}</span>
+                  <span className="run-group-name" title="Double-click to rename" onDoubleClick={function(e){e.stopPropagation();
+                    var nm=window.prompt('Rename group',g.name);if(!nm||!nm.trim())return;
+                    if(g.auto)setGroupNames(function(p){var n=Object.assign({},p);n[g.id]=nm.trim();return n;});
+                    else setRunGroups(function(p){return p.map(function(x){return x.id===g.id?Object.assign({},x,{name:nm.trim()}):x;});});}}>{g.name}</span>
                   <span style={{fontSize:9,color:'var(--dim)'}}>{g.fileIds.length}f</span>
-                  <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>
+                  <button title="Show this group on the map" onClick={function(e){e.stopPropagation();setMapGroup(g.id);setVisibleFiles(g.fileIds.slice());setStepIdx(-1);setMainTab('map');}}
+                    style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>⌖</button>
+                  {!g.auto && <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>}
                 </div>
                 {isExp && (
                   <div className="run-group-body">
@@ -1729,7 +2056,7 @@ function App(){
                       <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'} onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
                         <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
                         <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
-                        <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>
+                        {!g.auto && <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>}
                       </div>);})}
                     {!g.fileIds.length && <span style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>No files added</span>}
                   </div>)}
@@ -1777,13 +2104,15 @@ function App(){
               <div className="param" style={{gridColumn:'1/-1'}}><label>Detection mode</label>
                 <select value={proc.mode} onChange={function(e){setProc({mode:e.target.value});}}>
                   <option value="robust">Robust (detrended, multi-harmonic)</option>
-                  <option value="legacy">Legacy v26 (fundamental 3σ only)</option>
+                  <option value="legacy">Legacy (fundamental 3σ, fixed background)</option>
                 </select></div>
               {proc.mode==='robust' && <Num label="Detrend window (pkts)" value={proc.detrendWin} onChange={function(v){setProc({detrendWin:Math.max(5,Math.round(v))});}}/>}
               {proc.mode==='robust' && <Num label="z threshold" step={0.5} value={proc.zThresh} onChange={function(v){setProc({zThresh:v});}}/>}
               {proc.mode==='robust' && <Num label="Harmonic hits" value={proc.minHarmHits} onChange={function(v){setProc({minHarmHits:Math.max(1,Math.round(v))});}}/>}
               {proc.mode==='robust' && <Num label="Gap (pkts)" value={proc.gapPkts} onChange={function(v){setProc({gapPkts:Math.max(0,Math.round(v))});}}/>}
               {proc.mode==='robust' && <Num label="Min pkts / event" value={proc.minPkts} onChange={function(v){setProc({minPkts:Math.max(1,Math.round(v))});}}/>}
+              <Num label="Merge crossing gaps ≤ (m)" value={proc.mergeGapM} onChange={function(v){setProc({mergeGapM:Math.max(0,v)});}}/>
+              <Num label="Auto-group area (m)" value={proc.areaM} onChange={function(v){setProc({areaM:Math.max(50,v)});}}/>
               <Num label="Lab match cos ≥" step={0.01} value={proc.labCosMin} onChange={function(v){setProc({labCosMin:v});}}/>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1'}} onClick={function(){setProc(Object.assign({},IPA.DEFAULT_PROC,{laybackM:proc.laybackM,latencyS:proc.latencyS,applyLayback:proc.applyLayback}));}}>Reset detection defaults</button>
             </div>)}
@@ -1810,7 +2139,7 @@ function App(){
               </div>
             </div>)}
           {files.length>0 && (
-            <button className="btn btn-ghost btn-sm" onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);setRunGroups([]);}}>Clear all files</button>)}
+            <button className="btn btn-ghost btn-sm" onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);setRunGroups([]);setVisibleFiles(null);setMapGroup('all');setStepIdx(-1);idbClearFiles();}}>Clear all files</button>)}
         </div>
 
         <div className="content">
@@ -1912,11 +2241,30 @@ function App(){
                   <div className="sidebar-label">Display</div>
                   <button className={showLines?'layer-btn active':'layer-btn'} onClick={function(){setShowLines(!showLines);}}>Track Lines</button>
                   <button className={showHotspots?'layer-btn active':'layer-btn'} onClick={function(){setShowHotspots(!showHotspots);}}>Target sites</button>
-                  <button className={showWps?'layer-btn active':'layer-btn'} onClick={function(){setShowWps(!showWps);}}>Waypoints ▲</button>
+                  <button className={showWps?'layer-btn active':'layer-btn'} onClick={function(){setShowWps(!showWps);}}>Known targets ▲ ({targets.length})</button>
                   <button className={proc.applyLayback?'layer-btn active':'layer-btn'} onClick={function(){setProc({applyLayback:!proc.applyLayback});}}>
                     Layback corr. ({fmt(proc.laybackM)} m)</button>
                   {mapFocus && <button className="layer-btn" onClick={function(){setMapFocus(null);}}>Fit all</button>}
                 </div>
+                {nField>0 && (function(){
+                  var gIds=mapGroup==='all'?fieldIdx:((allGroups.find(function(g){return g.id===mapGroup;})||{fileIds:fieldIdx}).fileIds);
+                  function step(d){if(!gIds.length)return;var k=stepIdx<0?(d>0?0:gIds.length-1):(stepIdx+d+gIds.length)%gIds.length;
+                    setStepIdx(k);setVisibleFiles([gIds[k]]);setActiveIdx(gIds[k]);}
+                  return (
+                  <div className="map-controls-panel">
+                    <div className="sidebar-label">Group / day</div>
+                    <select className="confirm-sel" value={mapGroup} onChange={function(e){var id=e.target.value;setMapGroup(id);setStepIdx(-1);
+                      var g=allGroups.find(function(x){return x.id===id;});setVisibleFiles(id==='all'||!g?null:g.fileIds.slice());}}>
+                      <option value="all">All lines</option>
+                      {allGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name} ({g.fileIds.length})</option>;})}
+                    </select>
+                    <div className="row" style={{gap:4}}>
+                      <button className="layer-btn" onClick={function(){step(-1);}}>◀</button>
+                      <span style={{fontSize:9,flex:1,textAlign:'center'}}>{stepIdx<0?'all '+gIds.length+' lines':(stepIdx+1)+'/'+gIds.length+' '+((files[gIds[stepIdx]]||{}).run||'')}</span>
+                      <button className="layer-btn" onClick={function(){step(1);}}>▶</button>
+                    </div>
+                    {stepIdx>=0 && <button className="layer-btn" onClick={function(){setStepIdx(-1);setVisibleFiles(mapGroup==='all'?null:gIds.slice());}}>Show whole group</button>}
+                  </div>);})()}
                 {nField>0 && (
                   <div className="map-controls-panel">
                     <div className="sidebar-label">Files
@@ -1925,7 +2273,7 @@ function App(){
                     <div className="file-sel-list">
                       {files.map(function(f,fi){
                         if(f.type!=='field')return null;
-                        var col=RUN_COLORS[fi%RUN_COLORS.length];runGroups.forEach(function(g){if(g.fileIds.indexOf(fi)>=0)col=g.color;});
+                        var gg=groupOf(fi),col=gg?gg.color:RUN_COLORS[fi%RUN_COLORS.length];
                         var checked=!visibleFiles||visibleFiles.indexOf(fi)>=0;
                         return (
                           <div key={fi} className="file-sel-row" onClick={function(){setVisibleFiles(function(prev){
@@ -2001,82 +2349,97 @@ function App(){
                 </div>)}
             </div>)}
 
-          {mainTab==='layback' && (
+          {mainTab==='layback' && (function(){
+            var Lmax=(proc.gpsOffsetM||0)+(proc.cableM||0);
+            var biasTxt=function(c){if(!c.biases||!c.biases.length)return '—';if(c.biasMode==='shared')return fmt(c.biases[0].v)+' m (shared)';
+              return c.biases.map(function(b){var T=targets[+b.id];return (T?T.label:b.id)+' '+(b.v>=0?'+':'')+fmt(b.v);}).join(' · ');};
+            return (
             <div>
               <div className="section">
-                <h3>Layback & latency calibration</h3>
-                <div className="note">The GPS antenna is on the vessel but the IP response comes from the streamer electrodes, which trail behind. Raw detections therefore plot <b>ahead</b> of the true target along the vessel's heading. For each strong detection close to a known waypoint, the app measures the along-track offset in the direction of travel:
-                  <br/><code>along = L + τ·v + b·dir</code><br/>
-                  <b>L</b> = layback (m), <b>τ</b> = timing/processing latency (s) × speed-over-ground <b>v</b>, and <b>b</b> = waypoint-position bias along the line axis. <b>b</b> changes sign on reciprocal (opposite-heading) passes, so it can be separated from L, the same idea as a hydrographic patch test. Heading and speed come from the GPS track itself. Outliers beyond 3 robust σ are rejected.</div>
-                {!wps.length && <div className="warnbox">Load a waypoint file (CSV with name/lat/lon[/material] columns, or GPX) using <b>Known waypoints → Load</b> in the sidebar.</div>}
-                {wps.length>0 && !nField && <div className="warnbox">Load field runs that pass over the waypoints.</div>}
-                <div className="param-grid" style={{gridTemplateColumns:'repeat(3,1fr)',marginBottom:10}}>
-                  <Num label="Search radius (m, raw)" value={proc.matchRadiusM} onChange={function(v){setProc({matchRadiusM:v});}}/>
-                  <Num label="Max cross-track (m)" value={proc.maxCrossM} onChange={function(v){setProc({maxCrossM:v});}}/>
-                  <Num label="Min event SNR" step={0.5} value={proc.minSNRcal} onChange={function(v){setProc({minSNRcal:v});}}/>
+                <h3>Layback calibration — linear, along the boat's path</h3>
+                <div className="note">The sensor is towed behind the GPS antenna and <b>follows the boat's own path</b>, so the offset is measured as a distance along the recorded track. It is never projected along a noisy heading. For every line that passes a known target, the app finds the boat's closest approach and the strongest crossing after it. The distance between them along the path is the measured offset:
+                  <br/><code>along = L + τ·v + b<sub>target</sub>·dir</code><br/>
+                  <b>L</b> is the offset at zero speed (antenna → tie-down → sensor). <b>τ</b> (s) captures everything that grows with speed: timing latency, the half-packet timestamp and cable lift. <b>b</b> is that target's waypoint position error along the line; it flips sign on opposite-heading passes, so reciprocal lines separate it from L. It is solved by ordinary least squares with 3σ outlier rejection. The GPS track is smoothed (±5 fixes) before measuring distance, so position jitter doesn't inflate it.</div>
+                {!targets.length && <div className="warnbox">Load a waypoint file (CSV, GPX, KML or KMZ) using <b>Known waypoints → Load</b> in the sidebar.</div>}
+                {targets.length>0 && !nField && <div className="warnbox">Load field lines that pass over the targets.</div>}
+                <div className="param-grid" style={{gridTemplateColumns:'repeat(4,1fr)',marginBottom:10}}>
+                  <Num label="Boat passes target within (m)" value={proc.anchorPassM} onChange={function(v){setProc({anchorPassM:v});}}/>
+                  <Num label="Search after closest approach up to (m)" value={proc.maxLeadM} onChange={function(v){setProc({maxLeadM:v});}}/>
+                  <Num label="Min crossing SNR" step={0.5} value={proc.minSNRcal} onChange={function(v){setProc({minSNRcal:v});}}/>
+                  <Num label="Target link distance (m)" value={proc.targetLinkM} onChange={function(v){setProc({targetLinkM:v});}}/>
                 </div>
-                {calib && !calib.ok && <div className="warnbox">{calib.msg} ({calib.n} matches). Try widening the search radius or lowering min SNR.</div>}
+                {calib && !calib.ok && <div className="warnbox">{calib.msg} ({anchors.length} anchors found{calib.excluded&&calib.excluded.length?', '+calib.excluded.length+' excluded':''}). Try a larger search distance or a lower SNR.</div>}
                 {calib && calib.ok && (
                   <div>
                     <div className="tiles">
-                      <Tile label="Layback L" value={fmt(calib.L)+' m'} sub={'± '+fmt(calib.seL)+' m (1σ)'}/>
-                      <Tile label="Latency τ" value={calib.usedSpeed?fmt(calib.tau,2)+' s':'not fitted'} sub={calib.usedSpeed?'± '+fmt(calib.seTau,2)+' s':'needs ≥5 matches w/ speed spread'}/>
-                      <Tile label="Eff. offset @ median v" value={fmt(calib.effOffset)+' m'} sub={'v = '+fmt(calib.medSog,2)+' m/s'}/>
-                      <Tile label="Waypoint bias b" value={calib.usedDir?fmt(calib.bias)+' m':'—'} sub={calib.usedDir?'along line axis '+fmt(calib.axisDeg,0)+'°':'needs reciprocal passes'}/>
-                      <Tile label="Reciprocal-pair L" value={calib.Lpairs!==null?fmt(calib.Lpairs)+' m':'—'} sub={calib.nPairs+' waypoint pair(s)'}/>
-                      <Tile label="Matches" value={calib.nInliers+'/'+calib.n} sub={calib.nFwd+' fwd · '+calib.nRev+' rev'}/>
-                      <Tile label="Residual RMS" value={fmt(calib.rms)+' m'} sub="along-track after fit"/>
-                      <Tile label="Cross-track mean" value={fmt(calib.crossMean)+' m'} sub={'σ '+fmt(calib.crossStd)+' m (feathering/current)'}/>
+                      <Tile label="Layback L" value={fmt(calib.L)+' m'} sub={'± '+fmt(calib.seL)+' m (1σ) · at v=0'}/>
+                      <Tile label="Speed term τ" value={calib.usedSpeed?fmt(calib.tau,2)+' s':'not fitted'} sub={calib.usedSpeed?'± '+fmt(calib.seTau,2)+' s → +'+fmt(calib.tau,1)+' m per m/s':'needs ≥5 anchors w/ speed spread'}/>
+                      <Tile label="Offset @ median speed" value={fmt(calib.effOffset)+' m'} sub={'v = '+fmt(calib.medSog,2)+' m/s'}/>
+                      <Tile label="Residual RMS" value={fmt(calib.rms)+' m'} sub={calib.nInliers+'/'+calib.n+' anchors used'}/>
+                      <Tile label="Directions" value={calib.nFwd+' / '+calib.nRev} sub={'fwd / rev on axis '+fmt(calib.axisDeg,0)+'°'}/>
+                      <Tile label="Physical limit" value={'≤ '+fmt(Lmax)+' m'} sub={'GPS '+fmt(proc.gpsOffsetM,2)+' + cable '+fmt(proc.cableM,0)+' m'} color={calib.effOffset>Lmax+3?'var(--neg)':undefined}/>
                     </div>
-                    {(calib.nFwd===0||calib.nRev===0) && <div className="warnbox">All matched passes run in one direction, so layback cannot be separated from waypoint position error. Add reciprocal lines over the same waypoints.</div>}
-                    {calib.seL>5 && <div className="warnbox">Layback uncertainty is large (±{fmt(calib.seL)} m). More passes at different speeds and headings will tighten it.</div>}
+                    <div className="note"><b>Per-target waypoint bias:</b> {biasTxt(calib)}</div>
+                    {(calib.nFwd===0||calib.nRev===0) && <div className="warnbox">All anchors run in one direction, so L cannot be separated from waypoint position error. Add reciprocal lines over the same targets.</div>}
+                    {calib.effOffset>Lmax+3 && <div className="warnbox">The fitted offset is longer than the cable geometry allows ({fmt(Lmax)} m). Check the anchors for wrong pairings, or timing latency in the logger.</div>}
+                    {calib.seL>5 && <div className="warnbox">Layback uncertainty is large (±{fmt(calib.seL)} m). More passes at different speeds and in both directions will tighten it.</div>}
                     <div className="row" style={{marginBottom:10}}>
                       <button className="btn btn-primary" onClick={function(){setProc({laybackM:+calib.L.toFixed(2),latencyS:+(calib.tau||0).toFixed(3),applyLayback:true});}}>Apply fitted L & τ</button>
-                      <button className="btn btn-ghost" onClick={function(){saveCalibrationDB(calib,proc).then(function(){alert('Calibration saved.');}).catch(function(e){alert('Save failed: '+e.message+'\nRun supabase_schema.sql first.');});}}>Save calibration to DB</button>
-                      <button className="btn btn-ghost" onClick={function(){downloadCSV('layback_matches.csv',calib.matches.map(function(m){return{run:m.run,waypoint:m.wp,event:m.ei+1,along_m:m.along.toFixed(2),cross_m:m.cross.toFixed(2),
-                        sog_ms:fmt(m.sog,2),cog_deg:fmt(m.cog,0),dir:m.dir,snr:m.snr.toFixed(1),resid_m:fmt(m.resid,2),inlier:m.inlier};}));}}>Export CSV</button>
+                      <button className="btn btn-ghost" onClick={function(){saveCalibrationDB(calib,proc).then(function(){alert('Calibration saved.');}).catch(function(e){alert('Save failed: '+e.message);});}}>Save calibration to DB</button>
+                      <button className="btn btn-ghost" onClick={function(){downloadCSV('layback_anchors.csv',anchors.map(function(a){var m=calib.matches.find(function(x){return x.key===a.key;});return{run:a.run,target:a.target,day:a.dayRank,crossing:a.ei+1,along_m:a.along.toFixed(2),
+                        boat_pass_m:a.cross.toFixed(2),sog_ms:fmt(a.sog,2),cog_deg:fmt(a.cog,0),snr:a.snr.toFixed(1),included:!anchorOff[a.key],resid_m:m?fmt(m.resid,2):'',inlier:m?m.inlier:''};}));}}>Export CSV</button>
                     </div>
                     <div className="two-col">
                       <div className="chart-panel">
-                        <div className="chart-title">Along-track offset vs speed (fit line = L + τ·v)</div>
-                        <CanvasBox height={200} draw={function(cv){
+                        <div className="chart-title">Measured offset vs speed — line = L + τ·v</div>
+                        <CanvasBox height={210} draw={function(cv){
                           var xs=calib.matches.map(function(m){return m.sog;}),ys=calib.matches.map(function(m){return m.along;});
                           var xr=rangeOf(xs.concat([0]),.1,1),yr=rangeOf(ys.concat([0]),.15,10);
-                          var lines=[{x0:xr[0],y0:calib.L+calib.tau*xr[0],x1:xr[1],y1:calib.L+calib.tau*xr[1],color:'#0071b8'}];
-                          drawScatter(cv,[{pts:calib.matches.map(function(m){return[m.sog,m.along,m.dir>0?'#1a8c4e':'#b02040',m.inlier];})}],{xr:xr,yr:yr,xlabel:'speed over ground (m/s)  ● fwd  ● rev',ylabel:'along (m)',lines:lines});
+                          drawScatter(cv,[{pts:calib.matches.map(function(m){return[m.sog,m.along,m.dir>0?'#1a8c4e':'#b02040',m.inlier];})}],{xr:xr,yr:yr,xlabel:'speed over ground (m/s)  ● fwd  ● rev',ylabel:'along-path offset (m)',
+                            lines:[{x0:xr[0],y0:calib.L+calib.tau*xr[0],x1:xr[1],y1:calib.L+calib.tau*xr[1],color:'#0071b8'},{x0:xr[0],y0:Lmax,x1:xr[1],y1:Lmax,color:'#cc2233',dash:[4,3]}]});
                         }}/>
                       </div>
                       <div className="chart-panel">
-                        <div className="chart-title">Detection offsets from waypoint — grey raw, colour corrected</div>
-                        <CanvasBox height={200} draw={function(cv){
-                          var raw=calib.matches.map(function(m){return[m.cross,m.along,'#9aa8b8',m.inlier];});
-                          var cor=calib.matches.map(function(m){return[m.cross,m.along-(proc.laybackM+proc.latencyS*(isFinite(m.sog)?m.sog:0)),m.dir>0?'#1a8c4e':'#b02040',m.inlier];});
-                          var all=raw.concat(cor),lim=Math.max(10,Math.max.apply(null,all.map(function(p){return Math.max(Math.abs(p[0]),Math.abs(p[1]));}))*1.1);
-                          drawScatter(cv,[{pts:raw},{pts:cor},{pts:[[0,0,'#e0b000']],shape:'tri'}],{xr:[-lim,lim],yr:[-lim,lim],xlabel:'cross-track (m, +stbd)',ylabel:'along (m, +ahead)',
-                            lines:[{x0:-lim,y0:0,x1:lim,y1:0,color:'#c0ccd8',dash:[3,3]},{x0:0,y0:-lim,x1:0,y1:lim,color:'#c0ccd8',dash:[3,3]}]});
+                        <div className="chart-title">Residual after fit, per anchor (m)</div>
+                        <CanvasBox height={210} draw={function(cv){
+                          var ms=calib.matches,lim=Math.max(3,Math.max.apply(null,ms.map(function(m){return Math.abs(m.resid||0);}))*1.2);
+                          drawScatter(cv,[{pts:ms.map(function(m,i){return[i+1,m.resid||0,m.dir>0?'#1a8c4e':'#b02040',m.inlier];})}],{xr:[0,ms.length+1],yr:[-lim,lim],xlabel:'anchor #',ylabel:'residual (m)',
+                            lines:[{x0:0,y0:0,x1:ms.length+1,y1:0,color:'#c0ccd8',dash:[3,3]}]});
                         }}/>
                       </div>
                     </div>
-                    <div className="section" style={{marginTop:10,padding:'8px 0 0'}}>
-                      <table className="mt"><thead><tr><th>Run</th><th>Waypoint</th><th className="num">Ev</th><th className="num">COG°</th><th className="num">SOG m/s</th><th className="num">Along m</th><th className="num">Cross m</th><th className="num">Resid m</th><th className="num">SNR</th><th>Class</th><th/></tr></thead>
-                        <tbody>{calib.matches.map(function(m,i){return (
-                          <tr key={i} style={{opacity:m.inlier?1:.45}}><td>{m.run}</td><td>{m.wp}</td><td className="num">{m.ei+1}</td><td className="num">{fmt(m.cog,0)}</td><td className="num">{fmt(m.sog,2)}</td>
-                            <td className="num">{fmt(m.along)}</td><td className="num">{fmt(m.cross)}</td><td className="num">{fmt(m.resid)}</td><td className="num">{fmt(m.snr)}</td>
-                            <td><span className={'badge '+badgeClass(m.cls)}>{m.cls}</span></td><td>{m.inlier?'':'outlier'}</td></tr>);})}</tbody></table>
-                    </div>
+                  </div>)}
+                {anchors.length>0 && (
+                  <div style={{marginTop:10,maxHeight:340,overflowY:'auto'}}>
+                    <table className="mt"><thead><tr><th>Use</th><th>Line</th><th>Target</th><th className="num">Day</th><th className="num">Crossing</th><th className="num">Boat pass m</th><th className="num">SOG m/s</th><th className="num">COG°</th><th className="num">Offset m</th><th className="num">Resid m</th><th className="num">SNR</th><th>Class</th></tr></thead>
+                      <tbody>{anchors.map(function(a){var m=calib&&calib.matches?calib.matches.find(function(x){return x.key===a.key;}):null,off=!!anchorOff[a.key];return (
+                        <tr key={a.key} style={{opacity:off?.4:(m&&!m.inlier?.6:1)}}>
+                          <td><input type="checkbox" checked={!off} onChange={function(e){var k=a.key,v=!e.target.checked;setAnchorOff(function(p){var n=Object.assign({},p);if(v)n[k]=true;else delete n[k];return n;});}}/></td>
+                          <td>{a.run}</td><td>{a.target}</td><td className="num">{a.dayRank||'—'}</td>
+                          <td className="num"><a href="#" onClick={function(e){e.preventDefault();setActiveIdx(a.fi);setSelEv(a.ei);setMainTab('analysis');}}>#{a.ei+1}</a></td>
+                          <td className="num">{fmt(a.cross)}</td><td className="num">{fmt(a.sog,2)}</td><td className="num">{fmt(a.cog,0)}</td><td className="num">{fmt(a.along)}</td>
+                          <td className="num">{m?fmt(m.resid):'—'}{m&&!m.inlier?' ✗':''}</td><td className="num">{fmt(a.snr)}</td>
+                          <td><span className={'badge '+badgeClass(a.cls)}>{a.cls}</span></td></tr>);})}</tbody></table>
                   </div>)}
               </div>
               <div className="section">
                 <h3>Applied correction</h3>
-                <div className="param-grid" style={{gridTemplateColumns:'repeat(3,1fr)'}}>
+                <div className="param-grid" style={{gridTemplateColumns:'repeat(5,1fr)'}}>
                   <Num label="Layback L (m)" step={0.5} value={proc.laybackM} onChange={function(v){setProc({laybackM:v});}}/>
-                  <Num label="Latency τ (s)" step={0.1} value={proc.latencyS} onChange={function(v){setProc({latencyS:v});}}/>
+                  <Num label="Speed term τ (s)" step={0.1} value={proc.latencyS} onChange={function(v){setProc({latencyS:v});}}/>
+                  <Num label="GPS ahead of tie-down (m)" step={0.01} value={proc.gpsOffsetM} onChange={function(v){setProc({gpsOffsetM:v});}}/>
+                  <Num label="Cable deployed (m)" step={0.5} value={proc.cableM} onChange={function(v){setProc({cableM:v});}}/>
                   <div className="param"><label>Apply to map & metrics</label>
                     <select value={proc.applyLayback?'1':'0'} onChange={function(e){setProc({applyLayback:e.target.value==='1'});}}><option value="1">On</option><option value="0">Off (raw GPS)</option></select></div>
                 </div>
-                <div className="note" style={{marginTop:8}}>Correction: each event (and the plotted sensor track) is shifted <b>back</b> along its course-over-ground by L + τ·v. Heading is taken from GPS positions ±3 packets around the peak.</div>
+                <div className="row" style={{marginTop:8}}>
+                  <button className="btn btn-ghost btn-sm" onClick={function(){setProc({laybackM:+((proc.gpsOffsetM||0)+(proc.cableM||0)*Math.cos(25*Math.PI/180)).toFixed(2),latencyS:0});}}>Use geometry prior (cable at 25°)</button>
+                  <span className="note" style={{margin:0}}>Until you have calibration anchors, L = GPS offset + cable·cos 25° ≈ {fmt((proc.gpsOffsetM||0)+(proc.cableM||0)*Math.cos(25*Math.PI/180))} m is a reasonable starting value.</span>
+                </div>
+                <div className="note" style={{marginTop:8}}>Correction: every crossing and the plotted sensor track are moved <b>back along the boat's recorded path</b> by L + τ·v, with v the local speed over ground.</div>
               </div>
-            </div>)}
+            </div>);
+          })()}
 
           {mainTab==='library' && (function(){
             var q=libFilter.text.trim().toLowerCase();
@@ -2166,7 +2529,7 @@ function App(){
                       <Tile label="Mean scatter" value={fmt(IPA.mean(multi.map(function(s){return s.scatterM;})))+' m'} sub="RMS about centroid"/>
                     </div>
                     <div style={{maxHeight:320,overflowY:'auto'}}>
-                      <table className="mt"><thead><tr><th>#</th><th>Tier</th><th>Class</th><th className="num">Runs</th><th className="num">Passed</th><th className="num">Repeat.</th><th>Recip.</th><th className="num">Consensus</th><th className="num">Scatter m</th><th className="num">SNR</th><th>Nearest WP</th><th/></tr></thead>
+                      <table className="mt"><thead><tr><th>#</th><th>Tier</th><th>Class</th><th className="num">Runs</th><th className="num">Passed</th><th className="num">Repeat.</th><th>Recip.</th><th className="num">Consensus</th><th className="num">Scatter m</th><th className="num">SNR</th><th>Nearest target</th><th/></tr></thead>
                         <tbody>{sites.map(function(s,i){return (
                           <tr key={i}><td>{i+1}</td><td><span className={tierCls(s.tier)}>{s.tier}</span></td><td><span className={'badge '+badgeClass(s.cls)}>{s.cls}</span></td>
                             <td className="num">{s.nRuns}</td><td className="num">{s.nPass}</td><td className="num">{pct(s.repeatability)}</td><td>{s.reciprocal?'✓':''}</td>
@@ -2178,23 +2541,39 @@ function App(){
               </div>
 
               <div className="section">
-                <h3>Detection performance vs known waypoints</h3>
-                {!detMetrics && <div className="warnbox">Needs waypoints and field runs. Apply the layback correction first so positions line up.</div>}
-                {detMetrics && (
+                <h3>Known-target coverage
+                  <div style={{flex:1}}/>
+                  <label style={{fontSize:10,textTransform:'none',letterSpacing:0,display:'flex',gap:4,alignItems:'center',color:'var(--dim3)'}}>
+                    <input type="checkbox" checked={!!proc.dayFilter} onChange={function(e){setProc({dayFilter:e.target.checked});}}/> match deploy-day codes</label>
+                  {coverage && <button className="btn btn-ghost btn-sm" onClick={function(){downloadCSV('ipa_coverage.csv',coverage.rows.map(function(r){return{line:r.run,day:r.dayRank,target:r.target,status:r.status,
+                    closest_track_m:r.closest!==null?r.closest.toFixed(1):'',detection_dist_m:r.evDist!==null?fmt(r.evDist,1):'',class:r.cls,snr:r.snr!==null?fmt(r.snr,1):''};}));}}>Export CSV</button>}
+                </h3>
+                {!coverage && <div className="warnbox">Needs known waypoints and field lines. Calibrate and apply the layback first so positions line up.</div>}
+                {coverage && (
                   <div>
-                    <div className="note">A <b>pass</b> is a run whose sensor track came within {proc.passRadiusM} m of a waypoint. A <b>hit</b> is a detection within {proc.detRadiusM} m. Pd (probability of detection) uses a 95% Wilson interval. Detections that are not near any waypoint count as <b>false alarms</b>. That count is only meaningful if every real target in the survey area is in your waypoint file.</div>
+                    <div className="note">Uses <b>corrected</b> positions. <b>PASS</b> = a line's sensor track came within {proc.detRadiusM} m of a target. <b>HIT</b> = a crossing was detected within {proc.detRadiusM} m of it; <b>FAIL</b> = passed with nothing detected. Crossings not near any target are <b>unattributed</b>. Those classified as a material (not weak) count as false alarms, which is only meaningful if every real target in the area is in the waypoint file. Waypoints within {proc.targetLinkM} m form one target. With <i>match deploy-day codes</i> on, names like <code>2C-6</code> are only scored against lines from survey day 2 (days are ranked by date among lines near the targets).</div>
                     <div className="tiles">
-                      <Tile label="Pd" value={pct(detMetrics.pd)} sub={detMetrics.hits+'/'+detMetrics.passes+' passes'+(detMetrics.pdCI?' · CI '+pct(detMetrics.pdCI[0])+'–'+pct(detMetrics.pdCI[1]):'')}/>
-                      <Tile label="False alarms" value={detMetrics.falseAlarms} color={detMetrics.falseAlarms?'#b07800':'var(--pos)'} sub={fmt(detMetrics.faPerKm,2)+' per km · '+fmt(detMetrics.trackKm,2)+' km'}/>
-                      <Tile label="Detection precision" value={pct(detMetrics.precision)} sub="detections near a waypoint"/>
-                      <Tile label="Material family acc." value={pct(detMetrics.famAcc)} sub={detMetrics.famN+' hits w/ known material'}/>
-                      <Tile label="Mean position error" value={fmt(detMetrics.meanPosErrM)+' m'} sub={proc.applyLayback?'after layback':'raw GPS'}/>
+                      <Tile label="Pd" value={pct(coverage.pd)} sub={coverage.hits+'/'+coverage.passes+' passes'+(coverage.pdCI?' · CI '+pct(coverage.pdCI[0])+'–'+pct(coverage.pdCI[1]):'')}/>
+                      <Tile label="Missed passes" value={coverage.passes-coverage.hits} color={coverage.passes-coverage.hits?'var(--neg)':'var(--pos)'} sub="FAIL rows"/>
+                      <Tile label="False alarms" value={coverage.falseAlarms} color={coverage.falseAlarms?'#b07800':'var(--pos)'} sub={fmt(coverage.faPerKm,2)+' per km · '+fmt(coverage.trackKm,2)+' km'}/>
+                      <Tile label="Unattributed" value={coverage.unattributed} sub="incl. weak"/>
+                      <Tile label="Material family acc." value={pct(coverage.famAcc)} sub={coverage.famN+' hits w/ known material'}/>
+                      <Tile label="Mean position error" value={fmt(coverage.meanPosErrM)+' m'} sub={proc.applyLayback?'after layback':'raw GPS'}/>
                     </div>
-                    <table className="mt"><thead><tr><th>Waypoint</th><th>Material</th><th className="num">Passes</th><th className="num">Hits</th><th className="num">Pd</th><th className="num">Family OK</th><th className="num">Mean err m</th><th>Classes seen</th></tr></thead>
-                      <tbody>{detMetrics.perWp.map(function(w,i){return (
-                        <tr key={i}><td>{w.name}</td><td>{w.material||'—'}</td><td className="num">{w.passes}</td><td className="num">{w.hits}</td><td className="num">{pct(w.pd)}</td>
-                          <td className="num">{w.famN?w.famOk+'/'+w.famN:'—'}</td><td className="num">{fmt(w.meanErrM)}</td>
-                          <td>{Object.keys(w.classes).map(function(c){return c+' ×'+w.classes[c];}).join(', ')||'—'}</td></tr>);})}</tbody></table>
+                    <table className="mt"><thead><tr><th>Target</th><th className="num">Day</th><th>Material</th><th className="num">Passes</th><th className="num">Hits</th><th className="num">Pd</th><th className="num">Family OK</th><th className="num">Mean err m</th><th>Classes seen</th></tr></thead>
+                      <tbody>{coverage.perTarget.map(function(t){return (
+                        <tr key={t.id}><td><b>{t.label}</b></td><td className="num">{t.day||'—'}</td><td>{t.material||'—'}</td><td className="num">{t.passes}</td><td className="num">{t.hits}</td>
+                          <td className="num" style={{color:t.passes?(t.hits===t.passes?'var(--pos)':t.hits?'#b07800':'var(--neg)'):'var(--dim)'}}>{pct(t.pd)}</td>
+                          <td className="num">{t.famN?t.famOk+'/'+t.famN:'—'}</td><td className="num">{fmt(t.meanErrM)}</td>
+                          <td>{Object.keys(t.classes).map(function(c){return c+' ×'+t.classes[c];}).join(', ')||'—'}</td></tr>);})}</tbody></table>
+                    <details style={{marginTop:8}}><summary style={{cursor:'pointer',fontSize:11,fontFamily:'var(--font-mono)',color:'var(--dim2)'}}>Every line × target ({coverage.rows.length} rows)</summary>
+                      <div style={{maxHeight:300,overflowY:'auto'}}>
+                        <table className="mt"><thead><tr><th>Line</th><th className="num">Day</th><th>Target</th><th>Status</th><th className="num">Track closest m</th><th className="num">Det. dist m</th><th>Class</th><th className="num">SNR</th></tr></thead>
+                          <tbody>{coverage.rows.map(function(r,i){return (
+                            <tr key={i}><td>{r.run}</td><td className="num">{r.dayRank||'—'}</td><td>{r.target}</td>
+                              <td style={{fontWeight:700,color:r.status==='HIT'?'var(--pos)':r.status==='FAIL'?'var(--neg)':'var(--dim2)'}}>{r.status}</td>
+                              <td className="num">{r.closest!==null?fmt(r.closest):'—'}</td><td className="num">{fmt(r.evDist)}</td><td>{r.cls||'—'}</td><td className="num">{fmt(r.snr)}</td></tr>);})}</tbody></table>
+                      </div></details>
                   </div>)}
               </div>
 

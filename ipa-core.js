@@ -11,6 +11,8 @@
  *  - Hampel/Huber robust statistics — running median + MAD background, 1.4826 scale factor.
  *  - Hydrographic "patch test" practice — reciprocal lines over a known target separate
  *    along-track sensor offset (layback) and latency from target-position error.
+ *  - Layback is modelled LINEARLY along the boat's own recorded path: the towed sensor
+ *    follows the path, sitting L + τ·v metres behind the GPS antenna (no heading projection).
  *  - Cohen (1960) kappa; standard precision/recall/F1 for classifier accuracy.
  */
 (function (root) {
@@ -25,10 +27,10 @@
     'ITB Rebel Crude': '#1a8c4e', 'Metallic IP': '#b02040', 'Steel': '#cc2233',
     'Ilmenite': '#a04010', 'Galvanized Steel': '#807030', 'Mixed': '#5a50c8',
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
-    'Seawater blank': '#90a0b0'
+    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc'
   };
   var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Artifact', 'Weak/Inconclusive'];
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
   var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
     'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Metallic IP', 'Mixed'];
 
@@ -36,28 +38,37 @@
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
     'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
-    'Mixed': 'mixed', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
+    'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
   function family(cls) { return FAMILY[cls] || 'other'; }
 
   var DEFAULT_PROC = {
-    mode: 'robust',        // 'robust' | 'legacy' (v26 behaviour)
+    mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
     zThresh: 3.0,          // robust z threshold for anomalous packet
     minHarmHits: 2,        // harmonics (excl. fundamental) that must exceed zThresh
-    gapPkts: 5,            // max packet-index gap inside one event
-    minPkts: 1,            // min packets per event
+    gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
+    mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
+    minPkts: 1,            // min packets per crossing
     labCosMin: 0.90,       // spectral-angle cosine required to accept a lab match
     applyLayback: true,
-    laybackM: 0,           // along-track sensor offset behind GPS (m)
-    latencyS: 0,           // processing / timing latency (s) -> v*tau extra offset
-    matchRadiusM: 60,      // calibration: search radius event<->waypoint (raw positions)
-    maxCrossM: 20,         // calibration: max cross-track distance to accept
-    minSNRcal: 6,          // calibration: min event SNR (any harmonic)
-    mergeRadiusM: 15,      // corroboration: cluster radius between runs
-    passRadiusM: 12,       // metrics: track must pass this close to count as a pass
-    detRadiusM: 20         // metrics: detection within this radius counts as a hit
+    laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
+    latencyS: 0,           // τ: extra offset per m/s of speed (s) — timing latency, half-packet, cable lift
+    gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
+    cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
+    targetLinkM: 10,       // waypoints within this distance form one target
+    dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
+    autoGroup: true,       // group field lines automatically by survey date and area
+    areaM: 1000,           // auto-grouping: lines on the same date further apart than this are separate areas
+    anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
+    minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
+    maxLeadM: 80,          // calibration: ... and trail it by at most this
+    minSNRcal: 6,          // calibration: min crossing SNR
+    mergeRadiusM: 15,      // corroboration: cluster radius between runs (corrected positions)
+    passRadiusM: 12,       // corroboration: track within this of a site counts as a pass
+    detRadiusM: 15         // coverage: detection within this of a target = HIT
   };
+
 
   // ── Small maths helpers ────────────────────────────────────────────────────
   function finite(v) { return typeof v === 'number' && isFinite(v); }
@@ -203,6 +214,17 @@
   }
   function parseWaypoints(text, fileName) {
     var wps = [];
+    if (/<kml|<Placemark/i.test(text)) {
+      var pm = /<Placemark\b[\s\S]*?<\/Placemark>/gi, mm;
+      while ((mm = pm.exec(text))) {
+        var blk = mm[0], nm0 = blk.match(/<name>([\s\S]*?)<\/name>/i), co = blk.match(/<coordinates>\s*([-0-9.eE]+)\s*,\s*([-0-9.eE]+)/i);
+        if (!co) continue;
+        var ds0 = blk.match(/<description>([\s\S]*?)<\/description>/i);
+        var nmv = nm0 ? nm0[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim() : 'WP' + (wps.length + 1);
+        wps.push({ name: nmv, lat: +co[2], lon: +co[1], material: matchMaterial((ds0 ? ds0[1] : '') + ' ' + nmv), source: fileName });
+      }
+      return wps;
+    }
     if (/<gpx|<wpt/i.test(text)) {
       var re = /<(wpt|rtept|trkpt)\b([^>]*)>([\s\S]*?)<\/\1>|<(wpt|rtept)\b([^>]*)\/>/gi, m;
       while ((m = re.exec(text))) {
@@ -289,6 +311,8 @@
   }
 
   // ── Background ─────────────────────────────────────────────────────────────
+  // legacy: per-harmonic mean/std of |dp|<15 mrad packets (v26 behaviour)
+  // robust: running-median baseline + 1.4826·MAD noise (drift-tolerant)
   function computeBG(packets, harms, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var perHz = {}, f0 = harms[0];
@@ -298,130 +322,208 @@
         var bgV = dps.filter(function (v) { return !isNaN(v) && Math.abs(v) < 15; });
         if (bgV.length < 3) bgV = dps.filter(function (v) { return !isNaN(v); });
         if (!bgV.length) { perHz[f] = { mean: 0, std: 1, base: null }; return; }
-        var m = mean(bgV), s = bgV.length > 1 ? std(bgV) : 1;
-        perHz[f] = { mean: m, std: s || 1, base: null };
+        var s = bgV.length > 1 ? std(bgV) : 1;
+        perHz[f] = { mean: mean(bgV), std: s || 1, base: null };
       });
       var d1 = packets.map(function (pk) { var v = pk.freqs[f0]; return v ? v[0] * 1000 : NaN; });
       var mBg = packets.map(function (pk, i) { var v = pk.freqs[f0]; return v && !isNaN(d1[i]) && Math.abs(d1[i]) < 15 ? v[1] : NaN; }).filter(finite);
-      var magMean = mBg.length ? mean(mBg) : 1;
-      return { mode: 'legacy', mean: perHz[f0].mean, std: perHz[f0].std, magMean: magMean, magBase: null, perHz: perHz };
+      return { mode: 'legacy', mean: perHz[f0].mean, std: perHz[f0].std, magMean: mBg.length ? mean(mBg) : 1, magBase: null, perHz: perHz };
     }
-    // Robust: running-median detrend + MAD noise (Hampel-style)
     harms.forEach(function (f) {
       var dps = packets.map(function (pk) { var v = pk.freqs[f]; return v ? v[0] * 1000 : NaN; });
       var base = runningMedian(dps, opts.detrendWin);
       var resid = dps.map(function (v, i) { return v - base[i]; });
-      var s = 1.4826 * mad(resid, 0 + median(resid));
+      var s = 1.4826 * mad(resid, median(resid));
       if (!finite(s) || s <= 1e-6) s = std(resid) || 1;
       perHz[f] = { mean: median(dps), std: s, base: base };
     });
     var mags = packets.map(function (pk) { var v = pk.freqs[f0]; return v ? v[1] : NaN; });
-    var magBase = runningMedian(mags, opts.detrendWin);
-    return { mode: 'robust', mean: perHz[f0].mean, std: perHz[f0].std, magMean: median(mags) || 1, magBase: magBase, perHz: perHz };
+    return { mode: 'robust', mean: perHz[f0].mean, std: perHz[f0].std, magMean: median(mags) || 1,
+      magBase: runningMedian(mags, opts.detrendWin), perHz: perHz };
   }
   function bgAt(bg, f, i) {
     var p = bg.perHz[f]; if (!p) return bg.mean;
     return p.base && finite(p.base[i]) ? p.base[i] : p.mean;
   }
+  function magRefAt(bg, i) { return bg.magBase && finite(bg.magBase[i]) ? bg.magBase[i] : bg.magMean; }
 
-  // ── Detection ──────────────────────────────────────────────────────────────
-  function detectAnomalies(packets, harms, bg, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var f0 = harms[0], s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std, T = opts.zThresh, anomalies = [];
-    for (var i = 0; i < packets.length; i++) {
-      var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
-      var z0 = Math.abs(v0[0] * 1000 - bgAt(bg, f0, i)) / s0;
-      if (opts.mode === 'legacy') { if (z0 >= 3.0) anomalies.push({ i: i, pk: pk, snr: z0, snr0: z0, hits: 0 }); continue; }
-      var zmax = z0, hits = 0;
-      for (var h = 1; h < harms.length; h++) {
-        var v = pk.freqs[harms[h]]; if (!v) continue;
-        var ph = bg.perHz[harms[h]], z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / ph.std;
-        if (z >= T) hits++; if (z > zmax) zmax = z;
+  // ── Track kinematics along the RAW GPS path ────────────────────────────────
+  // cum[i]  : cumulative distance travelled (m) — the 1-D coordinate everything uses
+  // sog[i]  : speed over ground from a centred ≥12 m window (m/s)
+  // cog[i]  : course over ground over the same window (deg)
+  // Positions are first smoothed with a centred moving average (±smoothK fixes):
+  // summing raw 1 Hz GPS steps adds the jitter to the distance (≈25% too long at
+  // 1 m/s with 0.5 m noise), which would bias every along-path measurement.
+  function computeKinematics(packets, winM, smoothK) {
+    winM = winM || 12; smoothK = smoothK === undefined ? 5 : smoothK;
+    var n = packets.length, cum = new Array(n), t = new Array(n), last = null, acc = 0, i, j;
+    var sm = new Array(n);
+    for (i = 0; i < n; i++) {
+      if (packets[i].lat === null) { sm[i] = null; continue; }
+      var sl = 0, so = 0, c = 0;
+      for (j = Math.max(0, i - smoothK); j <= Math.min(n - 1, i + smoothK); j++) {
+        var q = packets[j]; if (q.lat === null) continue;
+        if (Math.abs(q.lat - packets[i].lat) > 0.001) continue;   // ignore GPS spikes (>100 m)
+        sl += q.lat; so += q.lon; c++;
       }
-      if (z0 >= T || hits >= opts.minHarmHits) anomalies.push({ i: i, pk: pk, snr: zmax, snr0: z0, hits: hits });
+      sm[i] = { lat: sl / c, lon: so / c };
     }
-    var gap = opts.mode === 'legacy' ? 5 : opts.gapPkts, clusters = [], cur = [];
-    anomalies.forEach(function (a) {
-      if (!cur.length || a.pk.idx - cur[cur.length - 1].pk.idx <= gap) cur.push(a);
-      else { clusters.push(cur); cur = [a]; }
-    });
-    if (cur.length) clusters.push(cur);
-    if (opts.mode !== 'legacy' && opts.minPkts > 1) clusters = clusters.filter(function (c) { return c.length >= opts.minPkts; });
-    return clusters;
-  }
-
-  // ── Track kinematics (course/speed over ground from GPS) ───────────────────
-  function computeKinematics(packets, k) {
-    k = k || 3;
-    var n = packets.length, out = new Array(n);
-    // median dt per index step for files with bad timestamps
     var steps = [];
-    for (var i = 1; i < n; i++) {
-      var dt = packets[i].t - packets[i - 1].t, di = packets[i].idx - packets[i - 1].idx;
-      if (finite(dt) && dt > 0 && di > 0 && dt < 60) steps.push(dt / di);
+    for (i = 1; i < n; i++) {
+      var dt0 = packets[i].t - packets[i - 1].t, di = packets[i].idx - packets[i - 1].idx;
+      if (finite(dt0) && dt0 > 0 && di > 0 && dt0 < 60) steps.push(dt0 / di);
     }
     var secPerIdx = median(steps); if (!finite(secPerIdx) || secPerIdx <= 0) secPerIdx = 1;
+    var t0 = finite(packets[0] && packets[0].t) ? packets[0].t : 0, idx0 = packets[0] ? packets[0].idx : 0;
     for (i = 0; i < n; i++) {
-      var a = null, b = null;
-      for (var j = Math.max(0, i - k); j <= i; j++) if (packets[j].lat !== null) { a = j; break; }
-      for (j = Math.min(n - 1, i + k); j >= i; j--) if (packets[j].lat !== null) { b = j; break; }
-      if (a === null || b === null || a === b) { out[i] = { cog: null, sog: null }; continue; }
-      var pa = packets[a], pb = packets[b], d = haversine(pa.lat, pa.lon, pb.lat, pb.lon);
-      var dtt = pb.t - pa.t; if (!(finite(dtt) && dtt > 0 && dtt < 120)) dtt = (pb.idx - pa.idx) * secPerIdx;
-      out[i] = d < 0.5 ? { cog: null, sog: d / dtt } : { cog: bearing(pa.lat, pa.lon, pb.lat, pb.lon), sog: d / dtt };
+      var pk = packets[i];
+      t[i] = finite(pk.t) ? pk.t : t0 + (pk.idx - idx0) * secPerIdx;
+      if (sm[i]) {
+        if (last) { var d = haversine(last.lat, last.lon, sm[i].lat, sm[i].lon); if (d < 200) acc += d; }
+        last = sm[i];
+      }
+      cum[i] = acc;
     }
+    var out = new Array(n), half = winM / 2;
+    for (i = 0; i < n; i++) {
+      if (!sm[i]) { out[i] = { cum: cum[i], t: t[i], sog: null, cog: null, slat: null, slon: null }; continue; }
+      var a = i, b = i;
+      for (j = i; j >= 0; j--) { if (packets[j].lat !== null) a = j; if (cum[i] - cum[j] >= half) break; }
+      for (j = i; j < n; j++) { if (packets[j].lat !== null) b = j; if (cum[j] - cum[i] >= half) break; }
+      var dd = cum[b] - cum[a], dtt = t[b] - t[a];
+      var sog = dtt > 0 && dd > 0 ? dd / dtt : null;
+      var cog = dd >= 2 ? bearing(sm[a].lat, sm[a].lon, sm[b].lat, sm[b].lon) : null;
+      out[i] = { cum: cum[i], t: t[i], sog: sog, cog: cog, slat: sm[i].lat, slon: sm[i].lon };
+    }
+    var lastS = null, lastC = null;
+    for (i = 0; i < n; i++) { if (out[i].sog !== null) lastS = out[i].sog; else out[i].sog = lastS; if (out[i].cog !== null) lastC = out[i].cog; else out[i].cog = lastC; }
+    for (i = n - 1; i >= 0; i--) { if (out[i].sog === null && i < n - 1) out[i].sog = out[i + 1].sog; if (out[i].cog === null && i < n - 1) out[i].cog = out[i + 1].cog; }
     return out;
   }
-  function laybackShift(lat, lon, cog, sog, L, tau) {
-    if (lat === null || lon === null || !finite(cog)) return [lat, lon];
-    var d = (L || 0) + (tau || 0) * (finite(sog) ? sog : 0);
-    if (!d) return [lat, lon];
-    return offsetLL(lat, lon, -d * Math.sin(cog * D2R), -d * Math.cos(cog * D2R));
+  // Position on the recorded boat path at cumulative distance `target`.
+  // The towed sensor FOLLOWS the boat's path, so this is where the sensor was.
+  function pointAtCum(packets, kin, target) {
+    var lo = -1, hi = -1, i;
+    for (i = 0; i < packets.length; i++) if (packets[i].lat !== null) { if (lo < 0) lo = i; hi = i; }
+    if (lo < 0) return [null, null];
+    if (target <= kin[lo].cum) {   // before the start of the recorded path: extend backwards
+      var c0 = kin[lo].cog, back = kin[lo].cum - target;
+      if (!finite(c0) || back <= 0) return [kin[lo].slat, kin[lo].slon];
+      return offsetLL(kin[lo].slat, kin[lo].slon, -back * Math.sin(c0 * D2R), -back * Math.cos(c0 * D2R));
+    }
+    var a = lo, b = hi;
+    while (b - a > 1) { var m = (a + b) >> 1; if (kin[m].cum <= target) a = m; else b = m; }
+    while (a > lo && packets[a].lat === null) a--;
+    while (b < hi && packets[b].lat === null) b++;
+    var seg = kin[b].cum - kin[a].cum, f = seg > 0 ? (target - kin[a].cum) / seg : 0;
+    f = Math.max(0, Math.min(1, f));
+    return [kin[a].slat + f * (kin[b].slat - kin[a].slat), kin[a].slon + f * (kin[b].slon - kin[a].slon)];
+  }
+  // Linear layback model: offset behind the GPS antenna along the path = L + τ·v
+  function laybackDist(v, L, tau) { return Math.max(0, (L || 0) + (tau || 0) * (finite(v) ? v : 0)); }
+
+  // ── Detection: packets → crossings ─────────────────────────────────────────
+  // 1. flag packets (fundamental z ≥ T, or robust: ≥N harmonics z ≥ T)
+  // 2. split phase-wrap / magnitude-dropout packets out as Artifact crossings
+  // 3. contiguous packets (index gap ≤ gapPkts) form sub-clusters
+  // 4. consecutive sub-clusters within mergeGapM metres of path merge into ONE crossing
+  function detectAnomalies(packets, harms, bg, opts, kin) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var legacy = opts.mode === 'legacy', f0 = harms[0], s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
+    var T = legacy ? 3 : opts.zThresh, normal = [], artifacts = [];
+    for (var i = 0; i < packets.length; i++) {
+      var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
+      var dev0 = v0[0] * 1000 - bgAt(bg, f0, i), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
+      if (!legacy) for (var h = 1; h < harms.length; h++) {
+        var v = pk.freqs[harms[h]]; if (!v) continue;
+        var z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / bg.perHz[harms[h]].std;
+        if (z >= T) hits++; if (z > zmax) zmax = z;
+      }
+      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits))) continue;
+      var ref = magRefAt(bg, i), magPct = ref ? (v0[1] - ref) / ref * 100 : 0;
+      var rec = { i: i, pk: pk, snr: zmax, snr0: z0, hits: hits };
+      if (Math.abs(dev0) > 150 || magPct < -30) artifacts.push(rec); else normal.push(rec);
+    }
+    var gap = legacy ? 2 : opts.gapPkts;
+    function sub(items) {
+      var out = [], cur = [];
+      items.forEach(function (a) { if (!cur.length || a.pk.idx - cur[cur.length - 1].pk.idx <= gap) cur.push(a); else { out.push(cur); cur = [a]; } });
+      if (cur.length) out.push(cur); return out;
+    }
+    function merge(subs) {
+      var out = [];
+      subs.forEach(function (s) {
+        if (out.length && kin) {
+          var prev = out[out.length - 1], a = prev[prev.length - 1].i, b = s[0].i;
+          if (packets[a].lat !== null && packets[b].lat !== null && Math.abs(kin[b].cum - kin[a].cum) <= opts.mergeGapM) {
+            out[out.length - 1] = prev.concat(s); return;
+          }
+        }
+        out.push(s);
+      });
+      return out;
+    }
+    var clusters = merge(sub(normal));
+    if (opts.minPkts > 1 && !legacy) clusters = clusters.filter(function (c) { return c.length >= opts.minPkts; });
+    var art = sub(artifacts); art.forEach(function (c) { c.isArtifact = true; });
+    return clusters.concat(art).sort(function (a, b) { return a[0].pk.idx - b[0].pk.idx; });
   }
 
-  // ── Rule classifier (v26 rule tree, with detrended per-packet background) ──
+  // ── Crossing classifier: integrated over the whole crossing ────────────────
   function classifyRules(cluster, harms, bg, kin) {
-    var rep = cluster[0];
+    var rep = cluster[0], n = cluster.length, f0 = harms[0];
     cluster.forEach(function (a) { if (a.snr > rep.snr) rep = a; });
-    var pk = rep.pk, i = rep.i, dp = {}, dpDev = {};
-    harms.forEach(function (f) { var v = pk.freqs[f]; dp[f] = v ? v[0] * 1000 : 0; dpDev[f] = dp[f] - bgAt(bg, f, i); });
-    var mag0 = pk.freqs[harms[0]];
-    var magRef = bg.magBase && finite(bg.magBase[i]) ? bg.magBase[i] : bg.magMean;
-    var magPct = mag0 ? ((mag0[1] - magRef) / magRef) * 100 : 0;
-    var dp1dev = dpDev[harms[0]];
-    var posHigh = 0; for (var h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
-    var negLow = 0; for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
-    var altPol = (dp[harms[0]] * dp[harms[1]] < 0 && dp[harms[1]] * dp[harms[2]] < 0);
-    var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, maxSNRall = maxSNR;
+    var s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
+    var wSum = cluster.reduce(function (s, a) { return s + a.snr; }, 0) || 1, dpDev = {}, dp = {};
+    harms.forEach(function (f) {
+      var acc = 0;
+      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += ((v ? v[0] * 1000 : b) - b) * a.snr; });
+      dpDev[f] = acc / wSum;
+      dp[f] = dpDev[f] + bgAt(bg, f, rep.i);
+    });
+    var dp1dev = dpDev[f0];
+    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += (v ? v[0] * 1000 : b) - b; });
+    var snrInt = Math.abs(mAcc / n) / (s0 / Math.sqrt(n));
+    var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, eff = Math.max(maxSNR, snrInt), maxSNRall = eff;
     harms.forEach(function (f) { var p = bg.perHz[f]; if (p) { var z = Math.abs(dpDev[f]) / p.std; if (z > maxSNRall) maxSNRall = z; } });
-    var cls, confPct;
-    if (Math.abs(dp1dev) > 150) { cls = 'Artifact'; confPct = 99; }
-    else if (magPct < -30) { cls = 'Artifact'; confPct = 99; }
-    else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; confPct = Math.min(95, 80 + maxSNRall / 5); }
-    else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; confPct = Math.min(80, 60 + maxSNRall / 4); }
-    else if (dp1dev < -8 && negLow >= 2 && !altPol && maxSNR > 8) { cls = 'Metallic IP'; confPct = Math.min(92, 75 + maxSNR / 8); }
-    else if (dp1dev < -5 && negLow >= 1 && maxSNR > 5) { cls = 'Metallic IP'; confPct = Math.min(75, 55 + maxSNR / 6); }
-    else if (dp1dev < -5 && posHigh >= 2) { cls = 'Mixed'; confPct = Math.min(70, 55 + maxSNR / 8); }
-    else if (posHigh >= 2 && maxSNRall > 3) { cls = 'Hydrocarbon IP'; confPct = Math.min(60, 40 + maxSNRall / 3); }
-    else { cls = 'Weak/Inconclusive'; confPct = Math.min(35, 15 + maxSNR * 3); }
-    // Spectral slope of deviation vs log10(f) — mrad/decade (Cole-Cole shape proxy)
+    maxSNRall = Math.max(maxSNRall, rep.snr);
+    var mag0 = rep.pk.freqs[f0], ref = magRefAt(bg, rep.i), magPct = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
+    var posHigh = 0, negLow = 0, h;
+    for (h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
+    for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
+    var altPol = dpDev[harms[0]] * dpDev[harms[1]] < 0 && dpDev[harms[1]] * dpDev[harms[2]] < 0;
+    var cls, conf;
+    if (cluster.isArtifact || Math.abs(dp1dev) > 150 || magPct < -30) { cls = 'Artifact'; conf = 99; }
+    else if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); }
+    else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; conf = Math.min(95, 80 + maxSNRall / 5); }
+    else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; conf = Math.min(80, 60 + maxSNRall / 4); }
+    else if (dp1dev < -8 && negLow >= 2 && !altPol && eff > 8) { cls = 'Metallic IP'; conf = Math.min(92, 75 + eff / 8); }
+    else if (dp1dev < -5 && negLow >= 1 && eff > 5) { cls = 'Metallic IP'; conf = Math.min(75, 55 + eff / 6); }
+    else if (dp1dev < -5 && posHigh >= 2) { cls = 'Mixed'; conf = Math.min(70, 55 + eff / 8); }
+    else if (posHigh >= 2 && maxSNRall > 3) { cls = 'Hydrocarbon IP'; conf = Math.min(60, 40 + maxSNRall / 3); }
+    else if (snrInt >= 8 && n >= 4) { cls = 'Strong Anomaly'; conf = Math.min(85, 50 + snrInt * 2); }
+    else { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); }
+    // spectral slope of the deviation vs log10(f)
     var xs = harms.map(function (f) { return Math.log10(f); }), ys = harms.map(function (f) { return dpDev[f]; });
     var mx = mean(xs), my = mean(ys), sxy = 0, sxx = 0;
     xs.forEach(function (x, k) { sxy += (x - mx) * (ys[k] - my); sxx += (x - mx) * (x - mx); });
-    var kk = kin && kin[i] ? kin[i] : { cog: null, sog: null };
-    return { cls: cls, confPct: Math.round(confPct), dp: dp, dpDev: dpDev, magPct: magPct,
-      maxSNR: maxSNR, maxSNRall: maxSNRall, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow,
-      pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: pk.idx, i: i,
-      ts: pk.ts, t: pk.t, nPkts: cluster.length, lat: pk.lat, lon: pk.lon, cog: kk.cog, sog: kk.sog };
+    // SNR-weighted position of the crossing: raw centroid + along-path coordinate
+    var la = 0, lo = 0, cu = 0, w = 0;
+    cluster.forEach(function (a) { if (a.pk.lat === null) return; la += a.pk.lat * a.snr; lo += a.pk.lon * a.snr; if (kin) cu += kin[a.i].cum * a.snr; w += a.snr; });
+    var k = kin && kin[rep.i] ? kin[rep.i] : { cog: null, sog: null };
+    return { cls: cls, confPct: Math.round(conf), dp: dp, dpDev: dpDev, magPct: magPct, maxSNR: maxSNR, maxSNRall: maxSNRall,
+      snrInt: Math.round(snrInt * 10) / 10, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow, isArtifact: !!cluster.isArtifact,
+      pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: rep.pk.idx, i: rep.i,
+      ts: rep.pk.ts, t: rep.pk.t, nPkts: n, lat: w ? la / w : rep.pk.lat, lon: w ? lo / w : rep.pk.lon,
+      cum: w && kin ? cu / w : (kin && kin[rep.i] ? kin[rep.i].cum : null), cog: k.cog, sog: k.sog };
   }
 
-  // ── Lab signature matching (weighted spectral-angle) ───────────────────────
+  // ── Lab signature matching (weighted spectral angle) ───────────────────────
   function labMatch(ev, harms, bg, sigs) {
     if (!sigs || !sigs.length) return [];
     var xmt = harms[0] === 2 ? 2 : harms[0] === 8 ? 8 : 4;
     var blanks = sigs.filter(function (s) { return s.material === 'Seawater blank' && s.xmt === xmt; });
-    var blank = blanks.length ? blanks[blanks.length - 1] : null;
-    var out = [];
+    var blank = blanks.length ? blanks[blanks.length - 1] : null, out = [];
     sigs.forEach(function (s) {
       if (s.material === 'Seawater blank' || s.xmt !== xmt) return;
       var sx = 0, ss = 0, xx = 0, n = 0, W = [], X = [], S = [];
@@ -447,111 +549,284 @@
     if (!best || best.cos < opts.labCosMin || best.scale <= 0 || ev.cls === 'Artifact') return base;
     var rf = family(ev.cls), lf = family(best.material);
     if (rf === lf) return { cls: best.material, conf: Math.round(Math.min(97, Math.max(ev.confPct, 50 + 45 * best.cos * Math.min(1, ev.maxSNRall / 10)))), src: 'rules+lab', conflict: false };
-    if (rf === 'weak' && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
+    if ((rf === 'weak' || rf === 'strong') && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(rf === 'strong' ? 80 : 70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
     return { cls: ev.cls, conf: Math.max(10, ev.confPct - 20), src: 'rules', conflict: true, labCls: best.material };
   }
 
-  // ── Full per-file analysis ─────────────────────────────────────────────────
+  // ── Per-file analysis (raw frame; layback applied separately) ──────────────
   function analyzeField(packets, opts, labSigs) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var xmt = packets[0].xmt, harms = getHarms(xmt), bg = computeBG(packets, harms, opts);
     var kin = computeKinematics(packets);
-    var clusters = detectAnomalies(packets, harms, bg, opts);
+    var clusters = detectAnomalies(packets, harms, bg, opts, kin);
     var events = clusters.map(function (cl) {
       var ev = classifyRules(cl, harms, bg, kin);
       ev.labMatches = labMatch(ev, harms, bg, labSigs);
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
-      var c = opts.applyLayback ? laybackShift(ev.lat, ev.lon, ev.cog, ev.sog, opts.laybackM, opts.latencyS) : [ev.lat, ev.lon];
-      ev.latC = c[0]; ev.lonC = c[1];
       return ev;
     });
-    // corrected sensor track (for pass counting)
-    var track = [], lenM = 0, prev = null;
+    var lenM = kin.length ? kin[kin.length - 1].cum : 0;
+    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM };
+  }
+  // Apply the linear layback model: every event and packet is moved BACK along the
+  // recorded path by L + τ·v. L=τ=0 returns raw positions.
+  function correctFile(fa, packets, L, tau) {
+    var kin = fa.kin, on = (L || 0) !== 0 || (tau || 0) !== 0;
+    var events = fa.events.map(function (ev) {
+      var p = on && finite(ev.cum) ? pointAtCum(packets, kin, ev.cum - laybackDist(ev.sog, L, tau)) : [ev.lat, ev.lon];
+      return Object.assign({}, ev, { latC: p[0], lonC: p[1] });
+    });
+    var track = [];
     packets.forEach(function (pk, i) {
       if (pk.lat === null) return;
-      var c = opts.applyLayback ? laybackShift(pk.lat, pk.lon, kin[i].cog, kin[i].sog, opts.laybackM, opts.latencyS) : [pk.lat, pk.lon];
-      track.push({ lat: c[0], lon: c[1], cog: kin[i].cog, i: i });
-      if (prev) { var d = haversine(prev[0], prev[1], pk.lat, pk.lon); if (d < 200) lenM += d; }
-      prev = [pk.lat, pk.lon];
+      var p = on ? pointAtCum(packets, kin, kin[i].cum - laybackDist(kin[i].sog, L, tau)) : [pk.lat, pk.lon];
+      track.push({ lat: p[0], lon: p[1], cog: kin[i].cog, i: i });
     });
-    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, track: track, trackLenM: lenM };
+    return Object.assign({}, fa, { events: events, track: track });
   }
 
-  // ── Layback calibration ────────────────────────────────────────────────────
-  // fileEvents: [{fi, run, events:[ev]}]  (events carry RAW lat/lon + cog/sog)
-  function collectCalibrationMatches(fileEvents, waypoints, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var best = {};
-    fileEvents.forEach(function (fe) {
-      fe.events.forEach(function (ev, ei) {
-        if (ev.lat === null || !finite(ev.cog) || ev.maxSNRall < opts.minSNRcal || ev.cls === 'Artifact') return;
-        var nw = null, nd = Infinity;
-        waypoints.forEach(function (w, wi) { var d = haversine(w.lat, w.lon, ev.lat, ev.lon); if (d < nd) { nd = d; nw = wi; } });
-        if (nw === null || nd > opts.matchRadiusM) return;
-        var w = waypoints[nw], e = enu(w.lat, w.lon, ev.lat, ev.lon);
-        var uE = Math.sin(ev.cog * D2R), uN = Math.cos(ev.cog * D2R);
-        var along = e[0] * uE + e[1] * uN, cross = e[0] * uN - e[1] * uE;
-        if (Math.abs(cross) > opts.maxCrossM) return;
-        var key = fe.fi + '|' + nw, m = { fi: fe.fi, run: fe.run, ei: ei, wi: nw, wp: w.name, along: along, cross: cross,
-          sog: ev.sog, cog: ev.cog, snr: ev.maxSNRall, dist: nd, cls: ev.fusedCls || ev.cls };
-        if (!best[key] || best[key].snr < m.snr) best[key] = m;
+  // ── Known targets: waypoints → physical target sites ───────────────────────
+  // Waypoints within linkM of each other are one target. A target is a segment between
+  // its two most distant members, so a long/linear target is judged along its length.
+  // Deploy-day code from names like 1A-3 / 2C-6 (leading digit + letter); 0 = unknown.
+  function waypointDayCode(name) { var m = /^([1-9])[A-Za-z]/.exec(String(name || '').trim()); return m ? parseInt(m[1], 10) : 0; }
+  function buildTargets(waypoints, linkM) {
+    linkM = linkM || 10;
+    var n = waypoints.length; if (!n) return [];
+    var parent = waypoints.map(function (_, i) { return i; });
+    function fnd(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
+    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++)
+      if (haversine(waypoints[i].lat, waypoints[i].lon, waypoints[j].lat, waypoints[j].lon) <= linkM) { var ra = fnd(i), rb = fnd(j); if (ra !== rb) parent[rb] = ra; }
+    var groups = {};
+    waypoints.forEach(function (w, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(w); });
+    var targets = Object.keys(groups).map(function (key, ti) {
+      var g = groups[key], A = g[0], B = g[0], best = 0;
+      for (var a = 0; a < g.length; a++) for (var b = a + 1; b < g.length; b++) { var d = haversine(g[a].lat, g[a].lon, g[b].lat, g[b].lon); if (d > best) { best = d; A = g[a]; B = g[b]; } }
+      var names = g.map(function (w) { return String(w.name); });
+      var alpha = names.filter(function (s) { return /^[0-9]+[A-Za-z]/.test(s); });
+      var label = alpha.length ? alpha[0].match(/^[0-9]+[A-Za-z]/)[0] : (g.length > 1 ? names[0] + '…' + names[g.length - 1] : names[0]);
+      var votes = {}, mats = {};
+      names.forEach(function (nm) { var d = waypointDayCode(nm); if (d) votes[d] = (votes[d] || 0) + 1; });
+      g.forEach(function (w) { if (w.material) mats[w.material] = (mats[w.material] || 0) + 1; });
+      var day = +Object.keys(votes).sort(function (x, y) { return votes[y] - votes[x]; })[0] || 0;
+      var mat = Object.keys(mats).sort(function (x, y) { return mats[y] - mats[x]; })[0] || null;
+      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, material: mat,
+        lat: mean(g.map(function (w) { return w.lat; })), lon: mean(g.map(function (w) { return w.lon; })),
+        aLat: A.lat, aLon: A.lon, bLat: B.lat, bLon: B.lon, lenM: best };
+    });
+    return targets.sort(function (a, b) { return b.lat - a.lat; }).map(function (t, i) { t.id = 'T' + i; return t; });
+  }
+  function distToTarget(lat, lon, T) {
+    var p = enu(T.aLat, T.aLon, lat, lon), b = enu(T.aLat, T.aLon, T.bLat, T.bLon), L2 = b[0] * b[0] + b[1] * b[1];
+    var t = L2 ? Math.max(0, Math.min(1, (p[0] * b[0] + p[1] * b[1]) / L2)) : 0;
+    return Math.hypot(p[0] - t * b[0], p[1] - t * b[1]);
+  }
+
+  // ── Survey days & automatic grouping ───────────────────────────────────────
+  function dateOf(pk) {
+    var m = String(pk && pk.ts || '').match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+    if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+    if (pk && finite(pk.t) && pk.t > 1e8) return new Date(pk.t * 1000).toISOString().slice(0, 10);
+    return null;
+  }
+  function samplePts(packets, k) {
+    var v = packets.filter(function (p) { return p.lat !== null; }); if (!v.length) return [];
+    var step = Math.max(1, Math.floor(v.length / (k || 12))), out = [];
+    for (var i = 0; i < v.length; i += step) out.push([v[i].lat, v[i].lon]);
+    out.push([v[v.length - 1].lat, v[v.length - 1].lon]); return out;
+  }
+  function nearTargets(pts, targets, maxM) {
+    if (!targets || !targets.length) return true;
+    return pts.some(function (p) { return targets.some(function (T) { return haversine(p[0], p[1], T.lat, T.lon) <= (maxM || 2000); }); });
+  }
+  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, dayRank, near}
+  // dayRank = 1-based rank of the file's date among dates of files near the targets
+  // (files from another survey area don't shift the ranking; their rank is 0).
+  function surveyDays(fileInfos, targets) {
+    var info = {}, dates = [];
+    fileInfos.forEach(function (f) {
+      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), near = nearTargets(pts, targets, 2000);
+      info[f.fi] = { date: d, near: near, pts: pts };
+      if (near && d && dates.indexOf(d) < 0) dates.push(d);
+    });
+    dates.sort();
+    Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
+    return { byFile: info, dates: dates };
+  }
+  // One group per survey date; a date is split further if its lines are > areaM apart.
+  function autoGroups(fileInfos, days, targets, areaM) {
+    areaM = areaM || 1000;
+    var byDate = {};
+    fileInfos.forEach(function (f) { var d = days.byFile[f.fi]; (byDate[(d && d.date) || 'undated'] = byDate[(d && d.date) || 'undated'] || []).push(f.fi); });
+    var allDates = Object.keys(byDate).sort(), groups = [];
+    allDates.forEach(function (date, di) {
+      var fis = byDate[date], parent = {};
+      fis.forEach(function (fi) { parent[fi] = fi; });
+      function fnd(a) { while (parent[a] !== a) a = parent[a]; return a; }
+      for (var a = 0; a < fis.length; a++) for (var b = a + 1; b < fis.length; b++) {
+        var pa = days.byFile[fis[a]].pts, pb = days.byFile[fis[b]].pts, close = false;
+        for (var i = 0; i < pa.length && !close; i++) for (var j = 0; j < pb.length; j++) if (haversine(pa[i][0], pa[i][1], pb[j][0], pb[j][1]) <= areaM) { close = true; break; }
+        if (close) parent[fnd(fis[b])] = fnd(fis[a]);
+      }
+      var areas = {};
+      fis.forEach(function (fi) { (areas[fnd(fi)] = areas[fnd(fi)] || []).push(fi); });
+      var keys = Object.keys(areas);
+      keys.forEach(function (k, ai) {
+        var ids = areas[k].sort(function (x, y) { return x - y; }), pts = [];
+        ids.forEach(function (fi) { pts = pts.concat(days.byFile[fi].pts); });
+        var cLat = mean(pts.map(function (p) { return p[0]; })), cLon = mean(pts.map(function (p) { return p[1]; }));
+        var nt = null, nd = Infinity;
+        (targets || []).forEach(function (T) { var d = haversine(cLat, cLon, T.lat, T.lon); if (d < nd) { nd = d; nt = T; } });
+        var rank = days.byFile[ids[0]].dayRank;
+        var area = nt && nd <= 2000 ? 'near ' + nt.label : (finite(cLat) ? cLat.toFixed(3) + ', ' + cLon.toFixed(3) : '');
+        var name = (date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date) + (keys.length > 1 || !rank ? (area ? ' · ' + area : '') : '');
+        groups.push({ id: 'auto-' + date + '-' + ai, name: name, auto: true, date: date, dayRank: rank, fileIds: ids, lat: cLat, lon: cLon });
       });
     });
-    return Object.keys(best).map(function (k) { return best[k]; });
+    return groups;
+  }
+
+  // ── Layback calibration anchors (all in the RAW path frame) ────────────────
+  // For each line that passes a known target: the boat's closest approach defines
+  // cum_close; the strongest crossing after it defines cum_det. The measured offset
+  //   along = cum_det − cum_close
+  // is exactly the distance the sensor trails the GPS (plus timing), independent of
+  // heading noise and of whatever correction is currently applied.
+  function collectAnchors(files, targets, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var out = [];
+    files.forEach(function (F) {
+      var pk = F.packets, kin = F.fa.kin;
+      targets.forEach(function (T, ti) {
+        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        var dmin = Infinity, imin = -1;
+        for (var i = 0; i < pk.length; i++) { if (kin[i].slat === null) continue; var d = distToTarget(kin[i].slat, kin[i].slon, T); if (d < dmin) { dmin = d; imin = i; } }
+        if (imin < 0 || dmin > opts.anchorPassM) return;
+        var c0 = kin[imin].cum, best = null;
+        F.fa.events.forEach(function (ev, ei) {
+          if (ev.isArtifact || ev.cls === 'Artifact' || !finite(ev.cum) || ev.maxSNRall < opts.minSNRcal) return;
+          var lead = ev.cum - c0;
+          if (lead < opts.minLeadM || lead > opts.maxLeadM) return;
+          if (!best || ev.maxSNRall > best.ev.maxSNRall) best = { ev: ev, ei: ei, lead: lead };
+        });
+        if (!best) return;
+        out.push({ key: F.key + '|' + T.label, fi: F.fi, run: F.run, ei: best.ei, wi: ti, wp: T.label, target: T.label,
+          along: best.lead, cross: dmin, sog: best.ev.sog, cog: best.ev.cog, snr: best.ev.maxSNRall,
+          cls: best.ev.fusedCls || best.ev.cls, dayRank: F.dayRank });
+      });
+    });
+    return out;
   }
   function axialMean(degs) {
     var s = 0, c = 0; degs.forEach(function (d) { s += Math.sin(2 * d * D2R); c += Math.cos(2 * d * D2R); });
     return ((Math.atan2(s, c) / D2R / 2) + 360) % 180;
   }
+  // Linear least squares: along = L + τ·v (+ b·dir when reciprocal lines exist),
+  // with 3-robust-σ outlier rejection. Returns L, τ, b with standard errors.
   function fitLayback(matches) {
     var res = { n: matches.length, ok: false };
-    if (matches.length < 2) { res.msg = 'Need at least 2 strong detections matched to waypoints.'; return res; }
-    var axis = axialMean(matches.map(function (m) { return m.cog; }));
-    matches.forEach(function (m) { m.dir = Math.cos((m.cog - axis) * D2R) >= 0 ? 1 : -1; m.inlier = true; });
+    if (matches.length < 2) { res.msg = 'Need at least 2 line/target crossings with a detection.'; return res; }
+    var axis = axialMean(matches.map(function (m) { return finite(m.cog) ? m.cog : 0; }));
+    matches.forEach(function (m) { m.dir = Math.cos(((finite(m.cog) ? m.cog : 0) - axis) * D2R) >= 0 ? 1 : -1; m.inlier = true; });
     var nF = matches.filter(function (m) { return m.dir > 0; }).length, nR = matches.length - nF;
     var sogs = matches.map(function (m) { return m.sog; }).filter(finite);
     var useV = sogs.length === matches.length && matches.length >= 5 && std(sogs) >= 0.15;
-    var useS = nF >= 1 && nR >= 1 && matches.length >= 3;
-    var fit = null, cols;
+    // Reciprocal-bias terms: one per target that was crossed in BOTH directions (its own
+    // waypoint position error along the line cancels), else a single shared term.
+    var recipT = {};
+    matches.forEach(function (m) { var r = recipT[m.wi] = recipT[m.wi] || { f: 0, r: 0 }; if (m.dir > 0) r.f++; else r.r++; });
+    var biasIds = Object.keys(recipT).filter(function (k) { return recipT[k].f && recipT[k].r; });
+    var fit = null, cols, p, mode;
     for (var iter = 0; iter < 3; iter++) {
       var use = matches.filter(function (m) { return m.inlier; });
-      var p = 1 + (useV ? 1 : 0) + (useS ? 1 : 0);
-      if (use.length < p + 1) { useV = false; p = 1 + (useS ? 1 : 0); }
-      if (use.length < p + 1) { useS = false; p = 1; }
-      cols = ['L'].concat(useV ? ['tau'] : []).concat(useS ? ['bias'] : []);
-      var X = use.map(function (m) { var r = [1]; if (useV) r.push(m.sog); if (useS) r.push(m.dir); return r; });
-      var y = use.map(function (m) { return m.along; });
-      fit = lstsq(X, y); if (!fit) break;
-      var rr = matches.map(function (m) { var r = [1]; if (useV) r.push(m.sog); if (useS) r.push(m.dir);
-        return m.along - r.reduce(function (s, v, k) { return s + v * fit.beta[k]; }, 0); });
-      var sc = 1.4826 * mad(rr, 0 + median(rr));
+      mode = biasIds.length >= 1 && use.length >= 2 + biasIds.length + (useV ? 1 : 0) + 1 ? 'target' : (nF && nR && use.length >= 3 ? 'shared' : 'none');
+      var nb = mode === 'target' ? biasIds.length : mode === 'shared' ? 1 : 0;
+      p = 1 + (useV ? 1 : 0) + nb;
+      if (use.length < p + 1 && useV) { useV = false; p--; }
+      cols = ['L'].concat(useV ? ['tau'] : []);
+      if (mode === 'target') biasIds.forEach(function (k) { cols.push('b' + k); }); else if (mode === 'shared') cols.push('bias');
+      var row = function (m) {
+        var r = [1]; if (useV) r.push(m.sog);
+        if (mode === 'target') biasIds.forEach(function (k) { r.push(String(m.wi) === k ? m.dir : 0); });
+        else if (mode === 'shared') r.push(m.dir);
+        return r;
+      };
+      fit = lstsq(use.map(row), use.map(function (m) { return m.along; })); if (!fit) break;
+      var rr = matches.map(function (m) { return m.along - row(m).reduce(function (s, v, k) { return s + v * fit.beta[k]; }, 0); });
+      var sc = 1.4826 * mad(rr, median(rr));
       matches.forEach(function (m, k) { m.resid = rr[k]; m.inlier = !(sc > 0.5 && Math.abs(rr[k]) > 3 * sc && use.length > p + 2); });
     }
     if (!fit) { res.msg = 'Fit failed (degenerate geometry).'; return res; }
     var inl = matches.filter(function (m) { return m.inlier; }), dof = Math.max(1, inl.length - cols.length);
     var sse = inl.reduce(function (s, m) { return s + m.resid * m.resid; }, 0), s2 = sse / dof;
-    var get = function (name) { var k = cols.indexOf(name); return k < 0 ? null : { v: fit.beta[k], se: Math.sqrt(Math.max(0, fit.inv[k][k] * s2)) }; };
-    // Per-waypoint reciprocal-pair estimate (waypoint error cancels): mean of fwd & rev means
+    var get = function (nm) { var k = cols.indexOf(nm); return k < 0 ? null : { v: fit.beta[k], se: Math.sqrt(Math.max(0, fit.inv[k][k] * s2)) }; };
+    var biases = cols.filter(function (c) { return c === 'bias' || c[0] === 'b'; }).map(function (c) { var g = get(c); return { id: c === 'bias' ? 'all' : c.slice(1), v: g.v, se: g.se }; });
     var byWp = {};
     inl.forEach(function (m) { (byWp[m.wi] = byWp[m.wi] || { f: [], r: [] })[m.dir > 0 ? 'f' : 'r'].push(m.along); });
-    var pairs = Object.keys(byWp).filter(function (k) { return byWp[k].f.length && byWp[k].r.length; })
-      .map(function (k) { return (mean(byWp[k].f) + mean(byWp[k].r)) / 2; });
-    var L = get('L'), tau = get('tau'), bias = get('bias');
-    var medSog = median(inl.map(function (m) { return m.sog; }));
+    var pairs = Object.keys(byWp).filter(function (k) { return byWp[k].f.length && byWp[k].r.length; }).map(function (k) { return (mean(byWp[k].f) + mean(byWp[k].r)) / 2; });
+    var L = get('L'), tau = get('tau'), medSog = median(inl.map(function (m) { return m.sog; }));
     return { ok: true, n: matches.length, nInliers: inl.length, nFwd: nF, nRev: nR, axisDeg: axis,
-      L: L.v, seL: L.se, tau: tau ? tau.v : 0, seTau: tau ? tau.se : null, bias: bias ? bias.v : null,
-      seBias: bias ? bias.se : null, usedSpeed: !!tau, usedDir: !!bias, rms: Math.sqrt(sse / Math.max(1, inl.length)),
-      medSog: medSog, effOffset: L.v + (tau ? tau.v * (finite(medSog) ? medSog : 0) : 0),
+      L: L.v, seL: L.se, tau: tau ? tau.v : 0, seTau: tau ? tau.se : null, usedSpeed: !!tau, usedDir: biases.length > 0,
+      biasMode: mode, biases: biases, bias: biases.length ? mean(biases.map(function (b) { return b.v; })) : null,
+      rms: Math.sqrt(sse / Math.max(1, inl.length)), medSog: medSog,
+      effOffset: L.v + (tau ? tau.v * (finite(medSog) ? medSog : 0) : 0),
       Lpairs: pairs.length ? median(pairs) : null, nPairs: pairs.length,
       crossMean: mean(inl.map(function (m) { return m.cross; })), crossStd: std(inl.map(function (m) { return m.cross; })),
       alongMedianRaw: median(matches.map(function (m) { return m.along; })), matches: matches };
   }
 
-  // ── Corroboration (multi-run sites) ────────────────────────────────────────
-  // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}]
-  function buildSites(points, fileTracks, waypoints, opts) {
+  // ── Coverage: did each line pass each known target, and detect it? ─────────
+  // Uses CORRECTED positions. PASS = sensor track within detRadiusM of the target;
+  // HIT = a (non-artifact) crossing within detRadiusM; FAIL = passed, nothing detected;
+  // UNATTRIB = a crossing not near any target.
+  function evaluateCoverage(files, targets, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var rows = [], R = opts.detRadiusM;
+    files.forEach(function (F) {
+      var evs = F.events.filter(function (e) { return !e.isArtifact && e.cls !== 'Artifact' && e.latC !== null && e.latC !== undefined; });
+      var used = {};
+      targets.forEach(function (T) {
+        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        var dmin = Infinity;
+        F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
+        if (dmin > R) return;
+        var hit = null, hd = Infinity;
+        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
+        if (hit) used[F.events.indexOf(hit)] = 1;
+        rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
+          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null });
+      });
+      evs.forEach(function (e) {
+        if (used[F.events.indexOf(e)]) return;
+        var nt = null, nd = Infinity;
+        targets.forEach(function (T) { var d = distToTarget(e.latC, e.lonC, T); if (d < nd) { nd = d; nt = T; } });
+        if (nt && nd <= R) return;   // near a target on a filtered day: not a false alarm
+        rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: nt ? nt.label : '—', targetId: nt ? nt.id : null, closest: null,
+          status: 'UNATTRIB', cls: e.finalCls || e.fusedCls || e.cls, evDist: nd, snr: e.maxSNRall });
+      });
+    });
+    var perT = targets.map(function (T) {
+      var r = rows.filter(function (x) { return x.targetId === T.id && x.status !== 'UNATTRIB'; });
+      var h = r.filter(function (x) { return x.status === 'HIT'; }), cls = {}, famOk = 0, famN = 0;
+      h.forEach(function (x) { cls[x.cls] = (cls[x.cls] || 0) + 1; if (T.material && T.material !== 'Seawater blank' && T.material !== 'No anomaly') { famN++; if (family(x.cls) === family(T.material)) famOk++; } });
+      return { id: T.id, label: T.label, material: T.material, day: T.day, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
+        classes: cls, famOk: famOk, famN: famN, meanErrM: h.length ? mean(h.map(function (x) { return x.evDist; })) : null };
+    });
+    var P = perT.reduce(function (s, t) { return s + t.passes; }, 0), H = perT.reduce(function (s, t) { return s + t.hits; }, 0);
+    var fOk = perT.reduce(function (s, t) { return s + t.famOk; }, 0), fN = perT.reduce(function (s, t) { return s + t.famN; }, 0);
+    var ua = rows.filter(function (x) { return x.status === 'UNATTRIB'; }), uaReal = ua.filter(function (x) { var f = family(x.cls); return f !== 'weak' && f !== 'artifact'; });
+    var km = files.reduce(function (s, F) { return s + (F.trackLenM || 0); }, 0) / 1000;
+    var errs = perT.map(function (t) { return t.meanErrM; }).filter(finite);
+    return { rows: rows, perTarget: perT, passes: P, hits: H, pd: P ? H / P : null, pdCI: wilson(H, P),
+      unattributed: ua.length, falseAlarms: uaReal.length, trackKm: km, faPerKm: km > 0 ? uaReal.length / km : null,
+      famAcc: fN ? fOk / fN : null, famN: fN, meanPosErrM: errs.length ? mean(errs) : null };
+  }
+
+  // ── Corroboration of detections across runs (known AND unknown targets) ────
+  // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}] (corrected positions)
+  function buildSites(points, fileTracks, targets, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var n = points.length, parent = points.map(function (_, i) { return i; });
     function fnd(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
@@ -572,7 +847,6 @@
       var cogs = g.map(function (p) { return p.cog; }).filter(finite), recip = false;
       for (var a = 0; a < cogs.length && !recip; a++) for (var b = a + 1; b < cogs.length; b++) if (angDiff(cogs[a], cogs[b]) > 120) { recip = true; break; }
       var scatter = Math.sqrt(mean(g.map(function (p) { var d = haversine(la, lo, p.lat, p.lon); return d * d; })) || 0);
-      // runs whose (corrected) sensor track passed over the site
       var passR = Math.max(opts.mergeRadiusM, opts.passRadiusM), passed = {};
       (fileTracks || []).forEach(function (ft) {
         for (var q = 0; q < ft.track.length; q++) {
@@ -582,53 +856,22 @@
       });
       Object.keys(runs).forEach(function (fi) { passed[fi] = runs[fi]; });
       var nRuns = Object.keys(runs).length, nPass = Object.keys(passed).length;
-      var consensus = cls[top] / g.length, famConsensus = fam[topFam] / g.length;
-      var nw = null, nd = Infinity;
-      (waypoints || []).forEach(function (w) { var d = haversine(w.lat, w.lon, la, lo); if (d < nd) { nd = d; nw = w; } });
+      var nt = null, nd = Infinity;
+      (targets || []).forEach(function (T) { var d = distToTarget(la, lo, T); if (d < nd) { nd = d; nt = T; } });
       var weakSite = topFam === 'weak' || topFam === 'artifact' || topFam === 'none';
+      var famConsensus = fam[topFam] / g.length;
       var tier = nRuns < 2 ? 'Single run' : weakSite ? 'Weak repeat' :
         nRuns >= 3 && famConsensus >= 0.67 && recip ? 'Confirmed' : famConsensus >= 0.5 ? 'Corroborated' : 'Conflicting';
       return { lat: la, lon: lo, members: g, nDet: g.length, nRuns: nRuns, nPass: nPass, runs: runs,
-        repeatability: nPass ? nRuns / nPass : 0, cls: top, consensus: consensus, famConsensus: famConsensus,
+        repeatability: nPass ? nRuns / nPass : 0, cls: top, consensus: cls[top] / g.length, famConsensus: famConsensus,
         reciprocal: recip, scatterM: scatter, meanSNR: mean(g.map(function (p) { return p.snr; })),
         maxConf: Math.max.apply(null, g.map(function (p) { return p.conf || 0; })),
-        nearestWp: nw ? nw.name : null, nearestWpM: nw ? nd : null, tier: tier };
+        nearestWp: nt ? nt.label : null, nearestWpM: nt ? nd : null, knownTarget: !!(nt && nd <= opts.detRadiusM), tier: tier };
     });
     var order = { 'Confirmed': 0, 'Corroborated': 1, 'Conflicting': 2, 'Weak repeat': 3, 'Single run': 4 };
     return sites.sort(function (a, b) { return order[a.tier] - order[b.tier] || b.nRuns - a.nRuns || b.meanSNR - a.meanSNR; });
   }
 
-  // ── Detection performance vs known waypoints ───────────────────────────────
-  function detectionMetrics(fileTracks, points, waypoints, opts) {
-    opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var perWp = waypoints.map(function (w) {
-      var passes = 0, hits = 0, famOk = 0, famN = 0, classes = {};
-      fileTracks.forEach(function (ft) {
-        var passed = ft.track.some(function (tp) { return Math.abs(tp.lat - w.lat) < 0.0005 && haversine(w.lat, w.lon, tp.lat, tp.lon) <= opts.passRadiusM; });
-        var dets = points.filter(function (p) { return p.fi === ft.fi && haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; });
-        if (!passed && !dets.length) return;
-        passes++;
-        if (dets.length) {
-          hits++;
-          var bestP = dets.reduce(function (a, b) { return (b.snr || 0) > (a.snr || 0) ? b : a; });
-          classes[bestP.cls] = (classes[bestP.cls] || 0) + 1;
-          if (w.material && w.material !== 'Seawater blank' && w.material !== 'No anomaly') { famN++; if (family(bestP.cls) === family(w.material)) famOk++; }
-        }
-      });
-      var errs = points.filter(function (p) { return haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; })
-        .map(function (p) { return haversine(w.lat, w.lon, p.lat, p.lon); });
-      return { name: w.name, material: w.material, passes: passes, hits: hits, pd: passes ? hits / passes : null,
-        famOk: famOk, famN: famN, classes: classes, meanErrM: errs.length ? mean(errs) : null };
-    });
-    var isFA = function (p) { return !waypoints.some(function (w) { return haversine(w.lat, w.lon, p.lat, p.lon) <= opts.detRadiusM; }); };
-    var fa = points.filter(isFA), km = fileTracks.reduce(function (s, ft) { return s + ft.trackLenM; }, 0) / 1000;
-    var P = perWp.reduce(function (s, w) { return s + w.passes; }, 0), H = perWp.reduce(function (s, w) { return s + w.hits; }, 0);
-    var fOk = perWp.reduce(function (s, w) { return s + w.famOk; }, 0), fN = perWp.reduce(function (s, w) { return s + w.famN; }, 0);
-    var errsAll = []; perWp.forEach(function (w) { if (w.meanErrM !== null) errsAll.push(w.meanErrM); });
-    return { perWp: perWp, passes: P, hits: H, pd: P ? H / P : null, pdCI: wilson(H, P), falseAlarms: fa.length, trackKm: km,
-      faPerKm: km > 0 ? fa.length / km : null, famAcc: fN ? fOk / fN : null, famN: fN, meanPosErrM: errsAll.length ? mean(errsAll) : null,
-      precision: points.length ? (points.length - fa.length) / points.length : null };
-  }
   function wilson(k, n) {
     if (!n) return null; var z = 1.96, p = k / n, d = 1 + z * z / n;
     var c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
@@ -695,11 +938,15 @@
     alignWaypointHemisphere: alignWaypointHemisphere, matchMaterial: matchMaterial,
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
-    laybackShift: laybackShift, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass, analyzeField: analyzeField,
-    collectCalibrationMatches: collectCalibrationMatches, fitLayback: fitLayback, axialMean: axialMean,
-    buildSites: buildSites, detectionMetrics: detectionMetrics, wilson: wilson,
+    pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
+    analyzeField: analyzeField, correctFile: correctFile,
+    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
+    dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
+    collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,
+    evaluateCoverage: evaluateCoverage, buildSites: buildSites, wilson: wilson,
     confusion: confusion, looKnn: looKnn, reliability: reliability
   };
+
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   root.IPA = API;
 })(typeof window !== 'undefined' ? window : globalThis);

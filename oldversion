@@ -1,0 +1,3332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPA MIP Classifier Portal — AI (</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#f0f4f8;--panel:#ffffff;--panel2:#f5f8fb;--border:#dde4ed;--border2:#c8d4e0;
+  --accent:#0071b8;--accent2:#005a8e;--pos:#1a8c4e;--neg:#cc2233;--warn:#b07800;
+  --mixed:#5a50c8;--art:#c05000;--hydro:#0080b0;--metal:#b02040;
+  --text:#1a2533;--dim:#8099b0;--dim2:#607a90;--dim3:#3a5570;
+  --font-mono:'Space Mono',monospace;--font-ui:'Inter',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body,#root{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:13px;}
+body{overflow:hidden;}
+.app{display:grid;grid-template-rows:52px 1fr;height:100vh;}
+.topbar{background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:16px;z-index:100;}
+.topbar h1{font-family:var(--font-mono);font-size:13px;color:var(--accent);letter-spacing:.08em;white-space:nowrap;}
+.sep{width:1px;height:20px;background:var(--border2);}
+.main{display:grid;grid-template-columns:260px 1fr 320px;overflow:hidden;}
+.sidebar{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;}
+.content{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+.ai-panel{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+
+/* Sidebar */
+.upload-zone{border:1px dashed var(--border2);border-radius:4px;padding:16px 12px;text-align:center;cursor:pointer;transition:border-color .2s;}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);}
+.upload-zone .icon{font-size:20px;margin-bottom:6px;}
+.upload-zone p{font-size:11px;color:var(--dim2);line-height:1.5;}
+.upload-zone span{color:var(--accent);}
+.file-item{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
+.file-item:hover{background:var(--panel2);}
+.file-item.active{background:var(--panel2);border-color:var(--border2);}
+.file-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.file-name{font-size:11px;color:var(--dim3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.file-info{font-size:9px;color:var(--dim);font-family:var(--font-mono);}
+.sidebar-label{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim);padding:0 2px;}
+.btn{padding:7px 14px;border-radius:3px;border:none;cursor:pointer;font-family:var(--font-mono);font-size:11px;letter-spacing:.05em;transition:all .15s;white-space:nowrap;}
+.btn-primary{background:var(--accent);color:#000;font-weight:700;}
+.btn-primary:hover{background:#00a8c8;color:#000;}
+.btn-primary:disabled{opacity:.4;cursor:default;}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--dim3);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.btn-sm{padding:4px 10px;font-size:10px;}
+.btn-ai{background:linear-gradient(135deg,#0071b8,#00a8d0);color:#fff;font-weight:700;border:none;}
+.btn-ai:hover{opacity:.9;}
+.btn-ai:disabled{opacity:.35;cursor:default;}
+
+/* Stats */
+.statsbar{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:9px 11px;}
+.stat label{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim2);display:block;margin-bottom:3px;}
+.stat .val{font-family:var(--font-mono);font-size:15px;font-weight:700;color:var(--accent);}
+.stat .sub{font-family:var(--font-mono);font-size:9px;color:var(--dim);margin-top:2px;}
+
+/* Charts */
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.chart-panel{background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:10px 12px;}
+.chart-panel.full{grid-column:1/-1;}
+.chart-title{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim2);margin-bottom:7px;display:flex;justify-content:space-between;align-items:center;}
+canvas{display:block;width:100%;}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px;}
+.li{display:flex;align-items:center;gap:5px;font-family:var(--font-mono);font-size:9px;color:var(--dim2);}
+.ld{width:14px;height:2px;border-radius:1px;}
+
+/* Events table */
+.events-wrap{overflow-x:auto;}
+.events-table{width:100%;border-collapse:collapse;min-width:700px;}
+.events-table th{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);text-align:left;padding:6px 8px;border-bottom:1px solid var(--border2);white-space:nowrap;}
+.events-table td{padding:6px 8px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:11px;vertical-align:middle;}
+.events-table tr:hover td{background:var(--panel2);}
+.events-table tr.selected td{background:var(--panel2);border-bottom-color:var(--border2);}
+.badge{display:inline-block;padding:2px 7px;border-radius:2px;font-size:10px;font-weight:700;font-family:var(--font-mono);}
+.badge-hydro{background:rgba(0,113,184,.10);color:var(--hydro);}
+.badge-metal{background:rgba(176,32,64,.10);color:var(--metal);}
+.badge-mixed{background:rgba(90,80,200,.10);color:var(--mixed);}
+.badge-art{background:rgba(192,80,0,.10);color:var(--art);}
+.badge-weak{background:rgba(80,100,130,.10);color:var(--dim3);}
+.conf-bar{display:flex;align-items:center;gap:5px;}
+.conf-fill{height:4px;border-radius:2px;min-width:2px;}
+.conf-text{font-size:9px;color:var(--dim2);white-space:nowrap;}
+
+/* AI Panel */
+.ai-section-title{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim2);}
+.api-key-row{display:flex;gap:6px;}
+.api-key-input{flex:1;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:6px 9px;border-radius:3px;}
+.api-key-input:focus{outline:none;border-color:var(--accent);}
+.ai-response{background:var(--panel2);border:1px solid var(--border2);border-radius:3px;padding:10px 12px;flex:1;min-height:120px;}
+.ai-response p{font-size:12px;color:var(--dim3);line-height:1.7;white-space:pre-wrap;}
+.ai-response .thinking{color:var(--dim);font-style:italic;font-size:11px;}
+.ai-classification{background:var(--panel2);border:1px solid var(--border2);border-radius:3px;padding:10px 12px;}
+.ai-cls-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.ai-cls-label{font-size:10px;color:var(--dim2);font-family:var(--font-mono);}
+.ai-cls-val{font-size:14px;font-weight:600;font-family:var(--font-mono);}
+.ai-conf-val{font-family:var(--font-mono);font-size:12px;color:var(--dim3);}
+.training-entry{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:2px;background:var(--panel2);font-size:10px;font-family:var(--font-mono);}
+.training-entry .mat{font-weight:700;}
+.training-list{display:flex;flex-direction:column;gap:3px;max-height:160px;overflow-y:auto;}
+.confirm-row{display:flex;gap:6px;align-items:center;}
+.confirm-sel{flex:1;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:10px;padding:5px 8px;border-radius:3px;}
+.confirm-sel:focus{outline:none;border-color:var(--pos);}
+.confirm-btn{background:#1a8c4e;color:#000;border:none;padding:5px 10px;border-radius:3px;font-family:var(--font-mono);font-size:10px;cursor:pointer;font-weight:700;white-space:nowrap;}
+.confirm-btn:hover{opacity:.85;}
+
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:280px;color:var(--dim);gap:10px;}
+.empty .icon{font-size:32px;opacity:.3;}
+.empty p{font-family:var(--font-mono);font-size:11px;text-align:center;line-height:1.7;}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:#c0ccd8;border-radius:2px;}
+::-webkit-scrollbar-thumb:hover{background:var(--dim);}
+
+/* ── Collections ── */
+.coll-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.coll-list{display:flex;flex-direction:column;gap:3px;}
+.coll-item{border:1px solid var(--border);border-radius:3px;overflow:hidden;}
+.coll-item.active-coll{border-color:var(--accent);}
+.coll-title-row{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:pointer;background:var(--panel2);transition:background .15s;}
+.coll-title-row:hover{background:var(--border);}
+.coll-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+.coll-name{font-size:11px;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.coll-meta{font-size:9px;color:var(--dim2);font-family:var(--font-mono);white-space:nowrap;}
+.coll-files{padding:4px 8px 6px 24px;display:flex;flex-direction:column;gap:2px;background:var(--panel);}
+.coll-file-row{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:2px;cursor:pointer;font-size:10px;font-family:var(--font-mono);color:var(--dim3);}
+.coll-file-row:hover{background:var(--panel2);color:var(--text);}
+.coll-file-row.active{color:var(--accent);font-weight:700;}
+.coll-mat-pill{display:inline-block;padding:1px 5px;border-radius:10px;font-size:9px;font-family:var(--font-mono);margin-left:auto;white-space:nowrap;}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:999;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:6px;padding:24px;width:400px;box-shadow:0 8px 32px rgba(0,0,0,.18);}
+.modal h2{font-family:var(--font-mono);font-size:13px;color:var(--accent);margin-bottom:14px;}
+.modal label{font-family:var(--font-mono);font-size:10px;color:var(--dim2);display:block;margin-bottom:4px;margin-top:10px;}
+.modal input,.modal select{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 9px;border-radius:3px;}
+.modal input:focus,.modal select:focus{outline:none;border-color:var(--accent);}
+.modal .modal-btns{display:flex;gap:8px;margin-top:18px;justify-content:flex-end;}
+.color-swatches{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;}
+.swatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;transition:border-color .15s;}
+.swatch:hover,.swatch.sel{border-color:var(--text);}
+.tab-row{display:flex;border-bottom:1px solid var(--border);margin-bottom:10px;}
+.tab{padding:6px 14px;font-family:var(--font-mono);font-size:10px;cursor:pointer;color:var(--dim2);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s;text-transform:uppercase;letter-spacing:.06em;}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+.tab:hover:not(.active){color:var(--text);}
+.export-box{background:var(--panel2);border:1px solid var(--border);border-radius:3px;padding:10px;font-family:var(--font-mono);font-size:10px;color:var(--dim3);white-space:pre-wrap;max-height:120px;overflow-y:auto;}
+
+/* ── Map panel ── */
+.map-panel{background:var(--panel2);border:1px solid var(--border);border-radius:3px;position:relative;overflow:hidden;}
+.map-canvas{display:block;width:100%;cursor:crosshair;}
+.map-legend{position:absolute;bottom:8px;left:8px;background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:3px;padding:6px 10px;font-family:var(--font-mono);font-size:9px;line-height:1.8;}
+.map-controls{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;}
+.map-btn{background:rgba(255,255,255,.9);border:1px solid var(--border2);border-radius:3px;padding:4px 8px;cursor:pointer;font-size:11px;font-family:var(--font-mono);}
+.map-btn:hover{background:#fff;border-color:var(--accent);}
+.map-tooltip{position:absolute;background:rgba(255,255,255,.97);border:1px solid var(--border2);border-radius:3px;padding:6px 10px;font-family:var(--font-mono);font-size:10px;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);max-width:220px;line-height:1.6;}
+/* ── Lab output table ── */
+.lab-table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;}
+.lab-table th{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border2);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);white-space:nowrap;}
+.lab-table th:first-child{text-align:left;}
+.lab-table td{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border);color:var(--text);}
+.lab-table td:first-child{text-align:left;color:var(--dim3);}
+.lab-table tr:hover td{background:var(--panel2);}
+
+/* ── Map & run organizer additions ── */
+.map-wrap{position:relative;background:#e8eef4;border-radius:3px;border:1px solid var(--border);overflow:hidden;}
+.leaflet-container{border-radius:3px;height:100% !important;}
+.map-controls-panel{background:rgba(255,255,255,.95);border:1px solid var(--border2);border-radius:3px;padding:8px 10px;font-family:var(--font-mono);font-size:10px;display:flex;flex-direction:column;gap:6px;}
+.layer-btn-group{display:flex;gap:4px;flex-wrap:wrap;}
+.layer-btn{padding:3px 8px;border-radius:2px;border:1px solid var(--border2);background:var(--panel);font-family:var(--font-mono);font-size:9px;cursor:pointer;color:var(--dim3);transition:all .15s;}
+.layer-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.layer-btn:hover:not(.active){border-color:var(--accent);color:var(--accent);}
+.file-sel-list{display:flex;flex-direction:column;gap:3px;max-height:140px;overflow-y:auto;}
+.file-sel-row{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:2px;cursor:pointer;}
+.file-sel-row:hover{background:var(--panel2);}
+.file-sel-check{width:12px;height:12px;accent-color:var(--accent);}
+.layback-input{width:100%;background:var(--panel2);border:1px solid var(--border2);
+  color:var(--text);font-family:var(--font-mono);font-size:11px;padding:4px 7px;
+  border-radius:2px;box-sizing:border-box;}
+.layback-input:focus{outline:none;border-color:var(--accent);}
+.wp-marker-label{font-family:monospace;font-size:10px;font-weight:bold;
+  white-space:nowrap;pointer-events:none;}
+.wp-legend-row{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);
+  font-size:9px;color:var(--dim3);padding:2px 0;}
+.map-canvas{display:block;width:100%;cursor:crosshair;}
+.map-tip{position:absolute;background:rgba(255,255,255,.97);border:1px solid var(--border2);border-radius:3px;
+  padding:5px 9px;font-family:var(--font-mono);font-size:10px;pointer-events:none;
+  box-shadow:0 2px 6px rgba(0,0,0,.12);max-width:200px;line-height:1.55;z-index:20;}
+.map-toggles{display:flex;gap:6px;margin-bottom:8px;align-items:center;flex-wrap:wrap;}
+.tog{padding:4px 10px;border-radius:3px;border:1px solid var(--border2);background:var(--panel);
+  font-family:var(--font-mono);font-size:10px;cursor:pointer;color:var(--dim3);transition:all .15s;}
+.tog.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.tog:hover:not(.on){border-color:var(--accent);color:var(--accent);}
+.run-group{border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px;}
+.run-group-hdr{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel2);
+  cursor:pointer;font-family:var(--font-mono);font-size:10px;}
+.run-group-hdr:hover{background:var(--border);}
+.run-group-name{font-weight:700;color:var(--text);flex:1;}
+.run-group-body{padding:4px 6px;display:flex;flex-direction:column;gap:2px;}
+.run-entry{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:2px;
+  cursor:pointer;font-family:var(--font-mono);font-size:10px;color:var(--dim3);}
+.run-entry:hover{background:var(--panel2);color:var(--text);}
+.run-entry.active{background:var(--panel2);color:var(--accent);font-weight:700;}
+.run-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+.lab-tbl{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;}
+.lab-tbl th{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border2);
+  font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim2);white-space:nowrap;}
+.lab-tbl th:first-child{text-align:left;}
+.lab-tbl td{text-align:right;padding:4px 10px;border-bottom:1px solid var(--border);color:var(--text);}
+.lab-tbl td:first-child{text-align:left;color:var(--dim3);}
+.lab-tbl tr:hover td{background:var(--panel2);}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;
+  align-items:center;justify-content:center;z-index:999;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:6px;
+  padding:22px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,.18);}
+.modal h3{font-family:var(--font-mono);font-size:12px;color:var(--accent);margin-bottom:12px;}
+.modal label{font-family:var(--font-mono);font-size:10px;color:var(--dim2);display:block;
+  margin-top:10px;margin-bottom:3px;}
+.modal input,.modal select{width:100%;background:var(--panel2);border:1px solid var(--border2);
+  color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 8px;border-radius:3px;}
+.modal input:focus,.modal select:focus{outline:none;border-color:var(--accent);}
+.modal-btns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;}
+.color-row{display:flex;gap:5px;margin-top:4px;flex-wrap:wrap;}
+.cswatch{width:20px;height:20px;border-radius:3px;cursor:pointer;border:2px solid transparent;}
+.cswatch:hover,.cswatch.sel{border-color:var(--text);}
+</style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const {useState,useRef,useEffect,useCallback,useMemo}=React;
+
+// ── Supabase client (handles auth + data) ─────────────────────────────────────
+var SUPA_URL='https://ztrtrymaqrrquxpcjcsp.supabase.co';
+var SUPA_KEY='sb_publishable_GliclnRAR4DK2rhPpv-DJw_di5zsiOe';
+var supabase=window.supabase.createClient(SUPA_URL,SUPA_KEY);
+
+function loadTrainingFromDB(){
+  return supabase.from('training_confirmations')
+    .select('*').order('confirmed_at',{ascending:true}).limit(500)
+    .then(function(res){
+      if(res.error)throw new Error(res.error.message);
+      return (res.data||[]).map(function(r){
+        return{
+          material:r.material,run:r.run_name,ts:r.confirmed_at,
+          fv:{dp1:r.dp_fund_mrad||0,dp3:r.dp_mid_mrad||0,dp_last:r.dp_high_mrad||0,
+              magPct:r.mag_pct||0,maxSNR:r.max_snr||0},
+          aiConf:r.ai_conf_pct||0,id:r.id
+        };
+      });
+    });
+}
+
+function saveTrainingToDB(entry,harms){
+  return supabase.from('training_confirmations').insert({
+    material:entry.material,
+    run_name:entry.run,
+    xmt_hz:harms[0]===4?4:harms[0]===2?2:8,
+    dp_fund_mrad:entry.fv.dp1,
+    dp_mid_mrad:entry.fv.dp3,
+    dp_high_mrad:entry.fv.dp_last,
+    mag_pct:entry.fv.magPct,
+    max_snr:entry.fv.maxSNR,
+    fund_freq_hz:harms[0],
+    mid_freq_hz:harms[2],
+    high_freq_hz:harms[5],
+    ai_conf_pct:entry.aiConf||0,
+    notes:null
+  }).select().then(function(res){
+    if(res.error)throw new Error(res.error.message);
+    return res.data;
+  });
+}
+
+function deleteTrainingFromDB(id){
+  return supabase.from('training_confirmations')
+    .delete().eq('id',id)
+    .then(function(res){if(res.error)throw new Error(res.error.message);});
+}
+
+function signInWithGitHub(){
+  return supabase.auth.signInWithOAuth({
+    provider:'github',
+    options:{redirectTo:window.location.href}
+  });
+}
+
+function signOut(){
+  return supabase.auth.signOut();
+}
+
+const HARM={2:[2,6,10,14,18,22],4:[4,12,20,28,36,44],8:[8,24,40,56,72,88]};
+function getHarms(xmt){return HARM[xmt]||HARM[4];}
+
+const MAT_COLORS={
+  'Hydrocarbon IP':'#0080b0','Class 3 Gas Oil':'#4070c0','Alaska Crude Oil':'#c07820',
+  'ITB Rebel Crude':'#1a8c4e','Metallic IP':'#b02040','Steel':'#cc2233',
+  'Ilmenite':'#a04010','Galvanized Steel':'#807030','Mixed':'#5a50c8',
+  'Asphalt':'#607060','Artifact':'#c05000','Weak/Inconclusive':'#708090','No anomaly':'#9090a0',
+  'Strong Anomaly':'#7b2d8b'
+};
+const MAT_OPTIONS=['Hydrocarbon IP','Class 3 Gas Oil','Alaska Crude Oil','ITB Rebel Crude',
+  'Metallic IP','Steel','Ilmenite','Galvanized Steel','Mixed','Asphalt','Artifact','Weak/Inconclusive','Strong Anomaly'];
+const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
+  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
+const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000',
+  '#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
+
+// ── Parsers ────────────────────────────────────────────────────────────────────
+// header[9]='Lab' and empty coords -> lab file
+// header[9]=device ID, header[6]=NMEA lat -> field file
+function isLabFile(parts){return parts[9]==='Lab'||!parts[6];}
+
+// NMEA DDMM.MMMMM -> decimal degrees. West-coast lon negated.
+function nmeaDD(raw,isLon){
+  var v=parseFloat(raw);
+  if(isNaN(v))return null;
+  var deg=Math.floor(v/100),mins=v-deg*100,dd=deg+mins/60;
+  return isLon?-dd:dd;
+}
+
+// Packet size is always 33 lines: 1 header + 1 col-header + 31 data rows
+// col[0]=frequency_Hz, col[1]=ch1-0_delta_rad, col[9]=ch1_mag_counts
+// Only ch1 is recorded in lab — ch2-ch7 contain noise
+function parseAnyFile(text){
+  var lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  var pkts=[];
+  for(var i=0;i<lines.length;){
+    var raw=lines[i].replace(/^\uFEFF/,'');
+    if(!raw.startsWith('#,')){i++;continue;}
+    var p=raw.split(',');
+    var idx=parseInt(p[8]),xmt=parseInt(p[12]),ts=p[3],run=(p[2]||'').trim();
+    var lab=isLabFile(p);
+    var lat=lab?null:nmeaDD((p[6]||'').trim(),false);
+    var lon=lab?null:nmeaDD((p[7]||'').trim(),true);
+    if(!isNaN(idx)&&!isNaN(xmt)){
+      var freqs={};
+      for(var r=i+2;r<i+33&&r<lines.length;r++){
+        var dl=lines[r].trim();
+        if(!dl||dl.startsWith('#'))break;
+        var c=dl.split(',');
+        if(c.length<10)continue;
+        var freq=parseFloat(c[0]),dp=parseFloat(c[1]),mag=parseFloat(c[9]);
+        if(!isNaN(freq)&&!isNaN(dp)&&!isNaN(mag))freqs[freq]=[dp,mag];
+      }
+      if(Object.keys(freqs).length){
+        var tms=Date.parse((ts||'').replace(/\//g,'-').replace(' ','T'));
+        if(isNaN(tms))tms=null;
+        pkts.push({idx:idx,ts:ts,tms:tms,run:run,xmt:xmt,lat:lat,lon:lon,
+                   freqs:freqs,type:lab?'lab':'field'});
+      }
+    }
+    i+=33;
+  }
+  return pkts;
+}
+
+// ── Lab stats ──────────────────────────────────────────────────────────────────
+// Groups packets by xmt frequency (a single lab file may contain multiple xmt groups).
+// For each group: freq_Hz, ch1_delta_mean_rad, ch1_delta_std_rad (ddof=1), ch1_mag_mean_counts
+function computeLabStats(packets){
+  var byXmt={};
+  for(var pi=0;pi<packets.length;pi++){
+    var pk=packets[pi],x=pk.xmt;
+    if(!byXmt[x])byXmt[x]={};
+    var keys=Object.keys(pk.freqs);
+    for(var ki=0;ki<keys.length;ki++){
+      var f=parseFloat(keys[ki]),dp=pk.freqs[keys[ki]][0],mag=pk.freqs[keys[ki]][1];
+      if(!byXmt[x][f])byXmt[x][f]={dp:[],mag:[]};
+      byXmt[x][f].dp.push(dp);
+      byXmt[x][f].mag.push(mag);
+    }
+  }
+  var groups=Object.keys(byXmt).map(Number).sort(function(a,b){return a-b;});
+  return groups.map(function(xmt){
+    var fm=byXmt[xmt];
+    var freqKeys=Object.keys(fm).map(Number).sort(function(a,b){return a-b;});
+    var rows=freqKeys.map(function(freq){
+      var dps=fm[freq].dp,mags=fm[freq].mag,n=dps.length;
+      var sumDp=0;for(var i=0;i<n;i++)sumDp+=dps[i];
+      var meanDp=sumDp/n;
+      var ssq=0;for(var i=0;i<n;i++)ssq+=(dps[i]-meanDp)*(dps[i]-meanDp);
+      var stdDp=n>1?Math.sqrt(ssq/(n-1)):0;
+      var sumMag=0;for(var i=0;i<n;i++)sumMag+=mags[i];
+      var meanMag=sumMag/n;
+      return{freq:freq,meanDp:meanDp,stdDp:stdDp,meanMag:meanMag,n:n};
+    });
+    var firstFreq=freqKeys[0];
+    var nPkts=fm[firstFreq]?fm[firstFreq].dp.length:0;
+    return{xmt:xmt,nPkts:nPkts,rows:rows};
+  });
+}
+
+// ── Field analysis ─────────────────────────────────────────────────────────────
+function computeBG(packets,harms){
+  // Background computed at each harmonic independently using its own mean/std.
+  // Mask: packets where |dp| < 15 mrad at that frequency.
+  // Returns: per-harmonic bg map, plus fundamental mean/std for 3sigma display.
+  var bgMap={};
+  for(var h=0;h<harms.length;h++){
+    var f=harms[h];
+    var dps=packets.map(function(pk){var v=pk.freqs[f];return v?v[0]*1000:NaN;});
+    var bgV=dps.filter(function(v){return !isNaN(v)&&Math.abs(v)<15;});
+    if(bgV.length<3)bgV=dps.filter(function(v){return !isNaN(v);});
+    if(!bgV.length){bgMap[f]={mean:0,std:1};continue;}
+    var sum=bgV.reduce(function(a,b){return a+b;},0);
+    var mean=sum/bgV.length;
+    var ssq=bgV.reduce(function(a,b){return a+(b-mean)*(b-mean);},0);
+    var std=bgV.length>1?Math.sqrt(ssq/(bgV.length-1)):1;
+    bgMap[f]={mean:mean,std:std||1};
+  }
+  // Magnitude background at fundamental
+  var f0=harms[0];
+  var d1=packets.map(function(pk){var v=pk.freqs[f0];return v?v[0]*1000:NaN;});
+  var mask=d1.map(function(v){return !isNaN(v)&&Math.abs(v)<15;});
+  var mags=packets.map(function(pk){var v=pk.freqs[f0];return v?v[1]:NaN;});
+  var mBg=mags.filter(function(v,i){return mask[i]&&!isNaN(v);});
+  var magMean=mBg.length?mBg.reduce(function(a,b){return a+b;},0)/mBg.length:1;
+  // Expose fundamental stats at top level for display and threshold lines
+  var bg0=bgMap[f0]||{mean:0,std:1};
+  return{mean:bg0.mean,std:bg0.std,magMean:magMean,perHz:bgMap};
+}
+
+function detectAnomalies(packets,harms,bg){
+  // Detection stays fundamental-only at 3 sigma. What changed (crossing-level
+  // integration): a target crossing at 2-3 kn spans minutes of packets, and the old
+  // gap-5 clustering chopped it into fragments that each classified alone as Weak.
+  // Now: (1) phase-wrap / magnitude-dropout packets are split out as Artifact clusters
+  // so they can never dominate an integrated average; (2) contiguous packets (gap<=2)
+  // form sub-clusters; (3) sub-clusters within 25 m of each other on the ground merge
+  // into one crossing, which classifyRules judges on integrated statistics.
+  var f0=harms[0];
+  var bg0=bg.perHz?bg.perHz[f0]:{mean:bg.mean,std:bg.std};
+  var normal=[],artifacts=[];
+  for(var i=0;i<packets.length;i++){
+    var pk=packets[i];
+    var v0=pk.freqs[f0];
+    if(!v0)continue;
+    var dev=v0[0]*1000-bg0.mean;
+    var snr=Math.abs(dev)/bg0.std;
+    if(snr<3.0)continue;
+    var magPct=bg.magMean?((v0[1]-bg.magMean)/bg.magMean)*100:0;
+    var rec={i:i,pk:pk,snr:snr};
+    if(Math.abs(dev)>150||magPct<-30)artifacts.push(rec); else normal.push(rec);
+  }
+  function subCluster(items,gap){
+    var subs=[],cur=[];
+    for(var j=0;j<items.length;j++){
+      var a=items[j];
+      if(!cur.length||a.pk.idx-cur[cur.length-1].pk.idx<=gap){cur.push(a);}
+      else{subs.push(cur);cur=[a];}
+    }
+    if(cur.length)subs.push(cur);
+    return subs;
+  }
+  function spatialMerge(subs,mergeM){
+    var out=[];
+    for(var s=0;s<subs.length;s++){
+      if(out.length){
+        var a=out[out.length-1][out[out.length-1].length-1].pk;
+        var b=subs[s][0].pk;
+        if(a.lat!==null&&b.lat!==null&&haversineM(a.lat,a.lon,b.lat,b.lon)<=mergeM){
+          out[out.length-1]=out[out.length-1].concat(subs[s]);
+          continue;
+        }
+      }
+      out.push(subs[s]);
+    }
+    return out;
+  }
+  var clusters=spatialMerge(subCluster(normal,2),25);
+  var artCl=subCluster(artifacts,2);
+  artCl.forEach(function(c){c.isArtifact=true;});
+  return clusters.concat(artCl).sort(function(a,b){return a[0].pk.idx-b[0].pk.idx;});
+}
+function classifyRules(cluster,harms,bg){
+  var rep=cluster[0];
+  for(var i=1;i<cluster.length;i++){if(cluster[i].snr>rep.snr)rep=cluster[i];}
+  var n=cluster.length;
+  var f0=harms[0];
+  var bg0=bg.perHz&&bg.perHz[f0]?bg.perHz[f0]:{mean:bg.mean,std:bg.std};
+  // SNR-weighted integrated deviation per harmonic across the whole crossing.
+  var wSum=0;
+  cluster.forEach(function(a){wSum+=a.snr;});
+  var dpDev={},dp={};
+  for(var h=0;h<harms.length;h++){
+    var f=harms[h];
+    var bgh=bg.perHz&&bg.perHz[f]?bg.perHz[f]:bg0;
+    var acc=0;
+    cluster.forEach(function(a){
+      var v=a.pk.freqs[f];
+      acc+=((v?v[0]*1000:bgh.mean)-bgh.mean)*a.snr;
+    });
+    dpDev[f]=acc/wSum;
+    dp[f]=dpDev[f]+bgh.mean;
+  }
+  var dp1dev=dpDev[f0];
+  // Integrated fundamental SNR: mean deviation against the std of the mean.
+  var mAcc=0;
+  cluster.forEach(function(a){
+    var v=a.pk.freqs[f0];
+    mAcc+=(v?v[0]*1000:bg0.mean)-bg0.mean;
+  });
+  var snrInt=Math.abs(mAcc/n)/(bg0.std/Math.sqrt(n));
+  var maxSNR=rep.snr;
+  var eff=Math.max(maxSNR,snrInt);
+  var mag0=rep.pk.freqs[f0];
+  var magPct=mag0&&bg.magMean?((mag0[1]-bg.magMean)/bg.magMean)*100:0;
+  var posHigh=0;for(var h=2;h<harms.length;h++){if(dpDev[harms[h]]>3)posHigh++;}
+  var negLow=0;for(var h=0;h<3;h++){if(dpDev[harms[h]]<-5)negLow++;}
+  var altPol=(dpDev[harms[0]]*dpDev[harms[1]]<0&&dpDev[harms[1]]*dpDev[harms[2]]<0);
+  var maxSNRall=eff;
+  if(bg.perHz){
+    for(var h=0;h<harms.length;h++){
+      var bgh2=bg.perHz[harms[h]];
+      if(!bgh2)continue;
+      var s2=Math.abs(dpDev[harms[h]])/bgh2.std;
+      if(s2>maxSNRall)maxSNRall=s2;
+    }
+  }
+  var cls,confPct;
+  if(cluster.isArtifact){cls='Artifact';confPct=99;}
+  else if(Math.abs(dp1dev)>150){cls='Artifact';confPct=99;}
+  else if(magPct<-30){cls='Artifact';confPct=99;}
+  else if(n===1&&maxSNR<8){cls='Weak/Inconclusive';confPct=Math.min(30,10+maxSNR*3);}
+  else if(posHigh>=3&&Math.abs(dp1dev)<10&&maxSNRall>10){cls='Hydrocarbon IP';confPct=Math.min(95,80+maxSNRall/5);}
+  else if(posHigh>=2&&Math.abs(dp1dev)<12&&maxSNRall>5){cls='Hydrocarbon IP';confPct=Math.min(80,60+maxSNRall/4);}
+  else if(dp1dev<-8&&negLow>=2&&!altPol&&eff>8){cls='Metallic IP';confPct=Math.min(92,75+eff/8);}
+  else if(dp1dev<-5&&negLow>=1&&eff>5){cls='Metallic IP';confPct=Math.min(75,55+eff/6);}
+  else if(dp1dev<-5&&posHigh>=2){cls='Mixed';confPct=Math.min(70,55+eff/8);}
+  else if(posHigh>=2&&maxSNRall>3){cls='Hydrocarbon IP';confPct=Math.min(60,40+maxSNRall/3);}
+  else if(snrInt>=8&&n>=4){
+    // Sustained multi-packet crossing with strong integrated response that fits no
+    // material rule (e.g. positive fundamental with negative highs). Real, unmodelled.
+    cls='Strong Anomaly';confPct=Math.min(85,50+snrInt*2);
+  }
+  else{cls='Weak/Inconclusive';confPct=Math.min(35,15+eff*3);}
+  // Position: SNR-weighted centroid across the crossing (peak retained for anchoring)
+  var cLat=0,cLon=0,wp=0;
+  cluster.forEach(function(a){
+    if(a.pk.lat===null)return;
+    cLat+=a.pk.lat*a.snr;cLon+=a.pk.lon*a.snr;wp+=a.snr;
+  });
+  return{cls:cls,confPct:Math.round(confPct),dp:dp,dpDev:dpDev,magPct:magPct,
+    maxSNR:maxSNR,maxSNRall:maxSNRall,snrInt:Math.round(snrInt*10)/10,
+    pktStart:cluster[0].pk.idx,pktEnd:cluster[cluster.length-1].pk.idx,
+    pktPeak:rep.pk.idx,ts:rep.pk.ts,nPkts:n,
+    lat:wp?cLat/wp:rep.pk.lat,lon:wp?cLon/wp:rep.pk.lon};
+}
+function drawChart(canvas,datasets,yr,opts){
+  opts=opts||{};
+  if(!canvas)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;
+  if(!W||!H)return;
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d');
+  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
+  var n=datasets[0]?datasets[0].data.length:0;
+  if(!n)return;
+  var yrSpan=yr[1]-yr[0]||1;
+  function xS(i){return PL+(i/(n-1||1))*cW;}
+  function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
+  for(var t=0;t<=4;t++){
+    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
+    ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
+    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
+  }
+  if(opts.xLabels){
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
+    var step=Math.max(1,Math.floor(n/5));
+    for(var xi=0;xi<n;xi+=step)ctx.fillText(opts.xLabels[xi]||'',xS(xi),H-2);
+  }
+  if(yr[0]<0&&yr[1]>0){
+    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
+  }
+  if(opts.bgEvents){
+    for(var ei=0;ei<opts.bgEvents.length;ei++){
+      var ev=opts.bgEvents[ei];
+      if(ev.i0<0)continue;
+      ctx.fillStyle=ev.color+'22';
+      ctx.fillRect(xS(ev.i0)-2,PT,Math.max(4,xS(ev.i1)-xS(ev.i0)+4),cH);
+    }
+  }
+  if(opts.threshLo!==undefined){
+    ctx.strokeStyle='rgba(176,32,64,.45)';ctx.lineWidth=1;ctx.setLineDash([5,3]);
+    if(opts.threshLo>yr[0]&&opts.threshLo<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshLo));ctx.lineTo(PL+cW,yS(opts.threshLo));ctx.stroke();}
+    if(opts.threshHi!==undefined&&opts.threshHi>yr[0]&&opts.threshHi<yr[1]){ctx.beginPath();ctx.moveTo(PL,yS(opts.threshHi));ctx.lineTo(PL+cW,yS(opts.threshHi));ctx.stroke();}
+    ctx.setLineDash([]);
+  }
+  for(var di=0;di<datasets.length;di++){
+    var ds=datasets[di];
+    ctx.strokeStyle=ds.color;ctx.lineWidth=ds.width||1.3;
+    ctx.beginPath();var started=false;
+    for(var pi=0;pi<ds.data.length;pi++){
+      var pv=ds.data[pi];
+      if(isNaN(pv)){started=false;continue;}
+      var px=xS(pi),py=yS(Math.min(Math.max(pv,yr[0]),yr[1]));
+      if(started){ctx.lineTo(px,py);}else{ctx.moveTo(px,py);started=true;}
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
+}
+
+function drawSpectral(canvas,dpMap,harms,yr,color){
+  if(!canvas)return;
+  var W=canvas.clientWidth,H=canvas.clientHeight;
+  if(!W||!H)return;
+  canvas.width=W;canvas.height=H;
+  var ctx=canvas.getContext('2d');
+  var PL=48,PR=10,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
+  var yrSpan=yr[1]-yr[0]||1;
+  function xS(i){return PL+(i/(harms.length-1||1))*cW;}
+  function yS(v){return PT+cH-((Math.min(Math.max(v,yr[0]),yr[1])-yr[0])/yrSpan)*cH;}
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=0.5;
+  for(var t=0;t<=4;t++){
+    var gv=yr[0]+yrSpan*t/4,gy=yS(gv);
+    ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+cW,gy);ctx.stroke();
+    ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='right';
+    ctx.fillText(gv.toFixed(1),PL-3,gy+3);
+  }
+  if(yr[0]<0&&yr[1]>0){
+    ctx.strokeStyle='#c0ccd8';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(PL,yS(0));ctx.lineTo(PL+cW,yS(0));ctx.stroke();ctx.setLineDash([]);
+  }
+  ctx.fillStyle='#6080a0';ctx.font='9px monospace';ctx.textAlign='center';
+  for(var hi=0;hi<harms.length;hi++)ctx.fillText(harms[hi]+'Hz',xS(hi),H-2);
+  var pts=[];
+  for(var hi=0;hi<harms.length;hi++){
+    pts.push({x:xS(hi),y:yS(Math.min(Math.max(dpMap[harms[hi]]||0,yr[0]),yr[1]))});
+  }
+  var zero=yS(Math.max(yr[0],0));
+  ctx.fillStyle=color+'22';
+  ctx.beginPath();ctx.moveTo(pts[0].x,zero);
+  for(var pi=0;pi<pts.length;pi++)ctx.lineTo(pts[pi].x,pts[pi].y);
+  ctx.lineTo(pts[pts.length-1].x,zero);ctx.closePath();ctx.fill();
+  ctx.strokeStyle=color;ctx.lineWidth=2;
+  ctx.beginPath();
+  for(var pi=0;pi<pts.length;pi++){if(pi)ctx.lineTo(pts[pi].x,pts[pi].y);else ctx.moveTo(pts[pi].x,pts[pi].y);}
+  ctx.stroke();
+  ctx.fillStyle=color;
+  for(var pi=0;pi<pts.length;pi++){ctx.beginPath();ctx.arc(pts[pi].x,pts[pi].y,4,0,Math.PI*2);ctx.fill();}
+  ctx.strokeStyle='#dde4ed';ctx.lineWidth=1;ctx.strokeRect(PL,PT,cW,cH);
+}
+
+// ── Map drawing ────────────────────────────────────────────────────────────────
+
+// ── Leaflet map helpers ────────────────────────────────────────────────────────
+// Cluster hotspots that are within ~20m of each other across files
+// clusterHotspots: groups hotspots within thresholdM metres of each other.
+// Default 25m (raw GPS), use 15m when layback-corrected positions are supplied.
+// Stable key for a hotspot cluster: which detections it contains, not where it
+// happens to sit in the array. Array indices shift whenever the visible files or
+// layback settings change, which silently hides unrelated hotspots.
+function hotspotKey(grp){
+  return grp.map(function(g){return g.fi+':'+g.ci;}).sort().join(',');
+}
+
+function clusterHotspots(hotspots,thresholdM){
+  var tm=thresholdM||25;
+  // Convert threshold metres to approx degrees (at ~47.7°N)
+  var THRESH_LAT=tm/111000;
+  var THRESH_LON=tm/(111000*Math.cos(47.7*Math.PI/180));
+  var clusters=[],used={};
+  for(var i=0;i<hotspots.length;i++){
+    if(used[i])continue;
+    var grp=[hotspots[i]];used[i]=true;
+    for(var j=i+1;j<hotspots.length;j++){
+      if(used[j])continue;
+      if(Math.abs(hotspots[i].lat-hotspots[j].lat)<THRESH_LAT&&
+         Math.abs(hotspots[i].lon-hotspots[j].lon)<THRESH_LON){
+        grp.push(hotspots[j]);used[j]=true;
+      }
+    }
+    clusters.push(grp);
+  }
+  return clusters;
+}
+
+// buildHotspots: computes anomaly positions with optional layback correction.
+// Layback correction is applied PER PACKET using instantaneous bearing so that
+// detections of the same physical target from different survey directions
+// converge to the same corrected position and cluster correctly.
+function buildHotspots(files,aiResults,visibleFileIds,doLayback,laybackM,analyses){
+  var hotspots=[];
+  for(var fi=0;fi<files.length;fi++){
+    if(visibleFileIds&&visibleFileIds.indexOf(fi)<0)continue;
+    var f=files[fi];
+    if(f.type!=='field'||!f.packets.length)continue;
+    var A=analyses&&analyses[fi];
+    if(!A)continue;
+    var harms=A.harms, bg=A.bg, clusters=A.clusters;
+    var trkIdx={};
+    f.packets.forEach(function(p,i){trkIdx[p.idx]=i;});
+    for(var ci=0;ci<clusters.length;ci++){
+      var ev=classifyRules(clusters[ci],harms,bg);
+      var aiKey=fi+'-'+ci;
+      var aiRes=aiResults[aiKey];
+      var cls=aiRes?aiRes.classification:ev.cls;
+      // Use packets with valid GPS
+      var pktsWithGPS=clusters[ci].map(function(a){return a.pk;})
+        .filter(function(pk){return pk.lat!==null&&pk.lon!==null;});
+      if(!pktsWithGPS.length)continue;
+      var clat=0,clon=0;
+      for(var pi=0;pi<pktsWithGPS.length;pi++){
+        var pk=pktsWithGPS[pi];
+        if(doLayback){
+          // Path-following corrected position, precomputed for the whole file
+          var ti=trkIdx[pk.idx];
+          var corr=(ti!==undefined&&A.trk[ti]&&A.trk[ti].lat!==null)?A.trk[ti]:{lat:pk.lat,lon:pk.lon};
+          clat+=corr.lat;clon+=corr.lon;
+        } else {
+          clat+=pk.lat;clon+=pk.lon;
+        }
+      }
+      clat/=pktsWithGPS.length;
+      clon/=pktsWithGPS.length;
+      hotspots.push({lat:clat,lon:clon,cls:cls,conf:ev.confPct,
+        fi:fi,ci:ci,run:f.run,nPkts:ev.nPkts,laybackApplied:!!(doLayback&&laybackM>0)});
+    }
+  }
+  // Cluster threshold: when layback is applied, same-target detections from
+  // different runs should converge to within ~5-10m. Use 15m threshold.
+  // Without layback, use wider 25m threshold to loosely group nearby raw GPS positions.
+  return clusterHotspots(hotspots, doLayback?15:25);
+}
+
+// ── Layback correction ────────────────────────────────────────────────────────
+// From survey 202604 drawing:
+//   GPS is 4.12m FORWARD of cable tie-down at transom
+//   Cable deployed to 31m mark from tie-down
+//   Sensor position = GPS position offset BACKWARD along track by layback distance
+//
+// laybackM = gpsOffsetM + cableM * cos(cableAngleDeg * PI/180)
+// bearing  = direction of travel computed from recent GPS track history
+// corrected position = GPS - layback along bearing
+
+function computeLayback(cableM, angleDeg, gpsOffsetM){
+  var horiz = cableM * Math.cos(angleDeg * Math.PI / 180);
+  return gpsOffsetM + horiz;  // total metres from GPS to sensor
+}
+
+// Move a lat/lon point backward along a bearing by distanceM metres
+function applyLayback(lat, lon, bearingDeg, distanceM){
+  var R = 6371000;  // Earth radius metres
+  var bearingRad = (bearingDeg + 180) * Math.PI / 180;  // reverse: sensor is BEHIND
+  var dLat = (distanceM / R) * Math.cos(bearingRad);
+  var dLon = (distanceM / R) * Math.sin(bearingRad) / Math.cos(lat * Math.PI / 180);
+  return {
+    lat: lat + dLat * 180 / Math.PI,
+    lon: lon + dLon * 180 / Math.PI
+  };
+}
+
+// Compute instantaneous bearing from a packet array at index i
+// Uses a window of prev N packets to smooth the heading
+function computeBearing(packets, i){
+  var N = Math.min(5, i);
+  if(N < 1) return 0;
+  var p0 = packets[i - N], p1 = packets[i];
+  if(!p0 || !p1 || p0.lat===null || p1.lat===null) return 0;
+  var dLat = p1.lat - p0.lat;
+  var dLon = (p1.lon - p0.lon) * Math.cos(p0.lat * Math.PI / 180);
+  return Math.atan2(dLon, dLat) * 180 / Math.PI;
+}
+
+// Apply layback correction to all packets in a file
+// Returns new array of {lat, lon, idx, ts} with corrected positions
+function applyLaybackToFile(packets, laybackM){
+  var result = [];
+  for(var i = 0; i < packets.length; i++){
+    var pk = packets[i];
+    if(pk.lat === null || pk.lon === null){
+      result.push({lat:null, lon:null, idx:pk.idx, ts:pk.ts});
+      continue;
+    }
+    var bearing = computeBearing(packets, i);
+    var corrected = applyLayback(pk.lat, pk.lon, bearing, laybackM);
+    result.push({lat:corrected.lat, lon:corrected.lon, idx:pk.idx, ts:pk.ts});
+  }
+  return result;
+}
+
+// ── KMZ / KML waypoint parser ─────────────────────────────────────────────────
+// Parses KML text and returns array of {name, lat, lon}
+function parseKML(text){
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(text, 'text/xml');
+  var placemarks = doc.querySelectorAll('Placemark');
+  var waypoints = [];
+  placemarks.forEach(function(pm){
+    var nameEl = pm.querySelector('name') || pm.querySelector('n');
+    var coordEl = pm.querySelector('coordinates') || pm.querySelector('Point coordinates');
+    if(!nameEl || !coordEl) return;
+    var name = nameEl.textContent.trim();
+    var coords = coordEl.textContent.trim().split(',');
+    if(coords.length < 2) return;
+    var lon = parseFloat(coords[0]);
+    var lat = parseFloat(coords[1]);
+    if(!isNaN(lat) && !isNaN(lon)){
+      waypoints.push({name:name, lat:lat, lon:lon});
+    }
+  });
+  return waypoints;
+}
+
+// Parse KMZ (zip containing doc.kml)
+async function parseKMZ(file){
+  // KMZ is a ZIP containing a .kml (usually doc.kml). Fall back to plain KML text.
+  var head = await file.slice(0,64).text();
+  if(head.trim().startsWith('<?xml') || head.trim().startsWith('<kml')){
+    return parseKML(await file.text());
+  }
+  if(typeof JSZip === 'undefined'){
+    alert('JSZip failed to load - cannot open KMZ. Check network access to cdnjs.');
+    return [];
+  }
+  var zip = await JSZip.loadAsync(await file.arrayBuffer());
+  var kmlName = Object.keys(zip.files).filter(function(n){
+    return /\.kml$/i.test(n) && !zip.files[n].dir;
+  }).sort(function(a,b){
+    // prefer doc.kml, then shallowest path
+    if(/doc\.kml$/i.test(a) !== /doc\.kml$/i.test(b)) return /doc\.kml$/i.test(a) ? -1 : 1;
+    return a.split('/').length - b.split('/').length;
+  })[0];
+  if(!kmlName) return [];
+  return parseKML(await zip.files[kmlName].async('string'));
+}
+
+// Find nearest waypoint to a corrected event position
+function findNearestWaypoint(lat, lon, waypoints, thresholdM){
+  var best = null, bestDist = Infinity;
+  for(var i = 0; i < waypoints.length; i++){
+    var wp = waypoints[i];
+    var dLat = (lat - wp.lat) * 111000;
+    var dLon = (lon - wp.lon) * 111000 * Math.cos(lat * Math.PI / 180);
+    var dist = Math.sqrt(dLat*dLat + dLon*dLon);
+    if(dist < bestDist){ bestDist = dist; best = wp; }
+  }
+  if(best && bestDist <= thresholdM) return {wp:best, dist:Math.round(bestDist)};
+  return null;
+}
+
+
+// ── Speed / dynamic layback ───────────────────────────────────────────────────
+// Speed is derived from the GPS fixes and packet timestamps in the file itself.
+// Cable angle from horizontal is modelled as tan(theta) = k / v^2 : net weight of
+// the cable+sensor balanced against hydrodynamic drag, which scales as v^2. k is a
+// single lumped constant (m^2/s^2) and is the ONLY free parameter. Its default
+// reproduces 25 deg at 1.5 m/s, matching the previous fixed-angle default; it must
+// be calibrated against known targets before the numbers mean anything.
+var DRAG_K_DEFAULT = Math.tan(25*Math.PI/180) * 1.5 * 1.5;   // = 1.049
+
+function haversineM(la1,lo1,la2,lo2){
+  var R=6371000, dLat=(la2-la1)*Math.PI/180, dLon=(lo2-lo1)*Math.PI/180;
+  var la=(la1+la2)/2*Math.PI/180;
+  var x=dLon*Math.cos(la), y=dLat;
+  return Math.sqrt(x*x+y*y)*R;
+}
+
+// Per-packet speed (m/s) smoothed over a distance-based window, plus packet interval (s)
+function packetKinematics(packets, winM){
+  winM = winM || 12;
+  var n=packets.length, spd=new Array(n), dts=new Array(n);
+  for(var i=0;i<n;i++){ spd[i]=null; dts[i]=null; }
+  for(var i=0;i<n;i++){
+    var pk=packets[i];
+    if(pk.lat===null||pk.lon===null) continue;
+    // walk back until winM of track accumulated
+    var j=i, acc=0;
+    while(j>0){
+      var a=packets[j], b=packets[j-1];
+      if(b.lat===null||b.lon===null) break;
+      acc+=haversineM(b.lat,b.lon,a.lat,a.lon);
+      j--;
+      if(acc>=winM) break;
+    }
+    var dt=(pk.tms&&packets[j].tms)?(pk.tms-packets[j].tms)/1000:null;
+    if(dt&&dt>0&&acc>0) spd[i]=acc/dt;
+    // instantaneous packet interval
+    if(i>0&&pk.tms&&packets[i-1].tms) dts[i]=(pk.tms-packets[i-1].tms)/1000;
+  }
+  // fill gaps with nearest valid
+  var lastS=null;
+  for(var i=0;i<n;i++){ if(spd[i]!==null) lastS=spd[i]; else spd[i]=lastS; }
+  for(var i=n-1;i>=0;i--){ if(spd[i]===null&&i<n-1) spd[i]=spd[i+1]; }
+  var dv=dts.filter(function(x){return x!==null&&x>0;}).sort(function(a,b){return a-b;});
+  var medDt=dv.length?dv[Math.floor(dv.length/2)]:null;
+  for(var i=0;i<n;i++){ if(dts[i]===null||dts[i]<=0) dts[i]=medDt; }
+  return {speed:spd, dt:dts, medDt:medDt};
+}
+
+function cableAngleDeg(v, k){
+  if(!v||v<=0.05) return 89;
+  return Math.atan(k/(v*v))*180/Math.PI;
+}
+
+// Total along-track offset from GPS antenna to effective measurement position.
+// gpsOffset : GPS antenna forward of the cable tie-down (4.12 m from the survey drawing)
+// cableM    : deployed cable length to the sensor (31 m mark)
+// halfPkt   : position is stamped at packet START but the measurement integrates over
+//             the packet, so the effective centroid is v*dt/2 further along track.
+function laybackAt(v, dt, cableM, k, gpsOffset, halfPkt){
+  var th=cableAngleDeg(v,k);
+  var L=gpsOffset + cableM*Math.cos(th*Math.PI/180);
+  if(halfPkt && v && dt) L -= v*dt/2;
+  return {layback:L, angle:th};
+}
+
+// Layback a whole file. mode 'fixed' uses a constant angle, 'speed' uses the drag model.
+//
+// The sensor is NOT projected sideways along an instantaneous heading. A towed body
+// follows the boat's path, so the sensor sits where the boat was when it had travelled
+// `layback` metres less along the recorded track. Projecting along a bearing instead
+// multiplies GPS heading jitter by the ~32 m lever arm and knots up the corrected line:
+// measured track roughness goes from 0.40 m (raw) to 1.18 m mean / 14.9 m max, while
+// path-following stays at 0.47 m mean / 2.6 m max.
+function laybackTrack(packets, P){
+  var kin = P.mode==='speed' ? packetKinematics(packets) : null;
+  var n=packets.length;
+  // cumulative along-track distance over valid fixes
+  var cum=new Array(n), last=null, acc=0;
+  for(var i=0;i<n;i++){
+    var pk=packets[i];
+    if(pk.lat===null||pk.lon===null){ cum[i]=acc; continue; }
+    if(last!==null) acc+=haversineM(last.lat,last.lon,pk.lat,pk.lon);
+    cum[i]=acc; last=pk;
+  }
+  function backAlongPath(i,dist){
+    var target=cum[i]-dist;
+    if(target<=cum[0]) return null;           // sensor was not yet in the recorded track
+    var j=i;
+    while(j>0 && cum[j]>target) j--;
+    var a=packets[j], b=packets[Math.min(j+1,n-1)];
+    if(!a||a.lat===null) return null;
+    if(!b||b.lat===null) return {lat:a.lat,lon:a.lon};
+    var seg=cum[Math.min(j+1,n-1)]-cum[j];
+    var t=seg>0?(target-cum[j])/seg:0;
+    return {lat:a.lat+t*(b.lat-a.lat), lon:a.lon+t*(b.lon-a.lon)};
+  }
+  var out=[];
+  for(var i=0;i<n;i++){
+    var pk=packets[i];
+    if(pk.lat===null||pk.lon===null){ out.push({lat:null,lon:null,idx:pk.idx,ts:pk.ts,lb:null,spd:null,ang:null}); continue; }
+    var lb, ang, v=null, dt=null;
+    if(P.mode==='speed'){
+      v=kin.speed[i]; dt=kin.dt[i];
+      var r=laybackAt(v,dt,P.cableM,P.k,P.gpsOffset,P.halfPkt);
+      lb=r.layback; ang=r.angle;
+    } else {
+      ang=P.angleDeg;
+      lb=P.gpsOffset + P.cableM*Math.cos(ang*Math.PI/180);
+    }
+    var c=backAlongPath(i,lb);
+    var b=computeBearing(packets,i);
+    if(!c) c=applyLayback(pk.lat,pk.lon,b,lb);   // start of line: no path behind us yet
+    out.push({lat:c.lat,lon:c.lon,idx:pk.idx,ts:pk.ts,lb:lb,spd:v,ang:ang,brg:b,onPath:true});
+  }
+  return out;
+}
+
+// Corrected position of a single event from an ALREADY COMPUTED track.
+// Never rebuild the track per event - that is O(events x packets) and locks the UI.
+function laybackEventPos(packets, pktPeak, trk){
+  if(!trk) return null;
+  for(var i=0;i<packets.length;i++){
+    if(packets[i].idx===pktPeak) return trk[i];
+  }
+  return null;
+}
+
+// ── Target sites: cluster waypoints into physical targets ─────────────────────
+// Single-link clustering. Waypoints within linkM of each other belong to one site.
+// Each site is reduced to a segment (its two most distant members) so that a pass is
+// judged against the whole target, not just its centre.
+// Survey-day code from a waypoint name: 1A-3 -> 1, 2C-6 -> 2, 3B-1 -> 3, plain
+// numeric GPS marks default to 3. A site then takes the MAJORITY day of its members,
+// which correctly pulls stray numeric marks into the named site they sit on.
+function waypointDayCode(name){
+  var m=/^([123])[A-Za-z]/.exec(name);
+  if(m) return parseInt(m[1],10);
+  if(/^[0-9]+$/.test(name)) return 3;
+  return 0;
+}
+
+function buildSites(waypoints, linkM){
+  linkM = linkM || 10;
+  var n=waypoints.length; if(!n) return [];
+  var parent=[]; for(var i=0;i<n;i++) parent.push(i);
+  function find(a){ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; }
+  for(var i=0;i<n;i++) for(var j=i+1;j<n;j++){
+    if(haversineM(waypoints[i].lat,waypoints[i].lon,waypoints[j].lat,waypoints[j].lon)<=linkM){
+      var ra=find(i), rb=find(j); if(ra!==rb) parent[rb]=ra;
+    }
+  }
+  var groups={};
+  for(var i=0;i<n;i++){ var r=find(i); (groups[r]=groups[r]||[]).push(waypoints[i]); }
+  var sites=[];
+  Object.keys(groups).forEach(function(key){
+    var g=groups[key];
+    var clat=g.reduce(function(a,w){return a+w.lat;},0)/g.length;
+    var clon=g.reduce(function(a,w){return a+w.lon;},0)/g.length;
+    // endpoints = most distant pair
+    var A=g[0],B=g[0],best=-1;
+    for(var i=0;i<g.length;i++) for(var j=i+1;j<g.length;j++){
+      var d=haversineM(g[i].lat,g[i].lon,g[j].lat,g[j].lon);
+      if(d>best){best=d;A=g[i];B=g[j];}
+    }
+    var names=g.map(function(w){return w.name;});
+    // label: shared alpha prefix if present, else numeric range
+    var alpha=names.filter(function(s){return /^[0-9]+[A-Za-z]/.test(s);});
+    var label;
+    if(alpha.length) label=alpha[0].match(/^[0-9]+[A-Za-z]/)[0];
+    else { var nums=names.map(Number).filter(function(x){return !isNaN(x);}).sort(function(a,b){return a-b;});
+           label = nums.length ? (nums[0]+'-'+nums[nums.length-1]) : names[0]; }
+    var votes={};
+    names.forEach(function(nm2){var d=waypointDayCode(nm2); votes[d]=(votes[d]||0)+1;});
+    var day=0,bestv=-1;
+    Object.keys(votes).forEach(function(d){ if(votes[d]>bestv){bestv=votes[d];day=parseInt(d,10);} });
+    sites.push({id:'S'+sites.length, label:label, members:names, n:g.length, day:day,
+                lat:clat, lon:clon, aLat:A.lat, aLon:A.lon, bLat:B.lat, bLon:B.lon,
+                len:best, halfLen:best/2});
+  });
+  sites.sort(function(a,b){return b.lat-a.lat;});
+  return sites;
+}
+
+// Distance from a point to a site's segment, in metres (local flat approximation)
+function distToSite(lat, lon, s){
+  var mlat=(s.aLat+s.bLat)/2, cs=Math.cos(mlat*Math.PI/180);
+  function X(lo){return lo*111320*cs;} function Y(la){return la*110540;}
+  var px=X(lon),py=Y(lat), ax=X(s.aLon),ay=Y(s.aLat), bx=X(s.bLon),by=Y(s.bLat);
+  var vx=bx-ax, vy=by-ay, L2=vx*vx+vy*vy;
+  if(L2===0) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay));
+  var t=Math.max(0,Math.min(1,((px-ax)*vx+(py-ay)*vy)/L2));
+  var qx=ax+t*vx, qy=ay+t*vy;
+  return Math.sqrt((px-qx)*(px-qx)+(py-qy)*(py-qy));
+}
+
+// ── Coverage evaluation: did this line pass a site, and did it see it? ─────────
+// PASS  : corrected sensor track came within radiusM of the site segment
+// HIT   : a detected event's corrected position is also within radiusM of that site
+// FAIL  : passed within radiusM but no event within radiusM  <-- the number that matters
+// A file participates in the survey-day ranking only if its track passes near the
+// loaded waypoint field. Without this, loading a second dataset from another location
+// shifts the date ranks: its dates steal day-codes 1..3, every local line stops
+// matching its sites (empty review table, no anchoring), and the foreign lines start
+// matching sites hundreds of km away. Samples ~9 packets; 2 km radius.
+function fileNearsSites(f,sites,maxM){
+  if(!sites||!sites.length) return true;      // no waypoints loaded: rank everything
+  var pks=f.packets, n=pks.length;
+  if(!n) return false;
+  var step=Math.max(1,Math.floor(n/8));
+  for(var i=0;i<n;i+=step){
+    var p=pks[i];
+    if(p.lat===null||p.lon===null) continue;
+    for(var s=0;s<sites.length;s++){
+      if(haversineM(p.lat,p.lon,sites[s].lat,sites[s].lon)<=(maxM||2000)) return true;
+    }
+  }
+  return false;
+}
+
+function evaluateCoverage(files, sites, P, radiusM, aiResults, dayFilter, analyses){
+  var rows=[];
+  // Map survey-day code (1,2,3) onto the actual dates present in the loaded files,
+  // so a day-1 line is never scored against a target that was not deployed until day 3.
+  var dates=[], nearCache={};
+  files.forEach(function(f,fi){
+    if(f.type!=='field'||!f.packets||!f.packets.length) return;
+    nearCache[fi]=fileNearsSites(f,sites,2000);
+    if(!nearCache[fi]) return;                 // foreign-survey files don't take day slots
+    var t=f.packets[0].tms; if(!t) return;
+    var d=new Date(t); var key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+    if(dates.indexOf(key)<0) dates.push(key);
+  });
+  dates.sort(function(a,b){return a-b;});
+  function fileDayCode(f,fi){
+    if(fi!==undefined&&nearCache[fi]===false) return 0;
+    var t=f.packets[0].tms; if(!t) return 0;
+    var d=new Date(t); var key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+    return dates.indexOf(key)+1;
+  }
+  for(var fi=0; fi<files.length; fi++){
+    var f=files[fi];
+    if(f.type!=='field'||!f.packets||!f.packets.length) continue;
+    var fDay=fileDayCode(f,fi);
+    var A=analyses&&analyses[fi];
+    if(!A) continue;
+    var trk=A.trk;
+    var valid=trk.filter(function(p){return p.lat!==null;});
+    if(valid.length<2) continue;
+    // heading straight from the file: first -> last valid fix
+    var h0=valid[0], h1=valid[valid.length-1];
+    var dy=(h1.lat-h0.lat), dx=(h1.lon-h0.lon)*Math.cos(h0.lat*Math.PI/180);
+    var hdg=(Math.atan2(dx,dy)*180/Math.PI+360)%360;
+    var dirTxt = (hdg>90&&hdg<270) ? 'S' : 'N';
+    // event positions, layback-corrected (precomputed)
+    var evs=A.events.map(function(e){
+      var aiKey=fi+'-'+e.ci;
+      return {lat:e.lat,lon:e.lon,ci:e.ci,snr:e.snr,
+              cls:(aiResults&&aiResults[aiKey]&&aiResults[aiKey].material)||e.cls};
+    });
+    // speed summary (from the precomputed track)
+    var sp=trk.map(function(p){return p.spd;}).filter(function(x){return x!==null&&x!==undefined;}).sort(function(a,b){return a-b;});
+    var medSpd=sp.length?sp[Math.floor(sp.length/2)]:null;
+    var medLb=null, medAng=null;
+    var lbs=trk.map(function(p){return p.lb;}).filter(function(x){return x!==null;}).sort(function(a,b){return a-b;});
+    if(lbs.length) medLb=lbs[Math.floor(lbs.length/2)];
+    var angs=trk.map(function(p){return p.ang;}).filter(function(x){return x!==null;}).sort(function(a,b){return a-b;});
+    if(angs.length) medAng=angs[Math.floor(angs.length/2)];
+    var matched={};
+    sites.forEach(function(s){
+      if(dayFilter && s.day && fDay && s.day!==fDay) return;
+      var dmin=Infinity, kmin=-1;
+      for(var i=0;i<trk.length;i++){
+        if(trk[i].lat===null) continue;
+        var d=distToSite(trk[i].lat,trk[i].lon,s);
+        if(d<dmin){dmin=d;kmin=i;}
+      }
+      if(dmin>radiusM) return;   // not a pass, no verdict
+      var hit=null, hd=Infinity;
+      evs.forEach(function(e){
+        var d=distToSite(e.lat,e.lon,s);
+        if(d<=radiusM && d<hd){hd=d;hit=e;}
+      });
+      if(hit) matched[hit.ci]=true;
+      rows.push({fi:fi, run:f.run, dir:dirTxt, hdg:hdg, site:s.label, siteId:s.id,
+                 closest:dmin, status:hit?'HIT':'FAIL',
+                 cls:hit?hit.cls:'', evDist:hit?hd:null, snr:hit?hit.snr:null,
+                 spd:medSpd, layback:medLb, angle:medAng,
+                 tIdx:kmin});
+    });
+    // events not matched to any site = unattributed
+    evs.forEach(function(e){
+      if(matched[e.ci]) return;
+      var nearest=null,nd=Infinity;
+      sites.forEach(function(s){var d=distToSite(e.lat,e.lon,s); if(d<nd){nd=d;nearest=s;}});
+      rows.push({fi:fi, run:f.run, dir:dirTxt, hdg:hdg, site:nearest?nearest.label:'-', siteId:nearest?nearest.id:'',
+                 closest:nd, status:'UNATTRIB', cls:e.cls, evDist:nd, snr:e.snr,
+                 spd:medSpd, layback:medLb, angle:medAng, tIdx:null});
+    });
+  }
+  return rows;
+}
+
+
+// ── Local session store (IndexedDB) ───────────────────────────────────────────
+// Everything stays on this machine. Nothing here touches Supabase or the network.
+// Parsed files, run groups, waypoints, manual reviews and settings survive a refresh.
+var IDB_NAME='ipa_mip_local', IDB_VER=1;
+function idbOpen(){
+  return new Promise(function(res,rej){
+    var rq=indexedDB.open(IDB_NAME,IDB_VER);
+    rq.onupgradeneeded=function(e){
+      var db=e.target.result;
+      if(!db.objectStoreNames.contains('files')) db.createObjectStore('files',{keyPath:'key'});
+      if(!db.objectStoreNames.contains('meta'))  db.createObjectStore('meta',{keyPath:'key'});
+    };
+    rq.onsuccess=function(){res(rq.result);};
+    rq.onerror=function(){rej(rq.error);};
+  });
+}
+function idbPut(store,val){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var tx=db.transaction(store,'readwrite');
+      tx.objectStore(store).put(val);
+      tx.oncomplete=function(){res(true);};
+      tx.onerror=function(){rej(tx.error);};
+    });
+  });
+}
+function idbAll(store){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var tx=db.transaction(store,'readonly');
+      var rq=tx.objectStore(store).getAll();
+      rq.onsuccess=function(){res(rq.result||[]);};
+      rq.onerror=function(){rej(rq.error);};
+    });
+  });
+}
+function idbClear(store){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var tx=db.transaction(store,'readwrite');
+      tx.objectStore(store).clear();
+      tx.oncomplete=function(){res(true);};
+      tx.onerror=function(){rej(tx.error);};
+    });
+  });
+}
+// Stable identity for a file across reloads: run designation + first packet time
+function fileKey(f){
+  var t=(f.packets&&f.packets.length)?(f.packets[0].tms||f.packets[0].ts||''):'';
+  return (f.run||'?')+'|'+t;
+}
+
+
+// ── Reverse solve: infer layback from a user-anchored detection/target pair ───
+// Both quantities are measured on the RAW GPS track, so the result is independent
+// of whatever layback is currently configured.
+//   impliedLayback = alongTrack(detection packet) - alongTrack(closest approach to site)
+// A trailing sensor can only give a POSITIVE value: the boat passes the target first,
+// the sensor reaches it later. Negative means the pairing is wrong.
+function rawCumulative(packets){
+  var cum=new Array(packets.length), acc=0, last=null;
+  for(var i=0;i<packets.length;i++){
+    var pk=packets[i];
+    if(pk.lat===null||pk.lon===null){ cum[i]=acc; continue; }
+    if(last) acc+=haversineM(last.lat,last.lon,pk.lat,pk.lon);
+    cum[i]=acc; last=pk;
+  }
+  return cum;
+}
+
+// Invert the drag model for one anchor: given the implied layback and the speed at
+// that moment, what k reproduces it?  L = gps + cable*cos(theta) - v*dt/2
+function solveKFromLayback(L, v, dt, cableM, gpsOffset, halfPkt){
+  var eff = L - gpsOffset + (halfPkt&&v&&dt ? v*dt/2 : 0);
+  var c = eff/cableM;
+  if(c>=1) return {k:null,angle:0,note:'cable too short for this offset'};
+  if(c<=0) return {k:null,angle:90,note:'offset at or behind the antenna'};
+  var th=Math.acos(c);
+  return {k:Math.tan(th)*v*v, angle:th*180/Math.PI, note:null};
+}
+
+function median(a){
+  if(!a.length) return null;
+  var s=a.slice().sort(function(x,y){return x-y;});
+  var m=Math.floor(s.length/2);
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;
+}
+function meanSd(a){
+  if(!a.length) return null;
+  var m=a.reduce(function(x,y){return x+y;},0)/a.length;
+  var sd=a.length>1?Math.sqrt(a.reduce(function(x,y){return x+(y-m)*(y-m);},0)/(a.length-1)):0;
+  return {mean:m,sd:sd,se:a.length>1?sd/Math.sqrt(a.length):0,n:a.length};
+}
+
+// ── App component ──────────────────────────────────────────────────────────────
+function App(){
+  var _useState0=useState([]),files=_useState0[0],setFiles=_useState0[1];
+  var _useState1=useState(null),activeIdx=_useState1[0],setActiveIdx=_useState1[1];
+  var _useState2=useState([]),training=_useState2[0],setTraining=_useState2[1];
+  var _useState3=useState(''),apiKey=_useState3[0],setApiKey=_useState3[1];
+  var _useState4=useState(null),selEv=_useState4[0],setSelEv=_useState4[1];
+  var _useState5=useState({}),aiResults=_useState5[0],setAiResults=_useState5[1];
+  var _useState6=useState(null),aiLoading=_useState6[0],setAiLoading=_useState6[1];
+  var _useState7=useState(''),confMat=_useState7[0],setConfMat=_useState7[1];
+  var _useState8=useState(false),drag=_useState8[0],setDrag=_useState8[1];
+  var _useState9=useState('analysis'),mainTab=_useState9[0],setMainTab=_useState9[1];
+  var _usStateDB=useState('loading'),dbStatus=_usStateDB[0],setDbStatus=_usStateDB[1];
+  var _usStateAuth=useState(null),authUser=_usStateAuth[0],setAuthUser=_usStateAuth[1];
+  // authUser=null means not logged in; object means logged in
+
+  // ── Auth disabled for local testing — load training directly ────────────
+  useEffect(function(){
+    setDbStatus('loading');
+    loadTrainingFromDB()
+      .then(function(rows){
+        if(rows.length)setTraining(rows);
+        setDbStatus('ok');
+      })
+      .catch(function(e){
+        console.warn('Supabase load failed (expected on file://):',e.message);
+        setDbStatus('error');
+      });
+  },[]);
+  var _usStateA=useState([]),runGroups=_usStateA[0],setRunGroups=_usStateA[1];
+  var _usStateB=useState(null),expandedGroup=_usStateB[0],setExpandedGroup=_usStateB[1];
+  // Group rename: id being edited + draft text. Persisted through the existing
+  // runGroups autosave (name travels with fileKeys), so renames survive refresh.
+  var _usRG=useState(null),renamingGroup=_usRG[0],setRenamingGroup=_usRG[1];
+  var _usFL=useState(false),showFileList=_usFL[0],setShowFileList=_usFL[1];
+  var _usRD=useState(''),renameDraft=_usRD[0],setRenameDraft=_usRD[1];
+  function commitRename(gid){
+    var name=(renameDraft||'').trim();
+    setRenamingGroup(null);
+    if(!name)return;
+    setRunGroups(function(prev){
+      return prev.map(function(g){return g.id===gid?Object.assign({},g,{name:name}):g;});
+    });
+  }
+  var _usStateC=useState(false),newGroupModal=_usStateC[0],setNewGroupModal=_usStateC[1];
+  var _usStateD=useState(''),newGroupName=_usStateD[0],setNewGroupName=_usStateD[1];
+  var _usStateE=useState('#0071b8'),newGroupColor=_usStateE[0],setNewGroupColor=_usStateE[1];
+  var _usStateF=useState(null),addToGroupModal=_usStateF[0],setAddToGroupModal=_usStateF[1];
+  var _usStateG=useState(''),selGroupId=_usStateG[0],setSelGroupId=_usStateG[1];
+  var _usStateH=useState(true),showLines=_usStateH[0],setShowLines=_usStateH[1];
+  var _usStateI=useState(true),showHotspots=_usStateI[0],setShowHotspots=_usStateI[1];
+  var _usStateJ=useState(null),hovFi=_usStateJ[0],setHovFi=_usStateJ[1];
+  var _usStateK=useState(null),mapTip=_usStateK[0],setMapTip=_usStateK[1];
+  // Layback settings (from survey 202604 drawing)
+  var _usStateLB1=useState(true),useLayback=_usStateLB1[0],setUseLayback=_usStateLB1[1];
+  var _usStateLB2=useState(31),cableM=_usStateLB2[0],setCableM=_usStateLB2[1];
+  var _usStateLB3=useState(25),cableAngle=_usStateLB3[0],setCableAngle=_usStateLB3[1];
+  var _usStateLB4=useState(4.12),gpsOffset=_usStateLB4[0],setGpsOffset=_usStateLB4[1];
+  // Waypoints loaded from KMZ/KML
+  var _usStateWP=useState([]),waypoints=_usStateWP[0],setWaypoints=_usStateWP[1];
+  var _usStateWP2=useState(true),showWaypoints=_usStateWP2[0],setShowWaypoints=_usStateWP2[1];
+  var _usStateWP3=useState(20),wpThreshold=_usStateWP3[0],setWpThreshold=_usStateWP3[1];
+  // Coverage / dynamic layback state
+  var _usLBM=useState('speed'),laybackMode=_usLBM[0],setLaybackMode=_usLBM[1];
+  var _usLBK=useState(DRAG_K_DEFAULT),dragK=_usLBK[0],setDragK=_usLBK[1];
+  var _usHP=useState(true),halfPkt=_usHP[0],setHalfPkt=_usHP[1];
+  var _usDR=useState(15),detectRadius=_usDR[0],setDetectRadius=_usDR[1];
+  var _usSL=useState(10),siteLink=_usSL[0],setSiteLink=_usSL[1];
+  var _usSH=useState(true),showSiteRings=_usSH[0],setShowSiteRings=_usSH[1];
+  var _usDF=useState(true),dayFilter=_usDF[0],setDayFilter=_usDF[1];
+  var _usAG=useState('all'),activeGroup=_usAG[0],setActiveGroup=_usAG[1];
+  var _usSI=useState(0),stepIdx=_usSI[0],setStepIdx=_usSI[1];
+  // Manual review: keyed by fileKey|siteId. Nothing is auto-scored.
+  var _usRV=useState({}),reviews=_usRV[0],setReviews=_usRV[1];
+  // Ground-truth material per site, set once and reused on every line.
+  var _usSM=useState({}),siteMaterials=_usSM[0],setSiteMaterials=_usSM[1];
+  var wpFileRef=useRef();
+  // Map tile layer selection: 'satellite'|'street'|'topo'|'noaa'
+  var _usStateL=useState('satellite'),mapLayer=_usStateL[0],setMapLayer=_usStateL[1];
+  // Per-file visibility: null = all visible; array of fi indices = only those shown
+  var _usStateM=useState(null),visibleFiles=_usStateM[0],setVisibleFiles=_usStateM[1];
+  // Per-hotspot-cluster visibility toggle (cluster index -> bool)
+  var _usStateN=useState({}),hiddenHotspots=_usStateN[0],setHiddenHotspots=_usStateN[1];
+
+  var fileRef=useRef();
+  var mapRef=useRef();     // now a div ref for Leaflet
+  var leafletMap=useRef(null);   // Leaflet map instance
+  var leafletLayers=useRef({tracks:{},hotspots:{}});  // layer groups
+  var hitRef=useRef(null);
+  var tsRef=useRef(),specRef=useRef(),magRef=useRef(),highRef=useRef();
+
+  // Analysis for active file
+  var analysis=useMemo(function(){
+    if(activeIdx===null||!files[activeIdx])return null;
+    var f=files[activeIdx];
+    if(f.type==='lab'){
+      return{isLab:true,run:f.run,labStats:computeLabStats(f.packets),nPkts:f.packets.length};
+    }
+    var pkts=f.packets;
+    if(!pkts.length)return null;
+    var xmt=pkts[0].xmt,harms=getHarms(xmt),bg=computeBG(pkts,harms);
+    var clusters=detectAnomalies(pkts,harms,bg);
+    var events=clusters.map(function(cl){return classifyRules(cl,harms,bg);});
+    var d1=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[0]*1000:NaN;});
+    var mag=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[1]:NaN;});
+    var dH=pkts.map(function(pk){var v=pk.freqs[harms[5]];return v?v[0]*1000:NaN;});
+    var d3=pkts.map(function(pk){var v=pk.freqs[harms[2]];return v?v[0]*1000:NaN;});
+    var xL=pkts.map(function(pk){return (pk.ts||'').split(' ')[1]?pk.ts.split(' ')[1].substring(0,5):'';});
+    var im={};pkts.forEach(function(pk,i){im[pk.idx]=i;});
+    var bgEv=events.map(function(ev,ei){
+      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
+      return{i0:im[ev.pktStart]!==undefined?im[ev.pktStart]:-1,
+             i1:im[ev.pktEnd]!==undefined?im[ev.pktEnd]:-1,
+             color:MAT_COLORS[cls]||'#aaa'};
+    });
+    return{isLab:false,pkts:pkts,xmt:xmt,harms:harms,bg:bg,clusters:clusters,
+           events:events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,im:im};
+  },[files,activeIdx,aiResults]);
+
+  // Chart rendering
+  useEffect(function(){
+    if(!analysis||analysis.isLab)return;
+    var d1=analysis.d1,mag=analysis.mag,dH=analysis.dH,d3=analysis.d3;
+    var bg=analysis.bg,xL=analysis.xL,bgEv=analysis.bgEv,harms=analysis.harms;
+    var allPh=d1.concat(dH).filter(function(v){return !isNaN(v)&&Math.abs(v)<200;});
+    var phMin=allPh.length?allPh.reduce(function(a,b){return a<b?a:b;}):-50;
+    var phMax=allPh.length?allPh.reduce(function(a,b){return a>b?a:b;}):50;
+    var yr_ph=[Math.floor(phMin/10)*10-5,Math.ceil(phMax/10)*10+5];
+    var allMag=mag.filter(function(v){return !isNaN(v)&&v>0;});
+    var mgMin=allMag.length?allMag.reduce(function(a,b){return a<b?a:b;}):0;
+    var mgMax=allMag.length?allMag.reduce(function(a,b){return a>b?a:b;}):1000;
+    var yr_mag=[Math.floor(mgMin/100)*100-50,Math.ceil(mgMax/100)*100+50];
+    drawChart(tsRef.current,[{data:d1,color:'#0071b8',width:1.2}],yr_ph,
+      {threshLo:bg.mean-3*bg.std,threshHi:bg.mean+3*bg.std,xLabels:xL,bgEvents:bgEv});
+    drawChart(highRef.current,[{data:d3,color:'#b07800',width:1},{data:dH,color:'#1a8c4e',width:1.2}],
+      yr_ph,{xLabels:xL,bgEvents:bgEv});
+    drawChart(magRef.current,[{data:mag,color:'#1a8c4e',width:1.2}],yr_mag,{xLabels:xL,bgEvents:bgEv});
+    var ei=(selEv!==null&&selEv<analysis.events.length)?selEv:0;
+    var ev=analysis.events[ei];
+    if(ev){
+      var cls=(aiResults[activeIdx+'-'+ei]&&aiResults[activeIdx+'-'+ei].classification)||ev.cls;
+      var vals=Object.keys(ev.dp).map(function(k){return ev.dp[k];}).filter(function(v){return !isNaN(v);});
+      var spMin=vals.length?vals.reduce(function(a,b){return a<b?a:b;},-5):-20;
+      var spMax=vals.length?vals.reduce(function(a,b){return a>b?a:b;},5):20;
+      drawSpectral(specRef.current,ev.dp,harms,
+        [Math.floor(spMin/10)*10-5,Math.ceil(spMax/10)*10+5],MAT_COLORS[cls]||'#0071b8');
+    }
+  },[analysis,selEv,aiResults]);
+
+  // ── Leaflet map initialisation (runs once when map tab first opens) ──────────
+  // Stage 1: anomaly detection per file. Expensive, but independent of layback, so
+  // moving a layback slider must not re-run it.
+  var detections=useMemo(function(){
+    return files.map(function(f){
+      if(f.type!=='field'||!f.packets||!f.packets.length) return null;
+      var harms=getHarms(f.packets[0].xmt||4);
+      var bg=computeBG(f.packets,harms);
+      var clusters=detectAnomalies(f.packets,harms,bg);
+      var evs=clusters.map(function(cl,ci){
+        var ev=classifyRules(cl,harms,bg);
+        return {ci:ci,pktPeak:ev.pktPeak,rawLat:ev.lat,rawLon:ev.lon,cls:ev.cls,
+                snr:ev.maxSNR,snrInt:ev.snrInt,confPct:ev.confPct,
+                dpDev:ev.dpDev,ts:ev.ts,nPkts:ev.nPkts};
+      }).filter(function(e){return e.rawLat!==null;});
+      return {harms:harms,bg:bg,clusters:clusters,events:evs};
+    });
+  },[files]);
+
+  var LBP=useMemo(function(){
+    return {mode:laybackMode,cableM:cableM,angleDeg:cableAngle,k:dragK,gpsOffset:gpsOffset,halfPkt:halfPkt};
+  },[laybackMode,cableM,cableAngle,dragK,gpsOffset,halfPkt]);
+  // Stage 2: one layback-corrected track per file, plus corrected event positions.
+  // Everything downstream reads from here instead of recomputing.
+  var fileAnalyses=useMemo(function(){
+    return files.map(function(f,fi){
+      var D=detections[fi];
+      if(!D) return null;
+      var trk=laybackTrack(f.packets,LBP);
+      var idxOf={};
+      f.packets.forEach(function(p,i){idxOf[p.idx]=i;});
+      var evs=D.events.map(function(e){
+        var i=idxOf[e.pktPeak];
+        var t=(i!==undefined&&trk[i]&&trk[i].lat!==null)?trk[i]:null;
+        return {ci:e.ci,pktPeak:e.pktPeak,cls:e.cls,snr:e.snr,ts:e.ts,nPkts:e.nPkts,
+                lat:t?t.lat:e.rawLat, lon:t?t.lon:e.rawLon,
+                rawLat:e.rawLat, rawLon:e.rawLon};
+      });
+      return {trk:trk,events:evs,harms:D.harms,bg:D.bg,clusters:D.clusters};
+    });
+  },[files,detections,LBP]);
+
+  var sites=useMemo(function(){return buildSites(waypoints,siteLink);},[waypoints,siteLink]);
+  var coverage=useMemo(function(){
+    if(!useLayback||!sites.length||!files.length) return [];
+    try{ return evaluateCoverage(files,sites,LBP,detectRadius,aiResults,dayFilter,fileAnalyses); }catch(e){ console.error(e); return []; }
+  },[files,sites,LBP,detectRadius,aiResults,useLayback,dayFilter,fileAnalyses]);
+  var covSummary=useMemo(function(){
+    var s={pass:0,hit:0,fail:0,unattrib:0,bySite:{}};
+    coverage.forEach(function(r){
+      if(r.status==='UNATTRIB'){s.unattrib++;return;}
+      s.pass++; if(r.status==='HIT')s.hit++; else s.fail++;
+      var b=s.bySite[r.site]||(s.bySite[r.site]={pass:0,hit:0,fail:0});
+      b.pass++; if(r.status==='HIT')b.hit++; else b.fail++;
+    });
+    return s;
+  },[coverage]);
+
+  useEffect(function(){
+    if(mainTab!=='map')return;
+    if(!mapRef.current)return;
+
+    // Tile layer URLs
+    var TILES={
+      satellite:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      street:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      topo:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      noaa:'https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png'
+    };
+    var ATTRIBS={
+      satellite:'Tiles &copy; Esri &mdash; Source: Esri, USGS',
+      street:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      topo:'Tiles &copy; Esri &mdash; Source: Esri, USGS, NOAA',
+      noaa:'NOAA Electronic Navigational Charts'
+    };
+
+    // Init map if not already created
+    // If React remounted the container (tab switch), the old map instance points at a
+    // detached node and nothing renders. Detect that and rebuild.
+    if(leafletMap.current && leafletMap.current._container !== mapRef.current){
+      try{ leafletMap.current.remove(); }catch(e){}
+      leafletMap.current=null;
+      leafletLayers.current={};
+    }
+    if(!leafletMap.current){
+      var map=L.map(mapRef.current,{center:[47.62,-122.50],zoom:14,zoomControl:true,
+        scrollWheelZoom:true,doubleClickZoom:true,touchZoom:true});
+      L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20}).addTo(map);
+      leafletMap.current=map;
+      leafletLayers.current={baseTile:null,tracks:L.layerGroup().addTo(map),hotspots:L.layerGroup().addTo(map)};
+    }
+    // Fix sizing after flex layout renders
+    setTimeout(function(){if(leafletMap.current)leafletMap.current.invalidateSize();},60);
+    setTimeout(function(){if(leafletMap.current)leafletMap.current.invalidateSize();},260);
+
+    var map=leafletMap.current;
+
+    // Swap tile layer if changed
+    if(leafletLayers.current.baseTile){
+      map.removeLayer(leafletLayers.current.baseTile);
+    }
+    var newTile=L.tileLayer(TILES[mapLayer],{attribution:ATTRIBS[mapLayer],maxZoom:20});
+    newTile.addTo(map);
+    newTile.bringToBack();
+    leafletLayers.current.baseTile=newTile;
+
+    // ── Draw / update track lines ─────────────────────────────────────────────
+    var lb=computeLayback(cableM,cableAngle,gpsOffset);
+    var LBPm={mode:laybackMode,cableM:cableM,angleDeg:cableAngle,k:dragK,gpsOffset:gpsOffset,halfPkt:halfPkt};
+    leafletLayers.current.tracks.clearLayers();
+    var bounds=[], trackBounds=[];
+    if(showLines){
+      for(var fi=0;fi<files.length;fi++){
+        var f=files[fi];
+        if(f.type!=='field')continue;
+        var visible=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
+        if(!visible)continue;
+        var rawPts=f.packets.filter(function(pk){return pk.lat!==null&&pk.lon!==null;});
+        if(!rawPts.length)continue;
+        // Apply layback correction if enabled
+        var _A=fileAnalyses[fi];
+        var correctedPkts=(useLayback&&_A)?_A.trk:f.packets;
+        var pts=correctedPkts.filter(function(pk){return pk.lat!==null&&pk.lon!==null;});
+        if(!pts.length)continue;
+        var lls=pts.map(function(pk){return[pk.lat,pk.lon];});
+        lls.forEach(function(ll){bounds.push(ll);trackBounds.push(ll);});
+        var col=RUN_COLORS[fi%RUN_COLORS.length];
+        for(var rgi=0;rgi<runGroups.length;rgi++){
+          if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}
+        }
+        var isActive=fi===activeIdx;
+        var pl=L.polyline(lls,{
+          color:col,weight:isActive?4:2.5,opacity:isActive?1.0:0.7,
+          smoothFactor:1
+        });
+        // Start marker
+        L.circleMarker(lls[0],{radius:5,fillColor:col,color:'#fff',weight:1.5,fillOpacity:1}).addTo(leafletLayers.current.tracks);
+        // Closure to capture fi, f, col
+        (function(fi2,f2,col2,pl2){
+          pl2.on('click',function(){setActiveIdx(fi2);setMainTab('analysis');setSelEv(null);});
+          pl2.on('mouseover',function(e){
+            pl2.setStyle({weight:5,opacity:1});
+            pl2.bindTooltip(
+              '<div style="font-family:monospace;font-size:11px"><b>'+f2.run+'</b><br>'+
+              f2.packets.length+' pkts · '+f2.xmt+'Hz · '+f2.type+'</div>',
+              {sticky:true,direction:'top'}
+            ).openTooltip(e.latlng);
+          });
+          pl2.on('mouseout',function(){
+            pl2.setStyle({weight:fi2===activeIdx?4:2.5,opacity:fi2===activeIdx?1.0:0.7});
+            pl2.closeTooltip();
+          });
+        })(fi,f,col,pl);
+        pl.addTo(leafletLayers.current.tracks);
+      }
+    }
+
+    // ── Draw / update hotspot circles ─────────────────────────────────────────
+    leafletLayers.current.hotspots.clearLayers();
+    if(showHotspots){
+      var visFi=visibleFiles;
+      var hsClusters=buildHotspots(files,aiResults,visFi,useLayback,lb,fileAnalyses);
+      for(var hi=0;hi<hsClusters.length;hi++){
+        var grp=hsClusters[hi];
+        if(hiddenHotspots[hotspotKey(grp)])continue;
+        var clat=0,clon=0;
+        for(var gi=0;gi<grp.length;gi++){clat+=grp[gi].lat;clon+=grp[gi].lon;}
+        clat/=grp.length;clon/=grp.length;
+        var uniqueFiSet={};
+        for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
+        var multiFile=Object.keys(uniqueFiSet).length>1;
+        var col2=MAT_COLORS[grp[0].cls]||'#808080';
+        var r=multiFile?22:14;
+        bounds.push([clat,clon]);
+        var circle=L.circle([clat,clon],{
+          radius:r*4,  // metres ~= pixel radius at zoom 17
+          color:col2,weight:multiFile?2:1.2,opacity:multiFile?0.9:0.6,
+          fillColor:col2,fillOpacity:0.15,
+          dashArray:multiFile?null:'6,4'
+        });
+        var laybackNote=grp[0].laybackApplied?
+          '<br><span style="color:#888;font-size:9px">layback corrected '+lb.toFixed(1)+'m</span>':
+          '<br><span style="color:#c07800;font-size:9px">raw GPS — enable layback</span>';
+        var tipHtml='<div style="font-family:monospace;font-size:11px">'+
+          '<b style="color:'+col2+'">'+grp[0].cls+'</b><br>'+
+          (multiFile?grp.length+' detections · '+Object.keys(uniqueFiSet).length+' files':grp[0].run)+'<br>'+
+          'Conf: '+grp[0].conf+'%'+laybackNote+'</div>';
+        circle.bindTooltip(tipHtml,{sticky:true,direction:'top'});
+        circle.addTo(leafletLayers.current.hotspots);
+        // Label
+        var icon=L.divIcon({
+          html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col2+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
+               (multiFile?grp.length+' ×':'')+grp[0].cls.substring(0,10)+'</div>',
+          iconSize:[120,16],iconAnchor:[60,-r-2],className:''
+        });
+        L.marker([clat,clon],{icon:icon,interactive:false}).addTo(leafletLayers.current.hotspots);
+      }
+    }
+
+    // ── Draw target site rings (detection radius) ────────────────────────────
+    if(!leafletLayers.current.siteLayer){
+      leafletLayers.current.siteLayer=L.layerGroup().addTo(map);
+    }
+    leafletLayers.current.siteLayer.clearLayers();
+    if(showSiteRings&&sites.length){
+      sites.forEach(function(s){
+        var rows=coverage.filter(function(r){return r.siteId===s.id&&r.status!=='UNATTRIB';});
+        var nf=rows.filter(function(r){return r.status==='FAIL';}).length;
+        var nh=rows.filter(function(r){return r.status==='HIT';}).length;
+        var col = rows.length===0 ? '#8a8a8a' : (nf===0 ? '#1d9e75' : (nh===0 ? '#d92b2b' : '#e08a00'));
+        var rad = s.halfLen + detectRadius;
+        var circ=L.circle([s.lat,s.lon],{radius:rad,color:col,weight:1.5,opacity:.9,
+          fillColor:col,fillOpacity:.12,dashArray:nf?null:'4 4'});
+        circ.bindTooltip('<div style="font-family:monospace;font-size:11px">'+
+          '<b>Site '+s.label+'</b> ('+s.n+' wpts, '+s.len.toFixed(1)+' m)'+
+          '<br>passes: '+rows.length+'  hits: '+nh+'  <b style="color:#d92b2b">fails: '+nf+'</b>'+
+          '<br>ring = half-length + '+detectRadius+' m</div>',{sticky:true});
+        circ.addTo(leafletLayers.current.siteLayer);
+        L.polyline([[s.aLat,s.aLon],[s.bLat,s.bLon]],{color:col,weight:2.5,opacity:.8})
+          .addTo(leafletLayers.current.siteLayer);
+        bounds.push([s.lat,s.lon]);
+      });
+    }
+
+    // ── Draw waypoint markers ────────────────────────────────────────────────
+    if(!leafletLayers.current.waypointLayer){
+      leafletLayers.current.waypointLayer=L.layerGroup().addTo(map);
+    }
+    leafletLayers.current.waypointLayer.clearLayers();
+    if(showWaypoints&&waypoints.length){
+      waypoints.forEach(function(wp){
+        bounds.push([wp.lat,wp.lon]);
+        var icon=L.divIcon({
+          html:'<div style="background:#e63900;color:#fff;font-family:monospace;font-size:9px;'+
+               'font-weight:bold;padding:2px 5px;border-radius:3px;white-space:nowrap;'+
+               'box-shadow:0 1px 4px rgba(0,0,0,.4);border:1px solid #a02800">'+wp.name+'</div>',
+          iconSize:[null,null],iconAnchor:[0,8],className:''
+        });
+        var marker=L.marker([wp.lat,wp.lon],{icon:icon});
+        // Check proximity to corrected anomaly events
+        var matchTxt='';
+        files.forEach(function(f,fi){
+          if(f.type!=='field'||!f.packets.length)return;
+          var A=fileAnalyses[fi];
+          if(!A)return;
+          A.events.forEach(function(ev){
+            var corrPt=useLayback?{lat:ev.lat,lon:ev.lon}:{lat:ev.rawLat,lon:ev.rawLon};
+            var dLat=(corrPt.lat-wp.lat)*111000;
+            var dLon=(corrPt.lon-wp.lon)*111000*Math.cos(wp.lat*Math.PI/180);
+            var dist=Math.sqrt(dLat*dLat+dLon*dLon);
+            if(dist<=wpThreshold){
+              matchTxt+='<br><b style="color:#0080b0">'+ev.cls+'</b> '+Math.round(dist)+'m ('+f.run.substring(0,16)+')';
+            }
+          });
+        });
+        marker.bindTooltip(
+          '<div style="font-family:monospace;font-size:11px"><b style="color:#e63900">'+wp.name+'</b>'+
+          '<br>'+wp.lat.toFixed(6)+'°N · '+Math.abs(wp.lon).toFixed(6)+'°W'+matchTxt+'</div>',
+          {sticky:true,direction:'top'}
+        );
+        marker.addTo(leafletLayers.current.waypointLayer);
+      });
+    }
+
+    // Fit bounds to visible data
+    // When a single line is isolated (stepper mode) frame that line, not the whole field
+    var fitPts=(visibleFiles&&visibleFiles.length===1&&trackBounds.length>=2)?trackBounds:bounds;
+    if(fitPts.length>=2){
+      try{map.fitBounds(L.latLngBounds(fitPts),{padding:[30,30],maxZoom:17});}catch(e){}
+    }
+
+  },[mainTab,files,activeIdx,runGroups,showLines,showHotspots,visibleFiles,hiddenHotspots,
+     aiResults,mapLayer,waypoints,showWaypoints,wpThreshold,useLayback,cableM,cableAngle,gpsOffset,
+     laybackMode,dragK,halfPkt,detectRadius,siteLink,showSiteRings,dayFilter,sites,coverage,activeGroup,stepIdx]);
+
+  var onMapMove=useCallback(function(e){},{});  // tooltip handling now done by Leaflet
+
+  // Waypoint file loader (KMZ or KML)
+  var loadWaypoints=useCallback(function(fileList){
+    if(!fileList||!fileList.length)return;
+    var file=fileList[0];
+    var name=file.name.toLowerCase();
+    if(name.endsWith('.kmz')){
+      // KMZ is a zip - load JSZip dynamically then extract doc.kml
+      var script=document.createElement('script');
+      script.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      script.onload=function(){
+        file.arrayBuffer().then(function(buf){
+          JSZip.loadAsync(buf).then(function(zip){
+            var kmlFile=zip.file(/\.kml$/i)[0];
+            if(!kmlFile){alert('No .kml found inside KMZ');return;}
+            kmlFile.async('string').then(function(kmlText){
+              var wps=parseKML(kmlText);
+              setWaypoints(wps);
+              alert('Loaded '+wps.length+' waypoints from '+file.name);
+            });
+          });
+        });
+      };
+      document.head.appendChild(script);
+    } else {
+      file.text().then(function(text){
+        var wps=parseKML(text);
+        setWaypoints(wps);
+        alert('Loaded '+wps.length+' waypoints from '+file.name);
+      });
+    }
+  },[]);
+
+  // Compute total layback distance from current settings
+  // Build one run group per survey day, straight from the packet timestamps.
+  function autoGroupByDay(){
+    var byDay={};
+    files.forEach(function(f,i){
+      if(f.type!=='field'||!f.packets||!f.packets.length)return;
+      var t=f.packets[0].tms; if(!t)return;
+      var d=new Date(t);
+      var key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      (byDay[key]=byDay[key]||[]).push(i);
+    });
+    var keys=Object.keys(byDay).sort();
+    if(!keys.length){alert('No field files with timestamps loaded.');return;}
+    var palette=['#0071b8','#1d9e75','#d8641e','#7f77dd','#b03a5b','#846b00'];
+    var prevById={};
+    runGroups.forEach(function(g){prevById[g.id]=g;});
+    var groups=keys.map(function(k,i){
+      var auto='Day '+(i+1)+' \u00b7 '+k;
+      var prev=prevById['day-'+k];
+      // keep a user rename across rebuilds; only auto-name fresh groups
+      var name=(prev&&prev.name&&prev.name.indexOf('Day ')!==0)?prev.name:auto;
+      return {id:'day-'+k, name:name, color:palette[i%palette.length], fileIds:byDay[k]};
+    });
+    setRunGroups(groups);
+    setActiveGroup(groups[0].id);
+    setStepIdx(0);
+    setVisibleFiles(groups[0].fileIds.slice());
+    setActiveIdx(groups[0].fileIds[0]);
+  }
+
+  // Files belonging to the group currently selected on the Map tab
+  var groupFiles=useMemo(function(){
+    if(activeGroup==='all'){
+      var all=[]; files.forEach(function(f,i){ if(f.type==='field') all.push(i); }); return all;
+    }
+    var g=runGroups.filter(function(x){return x.id===activeGroup;})[0];
+    return g?g.fileIds.slice():[];
+  },[activeGroup,runGroups,files]);
+
+  // Per-line layback summary for the line currently stepped to
+  var lineStats=useMemo(function(){
+    var fi=groupFiles[stepIdx];
+    if(fi===undefined||!files[fi]||files[fi].type!=='field')return null;
+    var f=files[fi];
+    var A=fileAnalyses[fi];
+    if(!A)return null;
+    var trk=A.trk;
+    var v=[],lb=[],ang=[];
+    trk.forEach(function(p){
+      if(p.spd!==null&&p.spd!==undefined)v.push(p.spd);
+      if(p.lb!==null&&p.lb!==undefined)lb.push(p.lb);
+      if(p.ang!==null&&p.ang!==undefined)ang.push(p.ang);
+    });
+    function stat(a){
+      if(!a.length)return null;
+      var s=a.slice().sort(function(x,y){return x-y;});
+      var med=s[Math.floor(s.length/2)];
+      var mean=a.reduce(function(x,y){return x+y;},0)/a.length;
+      var sd=a.length>1?Math.sqrt(a.reduce(function(x,y){return x+(y-mean)*(y-mean);},0)/(a.length-1)):0;
+      return {med:med,mean:mean,sd:sd,se:a.length>1?sd/Math.sqrt(a.length):0,n:a.length,min:s[0],max:s[s.length-1]};
+    }
+    var valid=trk.filter(function(p){return p.lat!==null;});
+    var hdg=null;
+    if(valid.length>1){
+      var a=valid[0],b=valid[valid.length-1];
+      hdg=(Math.atan2((b.lon-a.lon)*Math.cos(a.lat*Math.PI/180),b.lat-a.lat)*180/Math.PI+360)%360;
+    }
+    var cov=coverage.filter(function(r){return r.fi===fi;});
+    return {fi:fi,run:f.run,n:f.packets.length,hdg:hdg,
+            spd:stat(v),lb:stat(lb),ang:stat(ang),
+            hits:cov.filter(function(r){return r.status==='HIT';}).length,
+            fails:cov.filter(function(r){return r.status==='FAIL';}).length,
+            unattrib:cov.filter(function(r){return r.status==='UNATTRIB';}).length,
+            rows:cov};
+  },[groupFiles,stepIdx,files,fileAnalyses,coverage]);
+
+  useEffect(function(){
+    if(activeIdx===null)return;
+    var k=groupFiles.indexOf(activeIdx);
+    if(k>=0&&k!==stepIdx)setStepIdx(k);
+  },[activeIdx,groupFiles]);
+
+  // Seed each site's expected material once. Defaults come from the survey's target
+  // line descriptions; every one is editable and overrides persist.
+  useEffect(function(){
+    if(restoreState!=='ready'||!sites.length)return;
+    setSiteMaterials(function(prev){
+      var next=Object.assign({},prev), changed=false;
+      sites.forEach(function(s){
+        if(next[s.label]!==undefined)return;
+        var nums=s.members.map(Number).filter(function(x){return !isNaN(x);});
+        var guess='Steel';
+        if(nums.some(function(n){return n>=585&&n<=591;})) guess='Asphalt';
+        else if(nums.some(function(n){return n>=592&&n<=602;})) guess='Ilmenite';
+        next[s.label]=guess; changed=true;
+      });
+      return changed?next:prev;
+    });
+  },[sites,restoreState]);
+
+  var MATERIAL_OPTIONS=['Steel','Asphalt','Ilmenite','Galvanized Steel','Hydrocarbon IP',
+                        'Metallic IP','Mixed','Other','Unknown'];
+
+  function stepTo(i){
+    if(!groupFiles.length)return;
+    var n=((i%groupFiles.length)+groupFiles.length)%groupFiles.length;
+    setStepIdx(n);
+    setActiveIdx(groupFiles[n]);
+    setVisibleFiles([groupFiles[n]]);
+    setSelEv(null);
+  }
+
+  useEffect(function(){ if(restoreState!=='ready')return;
+    // Persist membership by stable file key. Array indices are NOT stable across a
+    // reload because the restored files are re-sorted by timestamp.
+    var payload=runGroups.map(function(g){
+      return {id:g.id,name:g.name,color:g.color,
+              fileKeys:g.fileIds.map(function(i){return files[i]?fileKey(files[i]):null;})
+                                .filter(function(k){return !!k;})};
+    });
+    idbPut('meta',{key:'runGroups',value:payload}).catch(function(){}); },[runGroups,files,restoreState]);
+  useEffect(function(){ if(restoreState!=='ready')return;
+    idbPut('meta',{key:'waypoints',value:waypoints}).catch(function(){}); },[waypoints,restoreState]);
+  useEffect(function(){ if(restoreState!=='ready')return;
+    idbPut('meta',{key:'reviews',value:reviews}).catch(function(){}); },[reviews,restoreState]);
+  useEffect(function(){ if(restoreState!=='ready')return;
+    idbPut('meta',{key:'siteMaterials',value:siteMaterials}).catch(function(){}); },[siteMaterials,restoreState]);
+  useEffect(function(){ if(restoreState!=='ready')return;
+    idbPut('meta',{key:'settings',value:{cableM:cableM,cableAngle:cableAngle,gpsOffset:gpsOffset,
+      dragK:dragK,laybackMode:laybackMode,detectRadius:detectRadius,siteLink:siteLink,
+      halfPkt:halfPkt,dayFilter:dayFilter}}).catch(function(){});
+  },[cableM,cableAngle,gpsOffset,dragK,laybackMode,detectRadius,siteLink,halfPkt,dayFilter,restoreState]);
+
+  function clearLocalSession(){
+    if(!confirm('Clear the local cache? Files, groups, waypoints and reviews on this machine will be removed.'))return;
+    Promise.all([idbClear('files'),idbClear('meta')]).then(function(){
+      setFiles([]);setRunGroups([]);setWaypoints([]);setReviews({});setActiveIdx(null);
+      setVisibleFiles(null);setActiveGroup('all');setStepIdx(0);
+    });
+  }
+
+  // ── Manual review data for the line currently stepped to ────────────────────
+  var fileDayMap=useMemo(function(){
+    var dates=[], near={};
+    files.forEach(function(f,i){
+      if(f.type!=='field'||!f.packets||!f.packets.length)return;
+      near[i]=fileNearsSites(f,sites,2000);
+      if(!near[i])return;                       // see fileNearsSites: foreign data must not shift day ranks
+      var t=f.packets[0].tms; if(!t)return;
+      var d=new Date(t), k=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+      if(dates.indexOf(k)<0)dates.push(k);
+    });
+    dates.sort(function(a,b){return a-b;});
+    var m={};
+    files.forEach(function(f,i){
+      if(f.type!=='field'||!f.packets||!f.packets.length)return;
+      if(near[i]===false){m[i]=0;return;}
+      var t=f.packets[0].tms; if(!t)return;
+      var d=new Date(t), k=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+      m[i]=dates.indexOf(k)+1;
+    });
+    return m;
+  },[files,sites]);
+
+  var reviewData=useMemo(function(){
+    var fi=groupFiles[stepIdx];
+    if(fi===undefined||!files[fi]||files[fi].type!=='field')return null;
+    var f=files[fi], fk=fileKey(f), fday=fileDayMap[fi]||0;
+    var A=fileAnalyses[fi];
+    if(!A)return null;
+    var trk=A.trk;
+    var evs=A.events.map(function(e){
+      var aiKey=fi+'-'+e.ci;
+      return {ci:e.ci,pktPeak:e.pktPeak,lat:e.lat,lon:e.lon,ts:e.ts,snr:e.snr,
+              cls:(aiResults[aiKey]&&aiResults[aiKey].material)||e.cls};
+    });
+    var mine=sites.filter(function(s){return !dayFilter||!s.day||!fday||s.day===fday;});
+    // Foreign-survey line (day 0 = never near this waypoint field): nothing to review here
+    if(fday===0&&sites.length){
+      var anyNear=trk.some(function(p){
+        if(p.lat===null)return false;
+        return sites.some(function(s){return haversineM(p.lat,p.lon,s.lat,s.lon)<=2000;});
+      });
+      if(!anyNear) mine=[];
+    }
+    // RAW-frame quantities for the reverse solve
+    var rawCum=rawCumulative(f.packets);
+    var kin=packetKinematics(f.packets);
+    var idxOf={}; f.packets.forEach(function(p,i){idxOf[p.idx]=i;});
+    var rows=mine.map(function(s){
+      var dmin=Infinity,kmin=-1;
+      for(var i=0;i<trk.length;i++){
+        if(trk[i].lat===null)continue;
+        var d=distToSite(trk[i].lat,trk[i].lon,s);
+        if(d<dmin){dmin=d;kmin=i;}
+      }
+      // raw closest approach: where the BOAT passed the target
+      var rmin=Infinity,rIdx=-1;
+      for(var i=0;i<f.packets.length;i++){
+        var p=f.packets[i];
+        if(p.lat===null)continue;
+        var d2=distToSite(p.lat,p.lon,s);
+        if(d2<rmin){rmin=d2;rIdx=i;}
+      }
+      var cand=evs.map(function(e){
+        var i=idxOf[e.pktPeak];
+        var implied=(i!==undefined&&rIdx>=0)?(rawCum[i]-rawCum[rIdx]):null;
+        return {e:e, d:distToSite(e.lat,e.lon,s), implied:implied,
+                spd:(i!==undefined?kin.speed[i]:null), dt:(i!==undefined?kin.dt[i]:null)};
+      }).sort(function(a,b){return a.d-b.d;});
+      return {site:s, closest:dmin, tIdx:kmin, cand:cand, key:fk+'|'+s.id,
+              rawClosest:rmin, rawIdx:rIdx};
+    }).sort(function(a,b){return a.closest-b.closest;});
+    evs.forEach(function(e){
+      var nd=Infinity,ns=null;
+      mine.forEach(function(s){var d=distToSite(e.lat,e.lon,s); if(d<nd){nd=d;ns=s;}});
+      e.nearest=ns?ns.label:'-'; e.nearestD=nd; e.key=fk+'|EVP'+e.pktPeak;
+    });
+    return {fi:fi,fk:fk,run:f.run,day:fday,rows:rows,events:evs,trk:trk};
+  },[groupFiles,stepIdx,files,fileAnalyses,sites,dayFilter,fileDayMap,aiResults]);
+
+  // Aggregate every anchor the user has set, across all lines.
+  var laybackSolution=useMemo(function(){
+    var A=[];
+    Object.keys(reviews).forEach(function(k){
+      var r=reviews[k];
+      if(!r||r.impliedLayback===null||r.impliedLayback===undefined)return;
+      A.push(r);
+    });
+    if(!A.length) return {n:0,anchors:[]};
+    var Ls=A.map(function(r){return r.impliedLayback;});
+    var stat=meanSd(Ls);
+    var ks=[];
+    A.forEach(function(r){
+      if(!r.anchorSpd)return;
+      var s=solveKFromLayback(r.impliedLayback,r.anchorSpd,r.anchorDt,cableM,gpsOffset,halfPkt);
+      if(s.k!==null&&isFinite(s.k)&&s.k>0)ks.push(s.k);
+    });
+    return {n:A.length,anchors:A,stat:stat,med:median(Ls),
+            kMed:median(ks),kStat:meanSd(ks),nK:ks.length,
+            neg:Ls.filter(function(x){return x<0;}).length};
+  },[reviews,cableM,gpsOffset,halfPkt]);
+
+  function setReview(key,patch){
+    setReviews(function(prev){
+      var next={}; for(var k in prev) next[k]=prev[k];
+      next[key]=Object.assign({},prev[key]||{},patch);
+      return next;
+    });
+  }
+
+  // ── Report over every reviewed line ─────────────────────────────────────────
+  function buildReport(){
+    var out=[], summary={detected:0,missed:0,na:0,correct:0,forced:0,wrong:0,weak:0,unsure:0,fp:0,unch:0,tp:0};
+    files.forEach(function(f,fi){
+      if(f.type!=='field'||!f.packets||!f.packets.length)return;
+      var fk=fileKey(f), fday=fileDayMap[fi]||0;
+      var d0=f.packets[0].tms?new Date(f.packets[0].tms):null;
+      var dateStr=d0?(d0.getFullYear()+'-'+String(d0.getMonth()+1).padStart(2,'0')+'-'+String(d0.getDate()).padStart(2,'0')):'';
+      sites.forEach(function(s){
+        if(dayFilter&&s.day&&fday&&s.day!==fday)return;
+        var r=reviews[fk+'|'+s.id];
+        if(!r||!r.verdict)return;
+        if(r.verdict==='detected')summary.detected++;
+        else if(r.verdict==='missed')summary.missed++;
+        else summary.na++;
+        if(r.classOk==='yes')summary.correct++;
+        else if(r.classOk==='forced')summary.forced++;
+        else if(r.classOk==='wrong'||r.classOk==='no')summary.wrong++;
+        else if(r.classOk==='weak')summary.weak++;
+        else if(r.classOk==='unsure')summary.unsure++;
+        out.push({date:dateStr,run:f.run,day:fday,site:s.label,kind:'site',
+                  verdict:r.verdict,classOk:r.classOk||'',cls:r.cls||'',
+                  expected:r.expected||siteMaterials[s.label]||'',
+                  closest:(r.closest!==undefined?r.closest:''),note:(r.note||'').replace(/[\r\n,]/g,' ')});
+      });
+      Object.keys(reviews).forEach(function(k){
+        if(k.indexOf(fk+'|EV')!==0)return;
+        var r=reviews[k]; if(!r||!r.verdict)return;
+        if(r.verdict==='falsepos')summary.fp++;
+        else if(r.verdict==='uncharted')summary.unch++;
+        else if(r.verdict==='truepos')summary.tp++;
+        out.push({date:dateStr,run:f.run,day:fday,site:r.nearest||'-',kind:'event',
+                  verdict:r.verdict,classOk:r.classOk||'',cls:r.cls||'',closest:(r.dist!==undefined?r.dist:''),
+                  note:(r.note||'').replace(/[\r\n,]/g,' ')});
+      });
+    });
+    return {rows:out,summary:summary};
+  }
+
+  // Export (integrated signature -> ground-truth material) pairs for every reviewed
+  // detection: verdict Det on a site (uses the anchored or nearest event) and every
+  // event marked TP. Class result 'forced' rows carry the site's expected material as
+  // ground truth even though the classifier's own rules did not name it.
+  function exportTrainingSet(){
+    var rows=[];
+    files.forEach(function(f,fi){
+      if(f.type!=='field'||!f.packets||!f.packets.length)return;
+      var D=detections[fi]; if(!D)return;
+      var fk=fileKey(f), fday=fileDayMap[fi]||0;
+      var d0=f.packets[0].tms?new Date(f.packets[0].tms):null;
+      var dateStr=d0?(d0.getFullYear()+'-'+String(d0.getMonth()+1).padStart(2,'0')+'-'+String(d0.getDate()).padStart(2,'0')):'';
+      var harms=D.harms;
+      sites.forEach(function(s){
+        if(dayFilter&&s.day&&fday&&s.day!==fday)return;
+        var r=reviews[fk+'|'+s.id];
+        if(!r||r.verdict!=='detected')return;
+        // event: the anchored one if set, else nearest raw event to the site
+        var ev=null;
+        if(r.anchorCi!==undefined&&r.anchorCi!==null){
+          ev=D.events.filter(function(e){return e.ci===r.anchorCi;})[0]||null;
+        }
+        if(!ev){
+          var best=1e12;
+          D.events.forEach(function(e){
+            var d=distToSite(e.rawLat,e.rawLon,s);
+            if(d<best){best=d;ev=e;}
+          });
+        }
+        if(!ev||!ev.dpDev)return;
+        var mat=r.expected||siteMaterials[s.label]||'Unknown';
+        var devs=harms.map(function(h){return (ev.dpDev[h]!==undefined?ev.dpDev[h].toFixed(3):'');});
+        rows.push([dateStr,f.run,s.label,mat,ev.cls,r.classOk||'',ev.nPkts,
+                   (ev.snr||0).toFixed(2),(ev.snrInt||0).toFixed(2),
+                   f.packets[0].xmt||4,harms.join('|')].concat(devs));
+      });
+    });
+    if(!rows.length){alert('No Det-verdict sites reviewed yet - nothing to export.');return;}
+    var hdr=['date','run','site','true_material','classifier_class','class_result','n_pkts',
+             'peak_snr','int_snr','xmt_hz','harmonics','dev_h1','dev_h2','dev_h3','dev_h4','dev_h5','dev_h6'];
+    var csv=hdr.join(',')+'\n'+rows.map(function(r){return r.join(',');}).join('\n');
+    var b=new Blob([csv],{type:'text/csv'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(b); a.download='material_training_signatures.csv'; a.click();
+  }
+
+  function exportReport(){
+    var rep=buildReport();
+    if(!rep.rows.length){alert('No manual verdicts recorded yet.');return;}
+    var hdr='date,run,day,site,kind,verdict,classification_result,reported_material,expected_material,closest_m,note\n';
+    var body=rep.rows.map(function(r){
+      return [r.date,r.run,r.day,r.site,r.kind,r.verdict,r.classOk,r.cls,r.expected||'',
+              (typeof r.closest==='number'?r.closest.toFixed(1):r.closest),
+              '"'+(r.note||'')+'"'].join(',');
+    }).join('\n');
+    var s=rep.summary;
+    var foot='\n\n# summary,detected='+s.detected+',missed='+s.missed+',na='+s.na+
+             ',class_correct='+s.correct+',class_forced='+s.forced+',class_wrong='+s.wrong+',class_weak='+s.weak+',class_unsure='+s.unsure+
+             ',true_positives='+s.tp+',false_positives='+s.fp+',uncharted='+s.unch+'\n';
+    var blob=new Blob([hdr+body+foot],{type:'text/csv'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download='northbeach_pass_fail_report.csv'; a.click();
+  }
+
+  var laybackDist=computeLayback(cableM,cableAngle,gpsOffset);
+
+  // File loading
+  var loadFiles=useCallback(function(fileList){
+    var promises=[];
+    for(var i=0;i<fileList.length;i++){
+      promises.push((function(file){
+        return file.text().then(function(text){
+          var pkts=parseAnyFile(text);
+          if(!pkts.length)return null;
+          return{name:file.name,run:pkts[0].run||file.name,packets:pkts,
+                 xmt:pkts[0].xmt,type:pkts[0].type};
+        });
+      })(fileList[i]));
+    }
+    Promise.all(promises).then(function(results){
+      var newFiles=results.filter(function(r){return r!==null;});
+      setFiles(function(prev){
+        var seen={}; prev.forEach(function(f){seen[fileKey(f)]=1;});
+        var add=newFiles.filter(function(f){
+          var k=fileKey(f); if(seen[k])return false; seen[k]=1; return true;
+        });
+        var updated=prev.concat(add);
+        if(!prev.length&&updated.length)setActiveIdx(0);
+        // cache locally so a refresh does not mean re-uploading
+        add.forEach(function(f){
+          idbPut('files',{key:fileKey(f),name:f.name,run:f.run,xmt:f.xmt,type:f.type,packets:f.packets})
+            .catch(function(e){console.warn('local cache write failed',e);});
+        });
+        return updated;
+      });
+    });
+  },[]);
+
+  // Restore the previous local session on mount
+  var _usRS=useState('loading'),restoreState=_usRS[0],setRestoreState=_usRS[1];
+  useEffect(function(){
+    var restored=[];
+    idbAll('files').then(function(recs){
+      if(recs&&recs.length){
+        var fs=recs.map(function(r){return {name:r.name,run:r.run,xmt:r.xmt,type:r.type,packets:r.packets};});
+        fs.sort(function(a,b){
+          var ta=a.packets[0]?a.packets[0].tms||0:0, tb=b.packets[0]?b.packets[0].tms||0:0;
+          return ta-tb;
+        });
+        restored=fs;
+        setFiles(fs); setActiveIdx(0);
+      }
+      return idbAll('meta');
+    }).then(function(metas){
+      var keyIdx={};
+      restored.forEach(function(f,i){keyIdx[fileKey(f)]=i;});
+      (metas||[]).forEach(function(m){
+        if(m.key==='runGroups'&&m.value){
+          var gs=m.value.map(function(g){
+            var ids;
+            if(g.fileKeys){
+              ids=g.fileKeys.map(function(k){return keyIdx[k];})
+                            .filter(function(i){return i!==undefined;});
+            } else {
+              ids=[];   // legacy index-based group: cannot be trusted, drop membership
+            }
+            return {id:g.id,name:g.name,color:g.color,fileIds:ids};
+          }).filter(function(g){return g.fileIds.length;});
+          setRunGroups(gs);
+        }
+        if(m.key==='waypoints'&&m.value) setWaypoints(m.value);
+        if(m.key==='reviews'&&m.value) setReviews(m.value);
+        if(m.key==='siteMaterials'&&m.value) setSiteMaterials(m.value);
+        if(m.key==='settings'&&m.value){
+          var s=m.value;
+          if(s.cableM!==undefined)setCableM(s.cableM);
+          if(s.cableAngle!==undefined)setCableAngle(s.cableAngle);
+          if(s.gpsOffset!==undefined)setGpsOffset(s.gpsOffset);
+          if(s.dragK!==undefined)setDragK(s.dragK);
+          if(s.laybackMode!==undefined)setLaybackMode(s.laybackMode);
+          if(s.detectRadius!==undefined)setDetectRadius(s.detectRadius);
+          if(s.siteLink!==undefined)setSiteLink(s.siteLink);
+          if(s.halfPkt!==undefined)setHalfPkt(s.halfPkt);
+          if(s.dayFilter!==undefined)setDayFilter(s.dayFilter);
+        }
+      });
+      setRestoreState('ready');
+    }).catch(function(e){console.warn('local restore failed',e);setRestoreState('ready');});
+  },[]);
+
+  // AI classification
+  var doAI=function(fi,ei){
+    if(!apiKey){alert('Enter API key');return;}
+    var f=files[fi];if(!f||f.type==='lab')return;
+    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
+    var bg=computeBG(f.packets,harms);
+    var clusters=detectAnomalies(f.packets,harms,bg);
+    if(!clusters.length||!clusters[ei])return;
+    var ev=classifyRules(clusters[ei],harms,bg);
+    var key=fi+'-'+ei;
+    setAiLoading(key);
+    classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
+      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=r;return next;});
+      setSelEv(ei);
+    }).catch(function(e){
+      var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
+        key_indicators:'',reasoning:e.message,caution:null};
+      setAiResults(function(prev){var next=Object.assign({},prev);next[key]=err;return next;});
+    }).finally(function(){setAiLoading(null);});
+  };
+
+  var doAIAll=function(){
+    if(!analysis||analysis.isLab||!apiKey)return;
+    var i=0;
+    function next(){
+      if(i>=analysis.events.length)return;
+      var ei=i++;
+      var f=files[activeIdx];
+      var harms=getHarms(f.packets[0].xmt||4);
+      var bg=computeBG(f.packets,harms);
+      var clusters=detectAnomalies(f.packets,harms,bg);
+      if(!clusters[ei]){next();return;}
+      var ev=classifyRules(clusters[ei],harms,bg);
+      var key=activeIdx+'-'+ei;
+      setAiLoading(key);
+      classifyWithClaude(ev,harms,bg,training,apiKey).then(function(r){
+        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=r;return nx;});
+        setSelEv(ei);
+      }).catch(function(e){
+        var err={classification:'Error',confidence_pct:0,confidence_label:'Error',
+          key_indicators:'',reasoning:e.message,caution:null};
+        setAiResults(function(prev){var nx=Object.assign({},prev);nx[key]=err;return nx;});
+      }).finally(function(){
+        setAiLoading(null);
+        setTimeout(next,600);
+      });
+    }
+    next();
+  };
+
+  var saveTraining=function(fi,ei){
+    if(!confMat)return;
+    var f=files[fi];if(!f||f.type==='lab')return;
+    var harms=getHarms(f.packets[0]?f.packets[0].xmt||4:4);
+    var bg=computeBG(f.packets,harms);
+    var clusters=detectAnomalies(f.packets,harms,bg);
+    if(!clusters.length||!clusters[ei])return;
+    var ev=classifyRules(clusters[ei],harms,bg);
+    var aiRes=aiResults[fi+'-'+ei];
+    var entry={
+      material:confMat,run:f.run,ts:ev.ts,
+      fv:{dp1:ev.dp[harms[0]]||0,dp3:ev.dp[harms[2]]||0,dp_last:ev.dp[harms[5]]||0,
+          magPct:ev.magPct,maxSNR:ev.maxSNR},
+      aiConf:aiRes?aiRes.confidence_pct:ev.confPct
+    };
+    // Optimistic local update immediately
+    setTraining(function(prev){return prev.concat([entry]);});
+    setConfMat('');
+    // Persist to Supabase in background
+    setDbStatus('loading');
+    saveTrainingToDB(entry,harms)
+      .then(function(rows){
+        // Update local entry with DB-assigned id so we can delete it later
+        if(rows&&rows[0]){
+          var dbId=rows[0].id;
+          setTraining(function(prev){
+            var updated=prev.slice();
+            updated[updated.length-1]=Object.assign({},updated[updated.length-1],{id:dbId});
+            return updated;
+          });
+        }
+        setDbStatus('ok');
+      })
+      .catch(function(e){
+        console.warn('Supabase save failed:',e.message);
+        setDbStatus('error');
+      });
+  };
+
+  // Run group helpers
+  var createGroup=function(){
+    if(!newGroupName.trim())return;
+    setRunGroups(function(prev){return prev.concat([{
+      id:'g'+Date.now(),name:newGroupName.trim(),color:newGroupColor,fileIds:[]}]);});
+    setNewGroupModal(false);setNewGroupName('');
+  };
+  var addToGroup=function(fi,gid){
+    setRunGroups(function(prev){return prev.map(function(g){
+      return(g.id===gid&&g.fileIds.indexOf(fi)<0)?
+        Object.assign({},g,{fileIds:g.fileIds.concat([fi])}):g;});});
+    setAddToGroupModal(null);setSelGroupId('');
+  };
+  var removeFromGroup=function(fi,gid){
+    setRunGroups(function(prev){return prev.map(function(g){
+      return g.id===gid?Object.assign({},g,{fileIds:g.fileIds.filter(function(i){return i!==fi;})}):g;});});
+  };
+  var deleteGroup=function(id){
+    setRunGroups(function(prev){return prev.filter(function(g){return g.id!==id;});});
+  };
+
+  // Derived render values
+  var af=analysis;
+  var activeEv=(af&&!af.isLab&&selEv!==null&&selEv<af.events.length)?af.events[selEv]:null;
+  var aiKey=(activeIdx!==null&&selEv!==null)?activeIdx+'-'+selEv:null;
+  var aiRes=aiKey?aiResults[aiKey]:null;
+
+  // ── Auth gate — bypassed in local testing build ───────────────────────────
+  // AUTH DISABLED: remove this block and restore login screen for production
+  // if(authUser===null){ ... } if(authUser===false){ ... }
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <h1>IPA MIP CLASSIFIER</h1>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>{files.length} files</span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:training.length?'var(--pos)':'var(--dim2)'}}>{training.length} training</span>
+        <div style={{flex:1}}/>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,
+          color:dbStatus==='ok'?'var(--pos)':dbStatus==='error'?'var(--neg)':dbStatus==='loading'?'#b07800':'var(--dim)'}}>
+          {dbStatus==='loading'?'⟳ syncing':dbStatus==='ok'?'✓ DB synced':dbStatus==='error'?'✗ DB offline':'DB'}
+        </span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim)'}}>WaTech-MatChar-r7</span>
+        <div className="sep"/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',
+          background:'var(--panel2)',padding:'2px 7px',borderRadius:2}}>
+          LOCAL TEST MODE
+        </span>
+      </div>
+
+      <div className="main">
+        <div className="sidebar">
+          <div className={drag?'upload-zone drag':'upload-zone'}
+            onDragOver={function(e){e.preventDefault();setDrag(true);}}
+            onDragLeave={function(){setDrag(false);}}
+            onDrop={function(e){e.preventDefault();setDrag(false);loadFiles(e.dataTransfer.files);}}
+            onClick={function(){fileRef.current&&fileRef.current.click();}}>
+            <div className="icon">📡</div>
+            <p>Drop <code>_p.txt</code> files<br/>(lab or field) · <span>click to browse</span></p>
+          </div>
+          <input ref={fileRef} type="file" accept=".txt" multiple style={{display:'none'}}
+            onChange={function(e){loadFiles(e.target.files);}}/>
+
+          {files.length>0 && (
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
+              <span className="sidebar-label">Run Groups</span>
+              <div style={{display:'flex',gap:4}}>
+                <button className="btn btn-sm" title="Create one group per survey day from the file timestamps"
+                  onClick={function(){autoGroupByDay();}}>By day</button>
+                <button className="btn btn-primary btn-sm" onClick={function(){setNewGroupModal(true);}}>+ Group</button>
+              </div>
+            </div>
+          )}
+          {runGroups.map(function(g){
+            var isExp=expandedGroup===g.id;
+            return (
+              <div key={g.id} className="run-group">
+                <div className="run-group-hdr" onClick={function(){if(renamingGroup!==g.id)setExpandedGroup(isExp?null:g.id);}}>
+                  <div className="run-swatch" style={{background:g.color}}/>
+                  {renamingGroup===g.id ? (
+                    <input autoFocus value={renameDraft}
+                      onClick={function(e){e.stopPropagation();}}
+                      onChange={function(e){setRenameDraft(e.target.value);}}
+                      onKeyDown={function(e){
+                        if(e.key==='Enter')commitRename(g.id);
+                        else if(e.key==='Escape')setRenamingGroup(null);
+                      }}
+                      onBlur={function(){commitRename(g.id);}}
+                      style={{flex:1,minWidth:0,fontFamily:'inherit',fontSize:'inherit',fontWeight:700,
+                        color:'var(--text)',background:'var(--panel)',border:'1px solid var(--accent)',
+                        borderRadius:2,padding:'1px 4px'}}/>
+                  ) : (
+                    <span className="run-group-name" title="Double-click to rename"
+                      onDoubleClick={function(e){e.stopPropagation();setRenameDraft(g.name);setRenamingGroup(g.id);}}>
+                      {g.name}</span>
+                  )}
+                  <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{g.fileIds.length}f</span>
+                  {renamingGroup!==g.id && (
+                    <button title="Rename group"
+                      onClick={function(e){e.stopPropagation();setRenameDraft(g.name);setRenamingGroup(g.id);}}
+                      style={{background:'none',border:'none',color:'var(--dim2)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>&#9998;</button>
+                  )}
+                  <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}}
+                    style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>
+                </div>
+                {isExp && (
+                  <div className="run-group-body">
+                    {g.fileIds.map(function(fi){
+                      var f=files[fi];if(!f)return null;
+                      return (
+                        <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'}
+                          onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
+                          <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
+                          <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
+                          <span style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>{f.type}</span>
+                          <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}}
+                            style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>
+                        </div>
+                      );
+                    })}
+                    {!g.fileIds.length && <span style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>No files added</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {training.length>0 && (
+            <div>
+              <div className="sep" style={{height:1,background:'var(--border)',margin:'4px 0'}}/>
+              <div className="sidebar-label">Training ({training.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3,maxHeight:100,overflowY:'auto'}}>
+                {training.map(function(t,i){return (
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 5px',
+                    borderRadius:2,background:'var(--panel2)',fontSize:10,fontFamily:'var(--font-mono)'}}>
+                    <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+                      background:MAT_COLORS[t.material]||'#8099b0'}}/>
+                    <span style={{fontWeight:700,color:MAT_COLORS[t.material]||'var(--dim2)'}}>{t.material}</span>
+                    <span style={{flex:1,fontSize:9,color:'var(--dim)',marginLeft:4}}>{(t.run||'').substring(0,10)}</span>
+                    <button onClick={function(){
+                      setTraining(function(prev){return prev.filter(function(_,j){return j!==i;});});
+                      if(t.id)deleteTrainingFromDB(t.id).catch(function(e){console.warn('delete failed',e);});
+                    }} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
+                  </div>
+                );})}
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={function(){
+                if(!window.confirm('Delete all '+training.length+' training confirmations from the shared database? This affects all users.'))return;
+                var ids=training.filter(function(t){return t.id;}).map(function(t){return t.id;});
+                setTraining([]);
+                // Delete each from Supabase
+                ids.forEach(function(id){
+                  deleteTrainingFromDB(id).catch(function(e){console.warn('Delete failed for id '+id,e);});
+                });
+              }}>Clear training</button>
+            </div>
+          )}
+          {files.length>0 && (
+            <div className="sidebar-label" style={{marginTop:8,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}
+              onClick={function(){setShowFileList(!showFileList);}}>
+              <span style={{display:'inline-block',transform:showFileList?'rotate(90deg)':'none',transition:'transform .12s'}}>&#9656;</span>
+              Files ({files.length})
+            </div>
+          )}
+          {showFileList && files.map(function(f,i){
+            var grp=null;
+            for(var gi=0;gi<runGroups.length;gi++){if(runGroups[gi].fileIds.indexOf(i)>=0){grp=runGroups[gi];break;}}
+            var dotCol=grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0');
+            return (
+              <div key={i} className={activeIdx===i?'file-item active':'file-item'}
+                onClick={function(){setActiveIdx(i);setSelEv(null);}}>
+                <div className="file-dot" style={{background:dotCol}}/>
+                <div style={{flex:1,overflow:'hidden'}}>
+                  <div className="file-name">{f.run}</div>
+                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}</div>
+                </div>
+                <button title="Add to group"
+                  onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
+                  style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',
+                    borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
+              </div>
+            );
+          })}
+
+          {files.length>0 && (
+            <div style={{display:'flex',flexDirection:'column',gap:4}}>
+              <button className="btn btn-ghost btn-sm"
+                onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);}}>
+                Clear all files</button>
+              <button className="btn btn-ghost btn-sm" onClick={clearLocalSession}
+                title="Remove locally cached files, groups, waypoints and reviews">Clear local cache</button>
+            </div>
+          )}
+        </div>
+
+        <div className="content">
+          {files.length>0 && (
+            <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
+              <div className={mainTab==='analysis'?'tab active':'tab'} onClick={function(){setMainTab('analysis');}}>Analysis</div>
+              <div className={mainTab==='map'?'tab active':'tab'} onClick={function(){setMainTab('map');}}>Map</div>
+              <div className={mainTab==='review'?'tab active':'tab'} onClick={function(){setMainTab('review');}}>Review</div>
+              <div className={mainTab==='coverage'?'tab active':'tab'} onClick={function(){setMainTab('coverage');}}>Coverage</div>
+              <div className={mainTab==='lab'?'tab active':'tab'} onClick={function(){setMainTab('lab');}}>Lab Stats</div>
+            </div>
+          )}
+
+          {mainTab==='analysis' && (
+            <div>
+              {!af && (
+                <div className="empty">
+                  <div className="icon">◎</div>
+                  <p>Load <code>_p.txt</code> files to begin</p>
+                </div>
+              )}
+              {af && af.isLab && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Lab file selected — view computed statistics in the <strong>Lab Stats</strong> tab</p>
+                </div>
+              )}
+              {af && !af.isLab && (
+                <div>
+                  <div className="statsbar">
+                    <div className="stat"><label>Run</label>
+                      <div className="val" style={{fontSize:11}}>{af.pkts[0]?af.pkts[0].run.substring(0,16):''}</div>
+                      <div className="sub">{af.pkts.length}pkt · {af.xmt}Hz</div></div>
+                    <div className="stat"><label>BG Δφ mean</label>
+                      <div className="val">{af.bg.mean.toFixed(3)}</div>
+                      <div className="sub">mrad at {af.xmt}Hz</div></div>
+                    <div className="stat"><label>BG std dev</label>
+                      <div className="val">{af.bg.std.toFixed(3)}</div>
+                      <div className="sub">mrad ddof=1</div></div>
+                    <div className="stat"><label>3σ threshold</label>
+                      <div className="val">{(af.bg.mean-3*af.bg.std).toFixed(2)}</div>
+                      <div className="sub">{(af.bg.mean+3*af.bg.std).toFixed(2)} mrad</div></div>
+                    <div className="stat"><label>Events</label>
+                      <div className="val" style={{color:af.events.length?'#b07800':'var(--pos)'}}>{af.events.length}</div>
+                      <div className="sub">{af.clusters.reduce(function(a,c){return a+c.length;},0)} anom pkts</div></div>
+                  </div>
+                  <div className="charts-grid">
+                    <div className="chart-panel full">
+                      <div className="chart-title">Δφ {af.xmt}Hz ch1-0 (mrad) — 3σ threshold shown<span>shaded = events</span></div>
+                      <canvas ref={tsRef} style={{height:110}} height={110}/>
+                    </div>
+                    <div className="chart-panel">
+                      <div className="chart-title">Δφ {af.harms[2]}Hz (amber) · {af.harms[5]}Hz (green)</div>
+                      <canvas ref={highRef} style={{height:100}} height={100}/>
+                    </div>
+                    <div className="chart-panel">
+                      <div className="chart-title">Harmonic spectrum — event {selEv!==null?selEv+1:'(select row)'}
+                        {aiRes && <span style={{color:MAT_COLORS[aiRes.classification]||'#333',fontSize:9,marginLeft:6}}>{aiRes.classification}</span>}
+                      </div>
+                      <canvas ref={specRef} style={{height:100}} height={100}/>
+                    </div>
+                    <div className="chart-panel full">
+                      <div className="chart-title">Ch1 magnitude at {af.xmt}Hz (counts)</div>
+                      <canvas ref={magRef} style={{height:75}} height={75}/>
+                    </div>
+                  </div>
+                  <div className="chart-panel full" style={{padding:'8px 0 0'}}>
+                    <div className="chart-title" style={{padding:'0 10px 7px',display:'flex',alignItems:'center',gap:8}}>
+                      <span>Events — {af.events.length}</span>
+                      <span style={{color:'var(--dim)',flex:1,fontSize:9}}>click row to view harmonic spectrum</span>
+                      <button className="btn btn-ai btn-sm" onClick={doAIAll}
+                        disabled={!apiKey||!af.events.length||!!aiLoading}>
+                        {aiLoading?'Running...':'⚡ AI All'}
+                      </button>
+                    </div>
+                    <div className="events-wrap">
+                      <table className="events-table">
+                        <thead><tr>
+                          <th>#</th><th>Time</th><th>Pkts</th>
+                          <th>Δφ {af.harms[0]}Hz</th><th>Δφ {af.harms[2]}Hz</th><th>Δφ {af.harms[5]}Hz</th>
+                          <th>Mag%</th><th>SNR</th><th>Class</th><th>Conf</th>
+                          <th>Corrected Pos</th><th>Waypoint</th>
+                          <th>Src</th><th>AI</th>
+                        </tr></thead>
+                        <tbody>
+                          {af.events.map(function(ev,ei){
+                            var ak=activeIdx+'-'+ei,ar=aiResults[ak],ld=aiLoading===ak;
+                            var cls=ar?ar.classification:ev.cls,conf=ar?ar.confidence_pct:ev.confPct;
+                            var bc=cls.indexOf('Hydro')>=0||cls.indexOf('Gas')>=0||cls.indexOf('Crude')>=0?'badge-hydro':
+                              cls.indexOf('Metal')>=0||cls.indexOf('Steel')>=0||cls.indexOf('Ilmen')>=0?'badge-metal':
+                              cls.indexOf('Mix')>=0?'badge-mixed':cls.indexOf('Art')>=0?'badge-art':'badge-weak';
+                            var cc=conf>75?'var(--pos)':conf>50?'#b07800':'var(--neg)';
+                            var dp0=ev.dp[af.harms[0]]||0,dp2=ev.dp[af.harms[2]]||0,dp5=ev.dp[af.harms[5]]||0;
+                            return (
+                              <tr key={ei} className={selEv===ei?'selected':''} style={{cursor:'pointer'}}
+                                onClick={function(){setSelEv(ei===selEv?null:ei);}}>
+                                <td style={{color:'var(--dim2)'}}>{ei+1}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.ts?ev.ts.split(' ')[1]?ev.ts.split(' ')[1].substring(0,8):'—':'—'}</td>
+                                <td style={{color:'var(--dim3)'}}>{ev.nPkts}</td>
+                                <td style={{color:dp0<0?'var(--neg)':'var(--pos)'}}>{dp0.toFixed(2)}</td>
+                                <td style={{color:dp2>0?'var(--pos)':'var(--neg)'}}>{dp2.toFixed(2)}</td>
+                                <td style={{color:dp5>0?'var(--pos)':'var(--neg)'}}>{dp5.toFixed(2)}</td>
+                                <td style={{color:ev.magPct<-2?'var(--neg)':ev.magPct>5?'var(--pos)':'var(--dim3)'}}>{ev.magPct.toFixed(1)}%</td>
+                                <td style={{color:'#b07800'}}>{ev.maxSNR.toFixed(1)}</td>
+                                <td><span className={'badge '+bc}>{cls}</span></td>
+                                <td><div className="conf-bar">
+                                  <div className="conf-fill" style={{width:Math.max(4,conf*0.8)+'px',background:cc}}/>
+                                  <span className="conf-text">{conf}%</span></div></td>
+                                <td style={{fontSize:9,color:'var(--dim2)'}}>{(function(){
+                                  if(!ev.lat)return '—';
+                                  if(!useLayback)return ev.lat.toFixed(5)+'N';
+                                  var _A=fileAnalyses[activeIdx];
+                                  var corr=_A?laybackEventPos(af.pkts,ev.pktPeak,_A.trk):null;
+                                  return (corr&&corr.lat!==null?corr.lat:ev.lat).toFixed(5)+'N';
+                                })()}</td>
+                                <td style={{fontSize:9,color:'var(--accent)'}}>{(function(){
+                                  if(!ev.lat||!waypoints.length)return '';
+                                  var corrLat=ev.lat,corrLon=ev.lon;
+                                  if(useLayback){
+                                    var _A=fileAnalyses[activeIdx];
+                                    var corr=_A?laybackEventPos(af.pkts,ev.pktPeak,_A.trk):null;
+                                    if(corr&&corr.lat!==null){corrLat=corr.lat;corrLon=corr.lon;}
+                                  }
+                                  var match=findNearestWaypoint(corrLat,corrLon,waypoints,wpThreshold);
+                                  return match?match.wp.name+' ('+match.dist+'m)':'';
+                                })()}</td>
+                                <td style={{fontSize:9,color:'var(--dim2)'}}>{ar?'AI':'rules'}</td>
+                                <td>{ld?<span className="spinner"/>:
+                                  <button className="btn btn-ai btn-sm" style={{padding:'2px 7px',fontSize:9}}
+                                    onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}}
+                                    disabled={!apiKey||!!aiLoading}>AI</button>}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mainTab==='map' && (
+            <div style={{display:'flex',gap:10,height:'calc(100vh - 190px)',minHeight:520,alignItems:'stretch'}}>
+              {/* Left control panel */}
+              <div style={{width:200,flexShrink:0,display:'flex',flexDirection:'column',gap:8,overflowY:'auto'}}>
+
+                {/* Group navigator + line stepper */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Run Group</div>
+                  <select value={activeGroup} style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:10,padding:'3px 4px'}}
+                    onChange={function(e){
+                      setActiveGroup(e.target.value); setStepIdx(0);
+                      var g=runGroups.filter(function(x){return x.id===e.target.value;})[0];
+                      var ids=g?g.fileIds.slice():null;
+                      setVisibleFiles(ids);
+                      if(ids&&ids.length){setActiveIdx(ids[0]);}
+                    }}>
+                    <option value="all">All field lines</option>
+                    {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name+' ('+g.fileIds.length+')'}</option>;})}
+                  </select>
+                  <button className="layer-btn" style={{width:'100%',marginTop:4}}
+                    onClick={function(){autoGroupByDay();}}>Rebuild groups by day</button>
+                  {(function(){
+                    var g=runGroups.filter(function(x){return x.id===activeGroup;})[0];
+                    if(!g)return null;
+                    var ds={};
+                    g.fileIds.forEach(function(i){
+                      var f=files[i]; if(!f||!f.packets[0]||!f.packets[0].tms)return;
+                      var d=new Date(f.packets[0].tms);
+                      ds[d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')]=1;
+                    });
+                    var keys=Object.keys(ds);
+                    if(keys.length<=1)return null;
+                    return <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'#d92b2b',marginTop:4}}>
+                      spans {keys.length} dates: {keys.join(', ')}
+                    </div>;
+                  })()}
+                  <div style={{display:'flex',gap:4,marginTop:5}}>
+                    <button className="layer-btn" style={{flex:1}} onClick={function(){stepTo(stepIdx-1);}}>&#8592; Prev</button>
+                    <button className="layer-btn" style={{flex:1}} onClick={function(){stepTo(stepIdx+1);}}>Next &#8594;</button>
+                  </div>
+                  <button className="layer-btn" style={{width:'100%',marginTop:4}}
+                    onClick={function(){setVisibleFiles(groupFiles.slice());}}>Show whole group</button>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:10,marginTop:6,
+                    background:'var(--panel2)',padding:'4px 6px',borderRadius:2}}>
+                    {lineStats ? (
+                      <div>
+                        <div style={{color:'var(--accent)',fontWeight:'bold',overflow:'hidden',textOverflow:'ellipsis'}}>
+                          {(stepIdx+1)+'/'+groupFiles.length+'  '+lineStats.run}
+                        </div>
+                        <div style={{color:'var(--dim2)',marginTop:3}}>
+                          hdg {lineStats.hdg!==null?lineStats.hdg.toFixed(0)+'\u00b0':'-'} · {lineStats.n} pkt
+                        </div>
+                        {lineStats.spd && <div style={{color:'var(--dim2)'}}>
+                          speed {(lineStats.spd.med/0.5144).toFixed(1)} kn ({(lineStats.spd.min/0.5144).toFixed(1)}&ndash;{(lineStats.spd.max/0.5144).toFixed(1)})
+                        </div>}
+                        {lineStats.lb && <div style={{color:'var(--text)'}}>
+                          layback <b>{lineStats.lb.med.toFixed(1)} m</b> &plusmn;{lineStats.lb.sd.toFixed(2)}
+                        </div>}
+                        {lineStats.ang && <div style={{color:'var(--dim2)'}}>
+                          angle {lineStats.ang.med.toFixed(0)}&deg; ({lineStats.ang.min.toFixed(0)}&ndash;{lineStats.ang.max.toFixed(0)}&deg;)
+                        </div>}
+                        {lineStats.lb && <div style={{color:'var(--dim2)'}}>
+                          layback range {lineStats.lb.min.toFixed(1)}&ndash;{lineStats.lb.max.toFixed(1)} m
+                        </div>}
+                        <div style={{marginTop:3}}>
+                          <span style={{color:'#1d9e75'}}>{lineStats.hits} hit</span>
+                          {'  '}
+                          <span style={{color:'#d92b2b',fontWeight:'bold'}}>{lineStats.fails} fail</span>
+                          {lineStats.unattrib?<span style={{color:'#8a6d00'}}>{'  '+lineStats.unattrib+' un'}</span>:null}
+                        </div>
+                      </div>
+                    ) : <span style={{color:'var(--dim2)'}}>no line selected</span>}
+                  </div>
+                </div>
+
+                {/* Layer selector */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Base Layer</div>
+                  <div className="layer-btn-group" style={{flexDirection:'column'}}>
+                    {[['satellite','Satellite'],['noaa','NOAA ENC'],['topo','Topo'],['street','Street']].map(function(pair){
+                      return (
+                        <button key={pair[0]} className={mapLayer===pair[0]?'layer-btn active':'layer-btn'}
+                          onClick={function(){setMapLayer(pair[0]);}}>
+                          {pair[1]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Show/hide toggles */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>Display</div>
+                  <button className={showLines?'layer-btn active':'layer-btn'} onClick={function(){setShowLines(function(s){return !s;});}}>Track Lines</button>
+                  <button className={showHotspots?'layer-btn active':'layer-btn'} onClick={function(){setShowHotspots(function(s){return !s;});}}>Hotspots</button>
+                  <button className={showWaypoints?'layer-btn active':'layer-btn'} onClick={function(){setShowWaypoints(function(s){return !s;});}}>Waypoints</button>
+                </div>
+
+                {/* Coverage / detection radius panel */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:2}}>
+                    Target Coverage
+                  </div>
+                  <button className={showSiteRings?'layer-btn active':'layer-btn'}
+                    style={{width:'100%',marginBottom:4}}
+                    onClick={function(){setShowSiteRings(function(s){return !s;});}}>
+                    {showSiteRings?'RINGS ON':'RINGS OFF'}
+                  </button>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2}}>Detection radius (m)</div>
+                  <input className="layback-input" type="number" value={detectRadius} min={1} max={100} step={1}
+                    onChange={function(e){setDetectRadius(parseFloat(e.target.value)||15);}}/>
+                  <label style={{display:'flex',alignItems:'center',gap:4,fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginTop:5}}>
+                    <input type="checkbox" checked={dayFilter} onChange={function(e){setDayFilter(e.target.checked);}}/>
+                    match survey day
+                  </label>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2,marginTop:4}}>Site cluster link (m)</div>
+                  <input className="layback-input" type="number" value={siteLink} min={5} max={200} step={5}
+                    onChange={function(e){setSiteLink(parseFloat(e.target.value)||10);}}/>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:10,marginTop:6,
+                    background:'var(--panel2)',padding:'4px 6px',borderRadius:2,textAlign:'center'}}>
+                    {sites.length} sites · <b style={{color:'#d92b2b'}}>{covSummary.fail} fails</b> / {covSummary.pass} passes
+                  </div>
+                </div>
+
+                {/* Layback correction panel */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                    Layback Correction
+                  </div>
+                  <button className={useLayback?'layer-btn active':'layer-btn'}
+                    style={{marginBottom:6}}
+                    onClick={function(){setUseLayback(function(s){return !s;});}}>
+                    {useLayback?'ON':'OFF'}
+                  </button>
+                  <div style={{display:'flex',gap:3,marginBottom:4}}>
+                    <button className={laybackMode==='fixed'?'layer-btn active':'layer-btn'} style={{flex:1,fontSize:9}}
+                      onClick={function(){setLaybackMode('fixed');}}>Fixed angle</button>
+                    <button className={laybackMode==='speed'?'layer-btn active':'layer-btn'} style={{flex:1,fontSize:9}}
+                      onClick={function(){setLaybackMode('speed');}}>From speed</button>
+                  </div>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2}}>Cable length (m)</div>
+                  <input className="layback-input" type="number" value={cableM} min={1} max={100} step={1}
+                    onChange={function(e){setCableM(parseFloat(e.target.value)||31);}}/>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2,marginTop:4}}>Cable angle (°)</div>
+                  <input className="layback-input" type="number" value={cableAngle} min={0} max={60} step={1}
+                    onChange={function(e){setCableAngle(parseFloat(e.target.value)||25);}}/>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2,marginTop:4}}>GPS offset fwd (m)</div>
+                  <input className="layback-input" type="number" value={gpsOffset} min={0} max={20} step={0.1}
+                    onChange={function(e){setGpsOffset(parseFloat(e.target.value)||4.12);}}/>
+                  {laybackMode==='speed' && (<div>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2,marginTop:4}}>Drag constant k (m²/s²)</div>
+                    <input className="layback-input" type="number" value={dragK} min={0.05} max={20} step={0.05}
+                      onChange={function(e){setDragK(parseFloat(e.target.value)||DRAG_K_DEFAULT);}}/>
+                    <label style={{display:'flex',alignItems:'center',gap:4,fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginTop:5}}>
+                      <input type="checkbox" checked={halfPkt} onChange={function(e){setHalfPkt(e.target.checked);}}/>
+                      half-packet bias
+                    </label>
+                  </div>)}
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--accent)',marginTop:6,
+                    background:'var(--panel2)',padding:'4px 6px',borderRadius:2,textAlign:'center'}}>
+                    {laybackMode==='fixed'
+                      ? 'Total: '+laybackDist.toFixed(1)+' m'
+                      : 'Per-packet from speed'}
+                  </div>
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:8,color:'var(--dim)',marginTop:4,lineHeight:1.5}}>
+                    From drawing: GPS 4.12m fwd of tie-down, 31m cable at 25° typical angle.
+                  </div>
+                </div>
+
+                {/* Waypoint loader */}
+                <div className="map-controls-panel">
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                    Waypoints {waypoints.length>0&&('('+waypoints.length+')')}
+                  </div>
+                  <input ref={wpFileRef} type="file" accept=".kml,.kmz" style={{display:'none'}}
+                    onChange={function(e){loadWaypoints(e.target.files);}}/>
+                  <button className="layer-btn" onClick={function(){wpFileRef.current&&wpFileRef.current.click();}}>
+                    Load KMZ / KML
+                  </button>
+                  {waypoints.length>0&&(
+                    <div>
+                      <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim2)',marginBottom:2,marginTop:4}}>Match radius (m)</div>
+                      <input className="layback-input" type="number" value={wpThreshold} min={1} max={200} step={1}
+                        onChange={function(e){setWpThreshold(parseFloat(e.target.value)||20);}}/>
+                      <button className="layer-btn" style={{marginTop:4,color:'var(--neg)'}}
+                        onClick={function(){setWaypoints([]);}}>Clear waypoints</button>
+                    </div>
+                  )}
+                  <div style={{fontFamily:'var(--font-mono)',fontSize:8,color:'var(--dim)',marginTop:4,lineHeight:1.5}}>
+                    Waypoint labels turn blue when a layback-corrected event is within match radius.
+                  </div>
+                </div>
+
+                {/* File visibility selector */}
+                {files.filter(function(f){return f.type==='field';}).length>0 && (
+                  <div className="map-controls-panel" style={{flex:1}}>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                      Files
+                      <button onClick={function(){setVisibleFiles(null);}}
+                        style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>all</button>
+                      <button onClick={function(){setVisibleFiles([]);}}
+                        style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>none</button>
+                    </div>
+                    <div className="file-sel-list">
+                      {files.map(function(f,fi){
+                        if(f.type!=='field')return null;
+                        var col=RUN_COLORS[fi%RUN_COLORS.length];
+                        for(var rgi=0;rgi<runGroups.length;rgi++){if(runGroups[rgi].fileIds.indexOf(fi)>=0){col=runGroups[rgi].color;break;}}
+                        var checked=!visibleFiles||(visibleFiles.indexOf(fi)>=0);
+                        return (
+                          <div key={fi} className="file-sel-row" onClick={function(){
+                            setVisibleFiles(function(prev){
+                              var base=prev?prev.slice():files.map(function(_,i){return i;}).filter(function(i){return files[i].type==='field';});
+                              var idx=base.indexOf(fi);
+                              if(idx>=0){return base.filter(function(i){return i!==fi;});}
+                              else{return base.concat([fi]);}
+                            });
+                          }}>
+                            <input type="checkbox" className="file-sel-check" readOnly checked={checked}
+                              style={{accentColor:col}}/>
+                            <div style={{width:10,height:10,borderRadius:2,background:col,flexShrink:0}}/>
+                            <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(f.run||'').substring(0,18)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Hotspot cluster visibility */}
+                {showHotspots && (function(){
+                  var visFi=visibleFiles;
+                  var clusters=buildHotspots(files,aiResults,visFi,useLayback,laybackDist,fileAnalyses);
+                  if(!clusters.length)return null;
+                  return (
+                    <div className="map-controls-panel" style={{flex:1}}>
+                      <div style={{fontFamily:'var(--font-mono)',fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                        Hotspots ({clusters.length}{(function(){
+                          var h=clusters.filter(function(g){return hiddenHotspots[hotspotKey(g)];}).length;
+                          return h?', '+h+' hidden':'';
+                        })()})
+                        <button onClick={function(){setHiddenHotspots({});}}
+                          style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9,fontFamily:'var(--font-mono)'}}>show all</button>
+                      </div>
+                      <div className="file-sel-list">
+                        {clusters.map(function(grp,hi){
+                          var col=MAT_COLORS[grp[0].cls]||'#808080';
+                          var uniqueFiSet={};
+                          for(var gi=0;gi<grp.length;gi++)uniqueFiSet[grp[gi].fi]=1;
+                          var multiFile=Object.keys(uniqueFiSet).length>1;
+                          return (
+                            <div key={hotspotKey(grp)} className="file-sel-row" onClick={function(){
+                              var hk=hotspotKey(grp);
+                              setHiddenHotspots(function(prev){var n=Object.assign({},prev);n[hk]=!n[hk];return n;});
+                            }}>
+                              <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenHotspots[hotspotKey(grp)]} style={{accentColor:col}}/>
+                              <div style={{width:10,height:10,borderRadius:'50%',background:col,flexShrink:0,border:multiFile?'2px solid '+col:'1px dashed '+col}}/>
+                              <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                {grp[0].cls.substring(0,12)}{multiFile?' ×'+grp.length:''}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Map container — Leaflet mounts here */}
+              <div ref={mapRef} style={{flex:1,borderRadius:3,border:'1px solid var(--border)',height:'100%',minHeight:500,zIndex:0}}/>
+            </div>
+          )}
+
+          {mainTab==='review' && (
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <select value={activeGroup} style={{fontFamily:'var(--font-mono)',fontSize:11,padding:'3px 5px'}}
+                  onChange={function(e){setActiveGroup(e.target.value);setStepIdx(0);}}>
+                  <option value="all">All field lines</option>
+                  {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name+' ('+g.fileIds.length+')'}</option>;})}
+                </select>
+                <button className="btn btn-sm" onClick={function(){stepTo(stepIdx-1);}}>&#8592; Prev</button>
+                <button className="btn btn-sm" onClick={function(){stepTo(stepIdx+1);}}>Next &#8594;</button>
+                <span style={{fontFamily:'var(--font-mono)',fontSize:12,color:'var(--accent)',fontWeight:'bold'}}>
+                  {reviewData?((stepIdx+1)+'/'+groupFiles.length+'  '+reviewData.run):'no line'}
+                </span>
+                {lineStats&&lineStats.lb && <span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--dim2)'}}>
+                  {(lineStats.spd?(lineStats.spd.med/0.5144).toFixed(1)+' kn · ':'')}
+                  layback {lineStats.lb.med.toFixed(1)} m &plusmn;{lineStats.lb.sd.toFixed(2)}
+                </span>}
+                <div style={{flex:1}}/>
+                <button className="btn btn-sm" onClick={exportTrainingSet}
+                  title="Signature vectors with ground-truth material for every reviewed detection">Export training set</button>
+                <button className="btn btn-primary btn-sm" onClick={exportReport}>Export report</button>
+              </div>
+
+              {laybackSolution.n>0 && (
+                <div style={{border:'1px solid var(--border2)',borderRadius:3,padding:'8px 10px',
+                  background:'var(--panel2)',fontFamily:'var(--font-mono)',fontSize:11}}>
+                  <div style={{fontSize:9,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',marginBottom:4}}>
+                    Layback solved from {laybackSolution.n} anchored pair{laybackSolution.n===1?'':'s'}
+                  </div>
+                  <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center'}}>
+                    <span>mean <b>{laybackSolution.stat.mean.toFixed(1)} m</b> &plusmn;{laybackSolution.stat.sd.toFixed(1)} (SE {laybackSolution.stat.se.toFixed(1)})</span>
+                    <span style={{color:'var(--dim2)'}}>median {laybackSolution.med.toFixed(1)} m</span>
+                    {laybackSolution.nK>0 && <span>fitted k <b>{laybackSolution.kMed.toFixed(3)}</b> (n={laybackSolution.nK})</span>}
+                    {laybackSolution.neg>0 && <span style={{color:'#d92b2b'}}>
+                      {laybackSolution.neg} negative — check those pairings</span>}
+                  </div>
+                  <div style={{display:'flex',gap:6,marginTop:6}}>
+                    {laybackSolution.nK>0 && <button className="btn btn-sm"
+                      onClick={function(){setDragK(laybackSolution.kMed);setLaybackMode('speed');}}>
+                      Apply fitted k</button>}
+                    <button className="btn btn-sm"
+                      onClick={function(){
+                        var L=laybackSolution.stat.mean;
+                        var c=Math.max(-1,Math.min(1,(L-gpsOffset)/cableM));
+                        setCableAngle(Math.round(Math.acos(c)*180/Math.PI));
+                        setLaybackMode('fixed');
+                      }}>Apply as fixed angle</button>
+                    <button className="btn btn-ghost btn-sm"
+                      onClick={function(){
+                        var hdr='run,site,implied_layback_m,speed_kn\n';
+                        var body=laybackSolution.anchors.map(function(a){
+                          return [a.anchorRun||'',a.anchorSite||'',a.impliedLayback.toFixed(2),
+                                  a.anchorSpd?(a.anchorSpd/0.5144).toFixed(2):''].join(',');
+                        }).join('\n');
+                        var b=new Blob([hdr+body],{type:'text/csv'});
+                        var el=document.createElement('a');
+                        el.href=URL.createObjectURL(b); el.download='layback_anchors.csv'; el.click();
+                      }}>Export anchors</button>
+                  </div>
+                </div>
+              )}
+
+              {!reviewData && <div style={{padding:12,fontFamily:'var(--font-mono)',fontSize:12,color:'var(--dim2)'}}>
+                Load field files and a KMZ, then pick a line.
+              </div>}
+
+              {reviewData && (<div>
+                <div style={{fontFamily:'var(--font-mono)',fontSize:10,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',margin:'8px 0 4px'}}>
+                  Known targets on this line &mdash; day {reviewData.day}
+                </div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-mono)',fontSize:11}}>
+                  <thead><tr style={{textAlign:'left',color:'var(--dim2)'}}>
+                    <th style={{padding:'3px 6px'}}>Site</th><th>Expected</th><th>Closest</th><th>Nearest detection</th>
+                    <th>Anchor &rarr; layback</th><th>Verdict</th><th>Classification</th><th>Note</th>
+                  </tr></thead>
+                  <tbody>
+                  {reviewData.rows.map(function(r){
+                    var rv=reviews[r.key]||{};
+                    var best=r.cand.length?r.cand[0]:null;
+                    return (<tr key={r.key} style={{borderTop:'1px solid var(--border)'}}>
+                      <td style={{padding:'4px 6px'}}><b>{r.site.label}</b>
+                        <span style={{color:'var(--dim3)'}}>{' '+r.site.n+'w'}</span></td>
+                      <td>
+                        <select value={siteMaterials[r.site.label]||'Unknown'}
+                          onChange={function(e){
+                            var v=e.target.value;
+                            setSiteMaterials(function(prev){var n=Object.assign({},prev);n[r.site.label]=v;return n;});
+                          }}
+                          style={{fontFamily:'var(--font-mono)',fontSize:10,padding:'1px 2px',
+                            border:'1px solid var(--border2)',borderRadius:2,
+                            background:'var(--panel2)',color:MAT_COLORS[siteMaterials[r.site.label]]||'var(--text)'}}>
+                          {MATERIAL_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                        </select>
+                      </td>
+                      <td style={{color:r.closest<=detectRadius?'var(--accent)':'var(--dim2)'}}>
+                        {r.closest.toFixed(1)} m</td>
+                      <td>{(best&&best.d<=detectRadius*3)?(<span><span style={{color:MAT_COLORS[best.e.cls]||'var(--text)'}}>{best.e.cls}</span>
+                        <span style={{color:'var(--dim2)'}}>{' @'+best.d.toFixed(1)+' m'}</span></span>):
+                        <span style={{color:'var(--dim3)'}}>{'none within '+(detectRadius*3)+' m'}</span>}</td>
+                      <td style={{minWidth:150}}>
+                        <select value={(rv.anchorCi===undefined||rv.anchorCi===null)?'':String(rv.anchorCi)}
+                          onChange={function(e){
+                            var val=e.target.value;
+                            if(val===''){ setReview(r.key,{anchorCi:null,impliedLayback:null,anchorSpd:null,anchorDt:null}); return; }
+                            var ci=parseInt(val,10);
+                            var c=r.cand.filter(function(x){return x.e.ci===ci;})[0];
+                            if(!c)return;
+                            setReview(r.key,{anchorCi:ci,impliedLayback:c.implied,
+                              anchorSpd:c.spd,anchorDt:c.dt,anchorSite:r.site.label,anchorRun:reviewData.run});
+                          }}
+                          style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:10,padding:'1px 2px',
+                            border:'1px solid var(--border2)',borderRadius:2,background:'var(--panel2)',color:'var(--text)'}}>
+                          <option value="">— not anchored —</option>
+                          {r.cand.map(function(c){
+                            return <option key={c.e.ci} value={c.e.ci}>
+                              {'#'+(c.e.ci+1)+' '+(c.e.ts&&c.e.ts.split(' ')[1]?c.e.ts.split(' ')[1].substring(0,8):'')
+                               +'  '+(c.implied===null?'?':(c.implied>=0?'+':'')+c.implied.toFixed(1)+'m')}
+                            </option>;
+                          })}
+                        </select>
+                        {rv.impliedLayback!==undefined&&rv.impliedLayback!==null &&
+                          <div style={{fontSize:10,marginTop:2,
+                            color:rv.impliedLayback<0?'#d92b2b':'#1d9e75'}}>
+                            {rv.impliedLayback.toFixed(1)} m
+                            {rv.anchorSpd?' @ '+(rv.anchorSpd/0.5144).toFixed(1)+' kn':''}
+                            {rv.impliedLayback<0?'  (negative — pairing impossible)':''}
+                          </div>}
+                      </td>
+                      <td>
+                        {[['detected','Det'],['missed','Miss'],['na','N/A']].map(function(p){
+                          var on=rv.verdict===p[0];
+                          var c=p[0]==='detected'?'#1d9e75':(p[0]==='missed'?'#d92b2b':'#8a8a8a');
+                          return <button key={p[0]} onClick={function(){
+                              setReview(r.key,{verdict:on?null:p[0],closest:r.closest,
+                                cls:(best&&best.d<=detectRadius*3)?best.e.cls:'',
+                                expected:siteMaterials[r.site.label]||'Unknown',
+                                nearest:r.site.label});
+                            }}
+                            style={{marginRight:3,padding:'2px 6px',fontSize:10,cursor:'pointer',
+                              borderRadius:2,border:'1px solid '+(on?c:'var(--border2)'),
+                              background:on?c:'transparent',color:on?'#fff':'var(--dim2)'}}>{p[1]}</button>;
+                        })}
+                      </td>
+                      <td>
+                        {[['yes','\u2713','#1d9e75','classified correctly'],
+                          ['forced','F','#7b2d8b','force-classified: detection real, material assigned from ground truth'],
+                          ['wrong','\u2717','#d92b2b','wrong material named'],
+                          ['weak','~','#e08a00','detected but not committed (Weak/Inconclusive)'],
+                          ['unsure','?','#8a8a8a','reviewer unsure']].map(function(p){
+                          var on=rv.classOk===p[0];
+                          return <button key={p[0]} title={p[3]}
+                            onClick={function(){setReview(r.key,{classOk:on?null:p[0],
+                              expected:siteMaterials[r.site.label]||'Unknown'});}}
+                            style={{marginRight:3,padding:'2px 6px',fontSize:10,cursor:'pointer',
+                              borderRadius:2,border:'1px solid '+(on?p[2]:'var(--border2)'),
+                              background:on?p[2]:'transparent',color:on?'#fff':'var(--dim2)'}}>{p[1]}</button>;
+                        })}
+                      </td>
+                      <td><input type="text" value={rv.note||''} placeholder="note"
+                        onChange={function(e){setReview(r.key,{note:e.target.value});}}
+                        style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:10,padding:'2px 4px',
+                          border:'1px solid var(--border2)',borderRadius:2,background:'var(--panel2)',color:'var(--text)'}}/></td>
+                    </tr>);
+                  })}
+                  </tbody>
+                </table>
+
+                <div style={{fontFamily:'var(--font-mono)',fontSize:10,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',margin:'14px 0 4px'}}>
+                  Detections on this line ({reviewData.events.length})
+                </div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-mono)',fontSize:11}}>
+                  <thead><tr style={{textAlign:'left',color:'var(--dim2)'}}>
+                    <th style={{padding:'3px 6px'}}>#</th><th>Time</th><th>Classification</th><th>SNR</th>
+                    <th>Nearest site</th><th>Dist</th><th>Mark</th><th>Note</th>
+                  </tr></thead>
+                  <tbody>
+                  {reviewData.events.map(function(e){
+                    var rv=reviews[e.key]||{};
+                    return (<tr key={e.key} style={{borderTop:'1px solid var(--border)'}}>
+                      <td style={{padding:'4px 6px'}}>{e.ci+1}</td>
+                      <td style={{color:'var(--dim3)'}}>{e.ts&&e.ts.split(' ')[1]?e.ts.split(' ')[1].substring(0,8):'-'}</td>
+                      <td style={{color:MAT_COLORS[e.cls]||'var(--text)'}}>{e.cls}</td>
+                      <td>{e.snr?e.snr.toFixed(1):'-'}</td>
+                      <td>{e.nearest}</td>
+                      <td style={{color:e.nearestD<=detectRadius?'var(--accent)':'var(--dim2)'}}>{e.nearestD.toFixed(1)} m</td>
+                      <td>
+                        {[['truepos','TP'],['falsepos','FP'],['uncharted','UNK']].map(function(p){
+                          var on=rv.verdict===p[0];
+                          var c=p[0]==='truepos'?'#1d9e75':(p[0]==='falsepos'?'#d92b2b':'#7f77dd');
+                          return <button key={p[0]} onClick={function(){
+                              setReview(e.key,{verdict:on?null:p[0],cls:e.cls,nearest:e.nearest,dist:e.nearestD});
+                            }}
+                            style={{marginRight:3,padding:'2px 6px',fontSize:10,cursor:'pointer',
+                              borderRadius:2,border:'1px solid '+(on?c:'var(--border2)'),
+                              background:on?c:'transparent',color:on?'#fff':'var(--dim2)'}}>{p[1]}</button>;
+                        })}
+                      </td>
+                      <td><input type="text" value={rv.note||''} placeholder="note"
+                        onChange={function(e2){setReview(e.key,{note:e2.target.value});}}
+                        style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:10,padding:'2px 4px',
+                          border:'1px solid var(--border2)',borderRadius:2,background:'var(--panel2)',color:'var(--text)'}}/></td>
+                    </tr>);
+                  })}
+                  </tbody>
+                </table>
+              </div>)}
+            </div>
+          )}
+
+          {mainTab==='coverage' && (
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {!waypoints.length && (
+                <div style={{padding:14,fontFamily:'var(--font-mono)',fontSize:12,color:'var(--dim2)'}}>
+                  Load a KMZ/KML of target waypoints from the Map tab first.
+                </div>
+              )}
+              {!!waypoints.length && (<div>
+                <div style={{display:'flex',gap:14,flexWrap:'wrap',marginBottom:10,fontFamily:'var(--font-mono)',fontSize:12}}>
+                  <div><span style={{color:'var(--dim2)'}}>sites </span><b>{sites.length}</b></div>
+                  <div><span style={{color:'var(--dim2)'}}>passes </span><b>{covSummary.pass}</b></div>
+                  <div><span style={{color:'#1d9e75'}}>hits </span><b>{covSummary.hit}</b></div>
+                  <div><span style={{color:'#d92b2b'}}>FAILS </span><b>{covSummary.fail}</b></div>
+                  <div><span style={{color:'var(--dim2)'}}>unattributed </span><b>{covSummary.unattrib}</b></div>
+                  <div><span style={{color:'var(--dim2)'}}>detection radius </span><b>{detectRadius} m</b></div>
+                  <div><span style={{color:'var(--dim2)'}}>layback </span><b>{laybackMode==='speed'?('speed model k='+dragK.toFixed(2)):(laybackDist.toFixed(1)+' m fixed')}</b></div>
+                </div>
+
+                <div style={{fontFamily:'var(--font-mono)',fontSize:10,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',margin:'8px 0 4px'}}>Per-site totals</div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-mono)',fontSize:11,marginBottom:14}}>
+                  <thead><tr style={{textAlign:'left',color:'var(--dim2)'}}>
+                    <th style={{padding:'3px 6px'}}>Site</th><th>Passes</th><th>Hits</th><th>Fails</th><th>Fail rate</th>
+                  </tr></thead>
+                  <tbody>
+                  {Object.keys(covSummary.bySite).sort().map(function(k){
+                    var b=covSummary.bySite[k];
+                    return (<tr key={k} style={{borderTop:'1px solid var(--border)'}}>
+                      <td style={{padding:'3px 6px'}}><b>{k}</b></td>
+                      <td>{b.pass}</td>
+                      <td style={{color:'#1d9e75'}}>{b.hit}</td>
+                      <td style={{color:b.fail?'#d92b2b':'var(--dim2)',fontWeight:b.fail?'bold':'normal'}}>{b.fail}</td>
+                      <td>{b.pass?((100*b.fail/b.pass).toFixed(0)+'%'):'-'}</td>
+                    </tr>);
+                  })}
+                  </tbody>
+                </table>
+
+                <div style={{fontFamily:'var(--font-mono)',fontSize:10,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--dim2)',margin:'8px 0 4px'}}>Line by line</div>
+                <div style={{maxHeight:340,overflowY:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-mono)',fontSize:11}}>
+                  <thead><tr style={{textAlign:'left',color:'var(--dim2)',position:'sticky',top:0,background:'var(--panel)'}}>
+                    <th style={{padding:'3px 6px'}}>Run</th><th>Dir</th><th>Hdg</th><th>Speed</th>
+                    <th>Layback</th><th>Angle</th><th>Site</th><th>Closest</th><th>Status</th><th>Class</th>
+                  </tr></thead>
+                  <tbody>
+                  {coverage.slice().sort(function(a,b){
+                    if(a.status!==b.status) return a.status==='FAIL'?-1:(b.status==='FAIL'?1:0);
+                    return a.run<b.run?-1:1;
+                  }).map(function(r,i){
+                    var col=r.status==='FAIL'?'#d92b2b':(r.status==='HIT'?'#1d9e75':'#8a6d00');
+                    return (<tr key={i} style={{borderTop:'1px solid var(--border)',cursor:'pointer'}}
+                      onClick={function(){setActiveIdx(r.fi);setMainTab('map');}}>
+                      <td style={{padding:'3px 6px'}}>{r.run}</td>
+                      <td>{r.dir}</td>
+                      <td>{r.hdg.toFixed(0)}°</td>
+                      <td>{r.spd?(r.spd/0.5144).toFixed(1)+' kn':'-'}</td>
+                      <td>{r.layback?r.layback.toFixed(1):'-'}</td>
+                      <td>{r.angle?r.angle.toFixed(0)+'°':'-'}</td>
+                      <td><b>{r.site}</b></td>
+                      <td>{r.closest.toFixed(1)} m</td>
+                      <td style={{color:col,fontWeight:'bold'}}>{r.status}</td>
+                      <td>{r.cls}</td>
+                    </tr>);
+                  })}
+                  </tbody>
+                </table>
+                </div>
+                <button className="layer-btn" style={{marginTop:8}} onClick={function(){
+                  var hdr='run,dir,heading_deg,speed_kn,layback_m,cable_angle_deg,site,closest_m,status,classification\n';
+                  var body=coverage.map(function(r){
+                    return [r.run,r.dir,r.hdg.toFixed(1),r.spd?(r.spd/0.5144).toFixed(2):'',
+                            r.layback?r.layback.toFixed(2):'',r.angle?r.angle.toFixed(1):'',
+                            r.site,r.closest.toFixed(2),r.status,r.cls].join(',');
+                  }).join('\n');
+                  var blob=new Blob([hdr+body],{type:'text/csv'});
+                  var a=document.createElement('a');
+                  a.href=URL.createObjectURL(blob); a.download='coverage_report.csv'; a.click();
+                }}>Export CSV</button>
+              </div>)}
+            </div>
+          )}
+
+          {mainTab==='lab' && (
+            <div>
+              {!af && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Load a lab <code>_p.txt</code> file</p>
+                </div>
+              )}
+              {af && !af.isLab && (
+                <div className="empty">
+                  <div className="icon">🔬</div>
+                  <p>Select a lab file from the sidebar</p>
+                </div>
+              )}
+              {af && af.isLab && (
+                <div>
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:12,fontWeight:700,color:'var(--text)',marginBottom:3}}>{af.run}</div>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--dim2)'}}>
+                      {af.labStats.length} xmt group{af.labStats.length!==1?'s':''} · {af.nPkts} packets total
+                    </div>
+                    <div style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim)',marginTop:2}}>
+                      col[0]=freq_Hz · col[1]=ch1-0_delta_rad · col[9]=ch1_mag_counts · std_dev ddof=1 · only ch1 recorded
+                    </div>
+                  </div>
+                  {af.labStats.map(function(grp){return (
+                    <div key={grp.xmt} style={{marginBottom:20}}>
+                      <div style={{fontFamily:'var(--font-mono)',fontSize:11,fontWeight:700,
+                        color:'var(--accent)',marginBottom:6,borderBottom:'1px solid var(--border)',paddingBottom:4}}>
+                        xmt = {grp.xmt}Hz · {grp.nPkts} packet{grp.nPkts!==1?'s':''}
+                      </div>
+                      <div style={{overflowX:'auto'}}>
+                        <table className="lab-tbl">
+                          <thead><tr>
+                            <th style={{textAlign:'left'}}>freq (Hz)</th>
+                            <th>ch1 Δφ mean (rad)</th>
+                            <th>ch1 Δφ std (rad)</th>
+                            <th>ch1 Δφ mean (mrad)</th>
+                            <th>ch1 mag mean (counts)</th>
+                            <th>N</th>
+                          </tr></thead>
+                          <tbody>
+                            {grp.rows.map(function(row){return (
+                              <tr key={row.freq}>
+                                <td style={{textAlign:'left'}}>{row.freq}</td>
+                                <td>{row.meanDp.toFixed(10)}</td>
+                                <td>{row.stdDp.toFixed(10)}</td>
+                                <td>{(row.meanDp*1000).toFixed(6)}</td>
+                                <td>{row.meanMag.toFixed(4)}</td>
+                                <td>{row.n}</td>
+                              </tr>
+                            );})}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="ai-panel">
+          <div className="ai-section-title">AI Classifier</div>
+          <div>
+            <div style={{fontSize:11,color:'var(--dim2)',marginBottom:5,lineHeight:1.5}}>Anthropic API key</div>
+            <div className="api-key-row">
+              <input className="api-key-input" type="password" placeholder="sk-ant-..."
+                value={apiKey} onChange={function(e){setApiKey(e.target.value);}}/>
+            </div>
+            <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Session only, never stored.</div>
+          </div>
+          <div className="sep" style={{height:1,background:'var(--border)'}}/>
+          <div className="ai-section-title">Event Analysis</div>
+          {!activeEv && (
+            <div style={{fontSize:11,color:'var(--dim)',fontFamily:'var(--font-mono)',padding:'6px 0'}}>Select a row in Analysis tab.</div>
+          )}
+          {activeEv && (
+            <div>
+              <div style={{fontSize:10,color:'var(--dim2)',fontFamily:'var(--font-mono)',lineHeight:1.6,marginBottom:8}}>
+                Event {(selEv||0)+1} · {activeEv.ts?activeEv.ts.split(' ')[1]?activeEv.ts.split(' ')[1].substring(0,8):'—':'—'} · {activeEv.nPkts}pkt · SNR {activeEv.maxSNR.toFixed(1)}
+                {activeEv.lat && <div>Lat {activeEv.lat.toFixed(6)}N · Lon {Math.abs(activeEv.lon||0).toFixed(6)}W</div>}
+              </div>
+              {aiRes && (
+                <div className="ai-classification">
+                  <div className="ai-cls-row">
+                    <div style={{width:10,height:10,borderRadius:2,background:MAT_COLORS[aiRes.classification]||'#333'}}/>
+                    <span className="ai-cls-val" style={{color:MAT_COLORS[aiRes.classification]||'var(--text)'}}>{aiRes.classification}</span>
+                    <span className="ai-conf-val">{aiRes.confidence_pct}% · {aiRes.confidence_label}</span>
+                  </div>
+                  {aiRes.key_indicators && <div style={{fontSize:11,color:'var(--accent)',marginBottom:5,fontStyle:'italic'}}>{aiRes.key_indicators}</div>}
+                  {aiRes.reasoning && <div style={{fontSize:11,color:'var(--dim3)',lineHeight:1.6,marginBottom:5}}>{aiRes.reasoning}</div>}
+                  {aiRes.caution && <div style={{fontSize:10,color:'#b07800',lineHeight:1.5,borderTop:'1px solid var(--border)',paddingTop:5}}>⚠ {aiRes.caution}</div>}
+                </div>
+              )}
+              {!aiRes && (
+                <div>
+                  <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>
+                    Rules: <span style={{color:MAT_COLORS[activeEv.cls]||'var(--text)'}}>{activeEv.cls}</span> ({activeEv.confPct}%)
+                  </div>
+                  <button className="btn btn-ai" style={{width:'100%'}}
+                    onClick={function(){doAI(activeIdx,selEv);}} disabled={!apiKey||!!aiLoading}>
+                    {aiLoading===aiKey?'Analyzing...':'⚡ Analyze with Claude AI'}
+                  </button>
+                </div>
+              )}
+              <div className="sep" style={{height:1,background:'var(--border)',margin:'10px 0'}}/>
+              <div className="ai-section-title">Confirm Material</div>
+              <div className="confirm-row">
+                <select className="confirm-sel" value={confMat} onChange={function(e){setConfMat(e.target.value);}}>
+                  <option value="">— material —</option>
+                  {MAT_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                </select>
+                <button className="confirm-btn" onClick={function(){saveTraining(activeIdx,selEv);}} disabled={!confMat}>✓</button>
+              </div>
+            </div>
+          )}
+          {training.length>0 && (
+            <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',
+              borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
+              {training.length} confirmed → included in next AI call
+            </div>
+          )}
+        </div>
+      </div>
+
+      {newGroupModal && (
+        <div className="modal-bg" onClick={function(){setNewGroupModal(false);}}>
+          <div className="modal" onClick={function(e){e.stopPropagation();}}>
+            <h3>New Run Group</h3>
+            <label>Name</label>
+            <input autoFocus value={newGroupName} onChange={function(e){setNewGroupName(e.target.value);}}
+              placeholder="e.g. Eagle Harbor Day 1"
+              onKeyDown={function(e){if(e.key==='Enter')createGroup();}}/>
+            <label>Color</label>
+            <div className="color-row">
+              {SWATCH_COLORS.map(function(c){return (
+                <div key={c} className={newGroupColor===c?'cswatch sel':'cswatch'}
+                  style={{background:c}} onClick={function(){setNewGroupColor(c);}}/>
+              );})}
+            </div>
+            <div className="modal-btns">
+              <button className="btn btn-ghost" onClick={function(){setNewGroupModal(false);}}>Cancel</button>
+              <button className="btn btn-primary" onClick={createGroup} disabled={!newGroupName.trim()}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {addToGroupModal!==null && (
+        <div className="modal-bg" onClick={function(){setAddToGroupModal(null);}}>
+          <div className="modal" onClick={function(e){e.stopPropagation();}}>
+            <h3>Add to Run Group</h3>
+            <p style={{fontSize:11,color:'var(--dim2)',marginBottom:8}}>
+              {files[addToGroupModal]?files[addToGroupModal].run:''}
+            </p>
+            {!runGroups.length && <div style={{fontSize:11,color:'var(--dim2)'}}>No groups yet — create one first.</div>}
+            {runGroups.length>0 && (
+              <div>
+                <label>Group</label>
+                <select value={selGroupId} onChange={function(e){setSelGroupId(e.target.value);}}>
+                  <option value="">— select —</option>
+                  {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name}</option>;})}
+                </select>
+              </div>
+            )}
+            <div className="modal-btns">
+              <button className="btn btn-ghost" onClick={function(){setAddToGroupModal(null);}}>Cancel</button>
+              {runGroups.length>0 && <button className="btn btn-primary"
+                onClick={function(){addToGroup(addToGroupModal,selGroupId);}} disabled={!selGroupId}>Add</button>}
+              <button className="btn btn-primary" style={{background:'var(--accent)'}}
+                onClick={function(){setNewGroupModal(true);setAddToGroupModal(null);}}>+ New Group</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App,null));
+
+</script>
+</body>
+</html>

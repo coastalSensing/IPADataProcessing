@@ -314,8 +314,7 @@ canvas{display:block;width:100%;}
     cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
     targetLinkM: 10,       // waypoints within this distance form one target
     dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
-    autoGroup: true,       // group field lines automatically by survey date and area
-    areaM: 1000,           // auto-grouping: lines on the same date further apart than this are separate areas
+    autoGroup: true,       // group field lines automatically by survey date
     anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
     minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
     maxLeadM: 80,          // calibration: ... and trail it by at most this
@@ -911,37 +910,17 @@ canvas{display:block;width:100%;}
     Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
     return { byFile: info, dates: dates };
   }
-  // One group per survey date; a date is split further if its lines are > areaM apart.
-  function autoGroups(fileInfos, days, targets, areaM) {
-    areaM = areaM || 1000;
+  // One group per survey date (the date in the packet timestamps) — this is how lines
+  // are captured and stored in the field. No spatial splitting.
+  function autoGroups(fileInfos, days) {
     var byDate = {};
-    fileInfos.forEach(function (f) { var d = days.byFile[f.fi]; (byDate[(d && d.date) || 'undated'] = byDate[(d && d.date) || 'undated'] || []).push(f.fi); });
-    var allDates = Object.keys(byDate).sort(), groups = [];
-    allDates.forEach(function (date, di) {
-      var fis = byDate[date], parent = {};
-      fis.forEach(function (fi) { parent[fi] = fi; });
-      function fnd(a) { while (parent[a] !== a) a = parent[a]; return a; }
-      for (var a = 0; a < fis.length; a++) for (var b = a + 1; b < fis.length; b++) {
-        var pa = days.byFile[fis[a]].pts, pb = days.byFile[fis[b]].pts, close = false;
-        for (var i = 0; i < pa.length && !close; i++) for (var j = 0; j < pb.length; j++) if (haversine(pa[i][0], pa[i][1], pb[j][0], pb[j][1]) <= areaM) { close = true; break; }
-        if (close) parent[fnd(fis[b])] = fnd(fis[a]);
-      }
-      var areas = {};
-      fis.forEach(function (fi) { (areas[fnd(fi)] = areas[fnd(fi)] || []).push(fi); });
-      var keys = Object.keys(areas);
-      keys.forEach(function (k, ai) {
-        var ids = areas[k].sort(function (x, y) { return x - y; }), pts = [];
-        ids.forEach(function (fi) { pts = pts.concat(days.byFile[fi].pts); });
-        var cLat = mean(pts.map(function (p) { return p[0]; })), cLon = mean(pts.map(function (p) { return p[1]; }));
-        var nt = null, nd = Infinity;
-        (targets || []).forEach(function (T) { var d = haversine(cLat, cLon, T.lat, T.lon); if (d < nd) { nd = d; nt = T; } });
-        var rank = days.byFile[ids[0]].dayRank;
-        var area = nt && nd <= 2000 ? 'near ' + nt.label : (finite(cLat) ? cLat.toFixed(3) + ', ' + cLon.toFixed(3) : '');
-        var name = (date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date) + (keys.length > 1 || !rank ? (area ? ' · ' + area : '') : '');
-        groups.push({ id: 'auto-' + date + '-' + ai, name: name, auto: true, date: date, dayRank: rank, fileIds: ids, lat: cLat, lon: cLon });
-      });
+    fileInfos.forEach(function (f) { var d = days.byFile[f.fi], k = (d && d.date) || 'undated'; (byDate[k] = byDate[k] || []).push(f.fi); });
+    return Object.keys(byDate).sort().map(function (date) {
+      var ids = byDate[date].sort(function (x, y) { return x - y; });
+      var rank = date === 'undated' ? 0 : Math.max.apply(null, ids.map(function (fi) { return days.byFile[fi].dayRank || 0; }));
+      return { id: 'day-' + date, name: date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date,
+        auto: true, date: date, dayRank: rank, fileIds: ids };
     });
-    return groups;
   }
 
   // ── Layback calibration anchors (all in the RAW path frame) ────────────────
@@ -1214,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v30';
+const APP_VERSION='v31';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1515,17 +1494,15 @@ function App(){
   var [metricPred,setMetricPred]=useState('fused');
   var [metricLevel,setMetricLevel]=useState('family');
   var [mapFocus,setMapFocus]=useState(null);
-  var [runGroups,setRunGroups]=useState([]);
+  var [customGroups,setCustomGroups]=useState(lsGet('ipa_custom_groups',[]));   // [{id,name}]
+  var [groupAssign,setGroupAssign]=useState(lsGet('ipa_group_assign',{}));      // fileKey -> groupId (overrides the day group)
+  var [collapsed,setCollapsed]=useState(lsGet('ipa_group_collapsed',{}));
+  var [selFiles,setSelFiles]=useState({});                                      // fi -> true (multi-select)
+  var [dragOver,setDragOver]=useState(null);
   var [groupNames,setGroupNames]=useState(lsGet('ipa_group_names',{}));
   var [anchorOff,setAnchorOff]=useState(lsGet('ipa_anchor_off',{}));
   var [mapGroup,setMapGroup]=useState('all');
   var [stepIdx,setStepIdx]=useState(-1);
-  var [expandedGroup,setExpandedGroup]=useState(null);
-  var [newGroupModal,setNewGroupModal]=useState(false);
-  var [newGroupName,setNewGroupName]=useState('');
-  var [newGroupColor,setNewGroupColor]=useState('#0071b8');
-  var [addToGroupModal,setAddToGroupModal]=useState(null);
-  var [selGroupId,setSelGroupId]=useState('');
   var [showLines,setShowLines]=useState(true);
   var [showHotspots,setShowHotspots]=useState(true);
   var [showWps,setShowWps]=useState(true);
@@ -1536,6 +1513,9 @@ function App(){
   function setProc(patch){setProcState(function(p){var n=Object.assign({},p,patch);lsSet('ipa_proc',n);return n;});}
   useEffect(function(){lsSet('ipa_ai_model',aiModel);},[aiModel]);
   useEffect(function(){lsSet('ipa_group_names',groupNames);},[groupNames]);
+  useEffect(function(){lsSet('ipa_custom_groups',customGroups);},[customGroups]);
+  useEffect(function(){lsSet('ipa_group_assign',groupAssign);},[groupAssign]);
+  useEffect(function(){lsSet('ipa_group_collapsed',collapsed);},[collapsed]);
   useEffect(function(){lsSet('ipa_anchor_off',anchorOff);},[anchorOff]);
   useEffect(function(){lsSet('ipa_train_policy',trainPolicy);},[trainPolicy]);
   // Confirmations allowed to influence NEW classifications (AI few-shot examples, k-NN)
@@ -1600,13 +1580,41 @@ function App(){
   var fieldIdx=useMemo(function(){return fileAnalyses.map(function(fa,fi){return fa?fi:-1;}).filter(function(fi){return fi>=0;});},[fileAnalyses]);
   // Survey day of each line (rank among dates of lines near the targets) + auto groups
   var days=useMemo(function(){return IPA.surveyDays(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,packets:files[fi].packets};}),targets);},[fieldIdx,targets]);
-  var autoGroupList=useMemo(function(){
-    if(!proc.autoGroup)return [];
-    return IPA.autoGroups(fieldIdx.map(function(fi){return{fi:fi};}),days,targets,proc.areaM).map(function(g,i){
-      return Object.assign({},g,{name:groupNames[g.id]||g.name,color:GROUP_COLORS[i%GROUP_COLORS.length]});});
-  },[fieldIdx,days,targets,proc.autoGroup,proc.areaM,groupNames]);
-  var allGroups=useMemo(function(){return autoGroupList.concat(runGroups);},[autoGroupList,runGroups]);
+  // Groups: one automatic group per survey day + any custom groups. Every field line is in
+  // exactly one group: its day group, unless it has been moved (groupAssign, saved per file).
+  function fileKey(fi){var f=files[fi];return f?(f.hash||(f.run+'|'+f.name)):'';}
+  var dayGroups=useMemo(function(){return IPA.autoGroups(fieldIdx.map(function(fi){return{fi:fi};}),days);},[fieldIdx,days]);
+  var allGroups=useMemo(function(){
+    var groups=[],byId={},natural={};
+    if(proc.autoGroup)dayGroups.forEach(function(g){g.fileIds.forEach(function(fi){natural[fi]=g.id;});
+      var x={id:g.id,name:groupNames[g.id]||g.name,auto:true,date:g.date,dayRank:g.dayRank,fileIds:[]};groups.push(x);byId[x.id]=x;});
+    else{var u={id:'ungrouped',name:'Ungrouped',auto:true,fileIds:[]};groups.push(u);byId.ungrouped=u;fieldIdx.forEach(function(fi){natural[fi]='ungrouped';});}
+    customGroups.forEach(function(c){var x={id:c.id,name:c.name,auto:false,fileIds:[]};groups.push(x);byId[x.id]=x;});
+    fieldIdx.forEach(function(fi){var gid=groupAssign[fileKey(fi)];var g=(gid&&byId[gid])||byId[natural[fi]];if(g)g.fileIds.push(fi);});
+    return groups.map(function(g,i){return Object.assign(g,{color:GROUP_COLORS[i%GROUP_COLORS.length]});});
+  },[dayGroups,customGroups,groupAssign,groupNames,fieldIdx,files,proc.autoGroup]);
   function groupOf(fi){for(var i=0;i<allGroups.length;i++)if(allGroups[i].fileIds.indexOf(fi)>=0)return allGroups[i];return null;}
+  function moveFiles(fis,gid){
+    if(!fis.length)return;
+    if(gid==='__new'){var nm=window.prompt('Name for the new group','Group '+(customGroups.length+1));if(!nm||!nm.trim())return;
+      gid='c'+Date.now();var nid=gid;setCustomGroups(function(p){return p.concat([{id:nid,name:nm.trim()}]);});}
+    var natural={};dayGroups.forEach(function(g){g.fileIds.forEach(function(fi){natural[fi]=g.id;});});
+    setGroupAssign(function(p){var n=Object.assign({},p);fis.forEach(function(fi){var k=fileKey(fi);
+      if(proc.autoGroup&&natural[fi]===gid)delete n[k];else n[k]=gid;});return n;});
+    setSelFiles({});
+  }
+  function newGroup(){var nm=window.prompt('Name for the new group','Group '+(customGroups.length+1));if(!nm||!nm.trim())return;
+    setCustomGroups(function(p){return p.concat([{id:'c'+Date.now(),name:nm.trim()}]);});}
+  function renameGroup(g){var nm=window.prompt('Rename group',g.name);if(!nm||!nm.trim())return;
+    if(g.auto)setGroupNames(function(p){var n=Object.assign({},p);n[g.id]=nm.trim();return n;});
+    else setCustomGroups(function(p){return p.map(function(x){return x.id===g.id?Object.assign({},x,{name:nm.trim()}):x;});});}
+  function deleteCustomGroup(g){
+    if(g.fileIds.length&&!window.confirm('Delete "'+g.name+'"? Its '+g.fileIds.length+' line(s) go back to their survey-day group.'))return;
+    setCustomGroups(function(p){return p.filter(function(x){return x.id!==g.id;});});
+    setGroupAssign(function(p){var n={};Object.keys(p).forEach(function(k){if(p[k]!==g.id)n[k]=p[k];});return n;});
+  }
+  function resetGroups(){if(!window.confirm('Put every line back in its survey-day group and remove custom groups?'))return;
+    setGroupAssign({});setCustomGroups([]);setGroupNames({});}
   function dayRankOf(fi){var d=days.byFile[fi];return d?d.dayRank:0;}
 
   var fileTracks=useMemo(function(){return fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,track:fileAnalyses[fi].track,trackLenM:fileAnalyses[fi].trackLenM};});},[fieldIdx,fileAnalyses]);
@@ -1914,13 +1922,6 @@ function App(){
   function removeLabSig(s){setLabSigs(function(p){return p.filter(function(x){return x!==s;});});if(s.id)deleteLabSigDB(s.id).catch(function(){});}
 
   // Run group helpers
-  var createGroup=function(){if(!newGroupName.trim())return;
-    setRunGroups(function(p){return p.concat([{id:'g'+Date.now(),name:newGroupName.trim(),color:newGroupColor,fileIds:[]}]);});
-    setNewGroupModal(false);setNewGroupName('');};
-  var addToGroup=function(fi,gid){setRunGroups(function(p){return p.map(function(g){return(g.id===gid&&g.fileIds.indexOf(fi)<0)?Object.assign({},g,{fileIds:g.fileIds.concat([fi])}):g;});});
-    setAddToGroupModal(null);setSelGroupId('');};
-  var removeFromGroup=function(fi,gid){setRunGroups(function(p){return p.map(function(g){return g.id===gid?Object.assign({},g,{fileIds:g.fileIds.filter(function(i){return i!==fi;})}):g;});});};
-  var deleteGroup=function(id){setRunGroups(function(p){return p.filter(function(g){return g.id!==id;});});};
 
   // ── Classifier accuracy data ──────────────────────────────────────────────
   var accuracy=useMemo(function(){
@@ -2007,61 +2008,88 @@ function App(){
           <input ref={fileRef} type="file" accept=".txt,.csv,.gpx,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
           <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
 
-          {files.length>0 && <div className="sidebar-label">Files</div>}
-          {files.map(function(f,i){
-            var grp=groupOf(i);
-            var fa=fileAnalyses[i];
+          {(function(){
+            function shareBadge(f){var st=f.hash&&shareState[f.hash];
+              if(f.hash&&libraryHashes[f.hash])return <span title="In the shared library" style={{color:'var(--pos)'}}>☁ shared</span>;
+              if(st==='uploading')return <span style={{color:'#b07800'}}>⬆ uploading</span>;
+              if(st&&st.indexOf('error:')===0)return <span title={st.slice(6)} style={{color:'var(--neg)'}}>✗ not shared</span>;
+              return <span title="Only on this computer" style={{color:'var(--dim)'}}>local</span>;}
+            var selList=Object.keys(selFiles).filter(function(k){return selFiles[k];}).map(Number);
+            function fileRow(f,i,g){
+              var fa=fileAnalyses[i];
+              return (
+                <div key={i} className={activeIdx===i?'file-item active':'file-item'} draggable={f.type==='field'}
+                  onDragStart={function(e){var ids=selFiles[i]?selList:[i];e.dataTransfer.setData('text/plain',JSON.stringify(ids));e.dataTransfer.effectAllowed='move';}}
+                  onClick={function(){setActiveIdx(i);setSelEv(null);}} style={{cursor:f.type==='field'?'grab':'pointer'}}>
+                  {f.type==='field' && <input type="checkbox" title="Select (then move several at once)" checked={!!selFiles[i]} onClick={function(e){e.stopPropagation();}}
+                    onChange={function(e){var v=e.target.checked;setSelFiles(function(p){var n=Object.assign({},p);if(v)n[i]=true;else delete n[i];return n;});}} style={{flexShrink:0}}/>}
+                  <div className="file-dot" style={{background:g?g.color:'#607a90'}}/>
+                  <div style={{flex:1,overflow:'hidden'}}>
+                    <div className="file-name" title={f.name}>{f.run}</div>
+                    <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz{fa?' · '+fa.events.length+' ev':''} · {shareBadge(f)}</div>
+                  </div>
+                  {f.type==='field' && g && <select title="Move to group" value={g.id} onClick={function(e){e.stopPropagation();}}
+                    onChange={function(e){moveFiles(selFiles[i]?selList:[i],e.target.value);}}
+                    style={{width:22,flexShrink:0,background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:2,fontSize:10,color:'var(--dim2)',cursor:'pointer'}}>
+                    {allGroups.map(function(x){return <option key={x.id} value={x.id}>{x.name}</option>;})}
+                    <option value="__new">＋ New group…</option>
+                  </select>}
+                </div>);
+            }
+            var labIdx=files.map(function(f,i){return f.type==='lab'?i:-1;}).filter(function(i){return i>=0;});
             return (
-              <div key={i} className={activeIdx===i?'file-item active':'file-item'} onClick={function(){setActiveIdx(i);setSelEv(null);}}>
-                <div className="file-dot" style={{background:grp?grp.color:(f.type==='lab'?'#607a90':'#8099b0')}}/>
-                <div style={{flex:1,overflow:'hidden'}}>
-                  <div className="file-name">{f.run}</div>
-                  <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz · {f.type}{fa?' · '+fa.events.length+' ev':''}
-                    {' · '}{(function(){var st=f.hash&&shareState[f.hash];
-                      if(f.hash&&libraryHashes[f.hash])return <span title="In the shared library" style={{color:'var(--pos)'}}>☁ shared</span>;
-                      if(st==='uploading')return <span style={{color:'#b07800'}}>⬆ uploading</span>;
-                      if(st&&st.indexOf('error:')===0)return <span title={st.slice(6)} style={{color:'var(--neg)'}}>✗ not shared</span>;
-                      return <span title="Only on this computer" style={{color:'var(--dim)'}}>local</span>;})()}</div>
-                </div>
-                <button title="Add to group" onClick={function(e){e.stopPropagation();setAddToGroupModal(i);setSelGroupId('');}}
-                  style={{background:'none',border:'1px solid var(--border2)',color:'var(--dim2)',borderRadius:2,padding:'2px 6px',cursor:'pointer',fontSize:11,flexShrink:0}}>+</button>
-              </div>);
-          })}
-
-          {files.length>0 && (
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
-              <span className="sidebar-label">Run groups</span>
-              <label title="Group lines automatically by survey date, split by area" style={{fontSize:9,fontFamily:'var(--font-mono)',color:'var(--dim2)',display:'flex',alignItems:'center',gap:3}}>
-                <input type="checkbox" checked={!!proc.autoGroup} onChange={function(e){setProc({autoGroup:e.target.checked});}}/>auto</label>
-              <button className="btn btn-primary btn-sm" onClick={function(){setNewGroupModal(true);}}>+ Group</button>
-            </div>)}
-          {allGroups.map(function(g){
-            var isExp=expandedGroup===g.id;
-            return (
-              <div key={g.id} className="run-group">
-                <div className="run-group-hdr" onClick={function(){setExpandedGroup(isExp?null:g.id);}}>
-                  <div className="run-swatch" style={{background:g.color}}/>
-                  <span className="run-group-name" title="Double-click to rename" onDoubleClick={function(e){e.stopPropagation();
-                    var nm=window.prompt('Rename group',g.name);if(!nm||!nm.trim())return;
-                    if(g.auto)setGroupNames(function(p){var n=Object.assign({},p);n[g.id]=nm.trim();return n;});
-                    else setRunGroups(function(p){return p.map(function(x){return x.id===g.id?Object.assign({},x,{name:nm.trim()}):x;});});}}>{g.name}</span>
-                  <span style={{fontSize:9,color:'var(--dim)'}}>{g.fileIds.length}f</span>
-                  <button title="Show this group on the map" onClick={function(e){e.stopPropagation();setMapGroup(g.id);setVisibleFiles(g.fileIds.slice());setStepIdx(-1);setMainTab('map');}}
-                    style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>⌖</button>
-                  {!g.auto && <button onClick={function(e){e.stopPropagation();deleteGroup(g.id);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 2px',marginLeft:4}}>×</button>}
-                </div>
-                {isExp && (
-                  <div className="run-group-body">
-                    {g.fileIds.map(function(fi){var f=files[fi];if(!f)return null;return (
-                      <div key={fi} className={activeIdx===fi?'run-entry active':'run-entry'} onClick={function(){setActiveIdx(fi);setSelEv(null);}}>
-                        <div style={{width:7,height:7,borderRadius:'50%',background:g.color,flexShrink:0}}/>
-                        <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.run}</span>
-                        {!g.auto && <button onClick={function(e){e.stopPropagation();removeFromGroup(fi,g.id);}} style={{background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:11}}>×</button>}
-                      </div>);})}
-                    {!g.fileIds.length && <span style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)'}}>No files added</span>}
-                  </div>)}
-              </div>);
-          })}
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {fieldIdx.length>0 && (
+                <div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
+                  <span className="sidebar-label" style={{flex:1}}>Lines by group</span>
+                  <label title="Group lines automatically by survey date" style={{fontSize:9,fontFamily:'var(--font-mono)',color:'var(--dim2)',display:'flex',alignItems:'center',gap:3}}>
+                    <input type="checkbox" checked={!!proc.autoGroup} onChange={function(e){setProc({autoGroup:e.target.checked});}}/>by day</label>
+                  <button className="btn btn-primary btn-sm" style={{padding:'3px 7px'}} onClick={newGroup}>+ Group</button>
+                </div>)}
+              {fieldIdx.length>0 && <div style={{fontSize:9,color:'var(--dim)',fontFamily:'var(--font-mono)',lineHeight:1.4}}>Drag lines onto a group, or use the ▾ menu on a line. Tick several to move them together.</div>}
+              {selList.length>0 && (
+                <div className="row" style={{gap:4,background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:3,padding:'5px 6px'}}>
+                  <span style={{fontSize:10,fontFamily:'var(--font-mono)'}}>{selList.length} selected →</span>
+                  <select className="confirm-sel" style={{flex:1,fontSize:10,padding:'2px 4px'}} value="" onChange={function(e){if(e.target.value)moveFiles(selList,e.target.value);}}>
+                    <option value="">Move to…</option>
+                    {allGroups.map(function(x){return <option key={x.id} value={x.id}>{x.name}</option>;})}
+                    <option value="__new">＋ New group…</option>
+                  </select>
+                  <button className="btn btn-ghost btn-sm" style={{padding:'2px 6px'}} onClick={function(){setSelFiles({});}}>✕</button>
+                </div>)}
+              {allGroups.map(function(g){
+                var isCol=!!collapsed[g.id],isOver=dragOver===g.id;
+                var allSel=g.fileIds.length>0&&g.fileIds.every(function(fi){return selFiles[fi];});
+                return (
+                  <div key={g.id} className="run-group" style={isOver?{borderColor:'var(--accent)',boxShadow:'0 0 0 2px rgba(0,113,184,.25)'}:null}
+                    onDragOver={function(e){e.preventDefault();e.dataTransfer.dropEffect='move';if(dragOver!==g.id)setDragOver(g.id);}}
+                    onDragLeave={function(e){if(!e.currentTarget.contains(e.relatedTarget))setDragOver(null);}}
+                    onDrop={function(e){e.preventDefault();setDragOver(null);var ids=[];try{ids=JSON.parse(e.dataTransfer.getData('text/plain'));}catch(x){}
+                      if(Array.isArray(ids)&&ids.length)moveFiles(ids,g.id);}}>
+                    <div className="run-group-hdr" onClick={function(){setCollapsed(function(p){var n=Object.assign({},p);n[g.id]=!isCol;return n;});}}>
+                      <span style={{fontSize:9,color:'var(--dim2)',width:8}}>{isCol?'▸':'▾'}</span>
+                      <div className="run-swatch" style={{background:g.color}}/>
+                      <span className="run-group-name" title="Double-click to rename" onDoubleClick={function(e){e.stopPropagation();renameGroup(g);}}>{g.name}</span>
+                      <span style={{fontSize:9,color:'var(--dim)'}}>{g.fileIds.length}</span>
+                      {g.fileIds.length>0 && <input type="checkbox" title="Select all lines in this group" checked={allSel} onClick={function(e){e.stopPropagation();}}
+                        onChange={function(e){var v=e.target.checked;setSelFiles(function(p){var n=Object.assign({},p);g.fileIds.forEach(function(fi){if(v)n[fi]=true;else delete n[fi];});return n;});}}/>}
+                      <button title="Rename" onClick={function(e){e.stopPropagation();renameGroup(g);}} style={{background:'none',border:'none',color:'var(--dim2)',cursor:'pointer',fontSize:10,padding:'0 1px'}}>✎</button>
+                      <button title="Show this group on the map" onClick={function(e){e.stopPropagation();setMapGroup(g.id);setVisibleFiles(g.fileIds.slice());setStepIdx(-1);setMainTab('map');}}
+                        style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:11,padding:'0 1px'}}>⌖</button>
+                      {!g.auto && <button title="Delete group (lines return to their day group)" onClick={function(e){e.stopPropagation();deleteCustomGroup(g);}} style={{background:'none',border:'none',color:'var(--neg)',cursor:'pointer',fontSize:13,padding:'0 1px'}}>×</button>}
+                    </div>
+                    {!isCol && (
+                      <div className="run-group-body" style={{gap:3}}>
+                        {g.fileIds.map(function(fi){return files[fi]?fileRow(files[fi],fi,g):null;})}
+                        {!g.fileIds.length && <div style={{fontSize:10,color:'var(--dim)',fontFamily:'var(--font-mono)',padding:'6px 4px',border:'1px dashed var(--border2)',borderRadius:3,textAlign:'center'}}>Drop lines here</div>}
+                      </div>)}
+                  </div>);
+              })}
+              {(Object.keys(groupAssign).length>0||customGroups.length>0) && <button className="btn btn-ghost btn-sm" onClick={resetGroups}>Reset to day groups</button>}
+              {labIdx.length>0 && <div className="sidebar-label" style={{marginTop:4}}>Lab files ({labIdx.length})</div>}
+              {labIdx.map(function(i){return fileRow(files[i],i,null);})}
+            </div>);
+          })()}
 
           {/* Waypoints */}
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4}}>
@@ -2112,7 +2140,6 @@ function App(){
               {proc.mode==='robust' && <Num label="Gap (pkts)" value={proc.gapPkts} onChange={function(v){setProc({gapPkts:Math.max(0,Math.round(v))});}}/>}
               {proc.mode==='robust' && <Num label="Min pkts / event" value={proc.minPkts} onChange={function(v){setProc({minPkts:Math.max(1,Math.round(v))});}}/>}
               <Num label="Merge crossing gaps ≤ (m)" value={proc.mergeGapM} onChange={function(v){setProc({mergeGapM:Math.max(0,v)});}}/>
-              <Num label="Auto-group area (m)" value={proc.areaM} onChange={function(v){setProc({areaM:Math.max(50,v)});}}/>
               <Num label="Lab match cos ≥" step={0.01} value={proc.labCosMin} onChange={function(v){setProc({labCosMin:v});}}/>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1'}} onClick={function(){setProc(Object.assign({},IPA.DEFAULT_PROC,{laybackM:proc.laybackM,latencyS:proc.latencyS,applyLayback:proc.applyLayback}));}}>Reset detection defaults</button>
             </div>)}
@@ -2139,7 +2166,7 @@ function App(){
               </div>
             </div>)}
           {files.length>0 && (
-            <button className="btn btn-ghost btn-sm" onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);setRunGroups([]);setVisibleFiles(null);setMapGroup('all');setStepIdx(-1);idbClearFiles();}}>Clear all files</button>)}
+            <button className="btn btn-ghost btn-sm" onClick={function(){setFiles([]);setActiveIdx(null);setAiResults({});setSelEv(null);setSelFiles({});setVisibleFiles(null);setMapGroup('all');setStepIdx(-1);idbClearFiles();}}>Clear all files</button>)}
         </div>
 
         <div className="content">
@@ -2723,36 +2750,6 @@ function App(){
         </div>
       </div>
 
-      {newGroupModal && (
-        <div className="modal-bg" onClick={function(){setNewGroupModal(false);}}>
-          <div className="modal" onClick={function(e){e.stopPropagation();}}>
-            <h3>New Run Group</h3>
-            <label>Name</label>
-            <input autoFocus value={newGroupName} onChange={function(e){setNewGroupName(e.target.value);}} placeholder="e.g. Eagle Harbor Day 1" onKeyDown={function(e){if(e.key==='Enter')createGroup();}}/>
-            <label>Color</label>
-            <div className="color-row">{SWATCH_COLORS.map(function(c){return <div key={c} className={newGroupColor===c?'cswatch sel':'cswatch'} style={{background:c}} onClick={function(){setNewGroupColor(c);}}/>;})}</div>
-            <div className="modal-btns">
-              <button className="btn btn-ghost" onClick={function(){setNewGroupModal(false);}}>Cancel</button>
-              <button className="btn btn-primary" onClick={createGroup} disabled={!newGroupName.trim()}>Create</button>
-            </div>
-          </div>
-        </div>)}
-      {addToGroupModal!==null && (
-        <div className="modal-bg" onClick={function(){setAddToGroupModal(null);}}>
-          <div className="modal" onClick={function(e){e.stopPropagation();}}>
-            <h3>Add to Run Group</h3>
-            <p style={{fontSize:11,color:'var(--dim2)',marginBottom:8}}>{files[addToGroupModal]?files[addToGroupModal].run:''}</p>
-            {!runGroups.length && <div style={{fontSize:11,color:'var(--dim2)'}}>No groups yet — create one first.</div>}
-            {runGroups.length>0 && (<div><label>Group</label>
-              <select value={selGroupId} onChange={function(e){setSelGroupId(e.target.value);}}><option value="">— select —</option>
-                {runGroups.map(function(g){return <option key={g.id} value={g.id}>{g.name}</option>;})}</select></div>)}
-            <div className="modal-btns">
-              <button className="btn btn-ghost" onClick={function(){setAddToGroupModal(null);}}>Cancel</button>
-              {runGroups.length>0 && <button className="btn btn-primary" onClick={function(){addToGroup(addToGroupModal,selGroupId);}} disabled={!selGroupId}>Add</button>}
-              <button className="btn btn-primary" onClick={function(){setNewGroupModal(true);setAddToGroupModal(null);}}>+ New Group</button>
-            </div>
-          </div>
-        </div>)}
     </div>
   );
 }

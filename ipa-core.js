@@ -58,8 +58,7 @@
     cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
     targetLinkM: 10,       // waypoints within this distance form one target
     dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
-    autoGroup: true,       // group field lines automatically by survey date and area
-    areaM: 1000,           // auto-grouping: lines on the same date further apart than this are separate areas
+    autoGroup: true,       // group field lines automatically by survey date
     anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
     minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
     maxLeadM: 80,          // calibration: ... and trail it by at most this
@@ -655,37 +654,17 @@
     Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
     return { byFile: info, dates: dates };
   }
-  // One group per survey date; a date is split further if its lines are > areaM apart.
-  function autoGroups(fileInfos, days, targets, areaM) {
-    areaM = areaM || 1000;
+  // One group per survey date (the date in the packet timestamps) — this is how lines
+  // are captured and stored in the field. No spatial splitting.
+  function autoGroups(fileInfos, days) {
     var byDate = {};
-    fileInfos.forEach(function (f) { var d = days.byFile[f.fi]; (byDate[(d && d.date) || 'undated'] = byDate[(d && d.date) || 'undated'] || []).push(f.fi); });
-    var allDates = Object.keys(byDate).sort(), groups = [];
-    allDates.forEach(function (date, di) {
-      var fis = byDate[date], parent = {};
-      fis.forEach(function (fi) { parent[fi] = fi; });
-      function fnd(a) { while (parent[a] !== a) a = parent[a]; return a; }
-      for (var a = 0; a < fis.length; a++) for (var b = a + 1; b < fis.length; b++) {
-        var pa = days.byFile[fis[a]].pts, pb = days.byFile[fis[b]].pts, close = false;
-        for (var i = 0; i < pa.length && !close; i++) for (var j = 0; j < pb.length; j++) if (haversine(pa[i][0], pa[i][1], pb[j][0], pb[j][1]) <= areaM) { close = true; break; }
-        if (close) parent[fnd(fis[b])] = fnd(fis[a]);
-      }
-      var areas = {};
-      fis.forEach(function (fi) { (areas[fnd(fi)] = areas[fnd(fi)] || []).push(fi); });
-      var keys = Object.keys(areas);
-      keys.forEach(function (k, ai) {
-        var ids = areas[k].sort(function (x, y) { return x - y; }), pts = [];
-        ids.forEach(function (fi) { pts = pts.concat(days.byFile[fi].pts); });
-        var cLat = mean(pts.map(function (p) { return p[0]; })), cLon = mean(pts.map(function (p) { return p[1]; }));
-        var nt = null, nd = Infinity;
-        (targets || []).forEach(function (T) { var d = haversine(cLat, cLon, T.lat, T.lon); if (d < nd) { nd = d; nt = T; } });
-        var rank = days.byFile[ids[0]].dayRank;
-        var area = nt && nd <= 2000 ? 'near ' + nt.label : (finite(cLat) ? cLat.toFixed(3) + ', ' + cLon.toFixed(3) : '');
-        var name = (date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date) + (keys.length > 1 || !rank ? (area ? ' · ' + area : '') : '');
-        groups.push({ id: 'auto-' + date + '-' + ai, name: name, auto: true, date: date, dayRank: rank, fileIds: ids, lat: cLat, lon: cLon });
-      });
+    fileInfos.forEach(function (f) { var d = days.byFile[f.fi], k = (d && d.date) || 'undated'; (byDate[k] = byDate[k] || []).push(f.fi); });
+    return Object.keys(byDate).sort().map(function (date) {
+      var ids = byDate[date].sort(function (x, y) { return x - y; });
+      var rank = date === 'undated' ? 0 : Math.max.apply(null, ids.map(function (fi) { return days.byFile[fi].dayRank || 0; }));
+      return { id: 'day-' + date, name: date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date,
+        auto: true, date: date, dayRank: rank, fileIds: ids };
     });
-    return groups;
   }
 
   // ── Layback calibration anchors (all in the RAW path frame) ────────────────

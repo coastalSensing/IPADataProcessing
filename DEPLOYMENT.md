@@ -67,6 +67,19 @@ By default, Supabase's GitHub sign-in accepts **any** GitHub account. Every sign
 2. Supabase → **Authentication → Sign In / Providers → turn OFF "Allow new users to sign up"**.
 3. Add new people later from **Authentication → Users → Invite user**, or turn sign-ups on briefly.
 
+### 6b. Team password (v32+)
+Anyone can sign in with GitHub, but **nothing is readable or writable until they enter the team password** once. This is enforced in the database (row-level security), not just in the page.
+- Set or change it in Supabase → SQL Editor: `select public.set_access_code('new-password');`
+- See members: `select * from public.team_members;`
+- Remove someone: `delete from public.team_members where email = 'them@example.com';`
+- 10 wrong tries per hour per account are allowed.
+
+### 6c. Claude (server-side, v32+)
+Claude is called from the Supabase Edge Function `classify` (`supabase/functions/classify/index.ts`), using one shared key that browsers never see.
+1. Supabase → **Edge Functions → Secrets**: add `ANTHROPIC_API_KEY` (and optionally `CLAUDE_MODEL`, default `claude-sonnet-4-5`).
+2. Deploy the function: Supabase → **Edge Functions → Deploy a new function → Via Editor**, name it `classify`, paste `index.ts`, Deploy. (Or `supabase functions deploy classify` with the CLI.) Leave "Verify JWT" on.
+3. Each call retrieves the nearest confirmed events from the shared `training_confirmations` table (balanced per material, same transmit frequency first), so every lab or field confirmation improves the next classification. Every prediction is logged in `ai_predictions` and linked to its confirmation, so accuracy can be tracked over time.
+
 ### 7. Database schema
 Run `supabase_schema.sql` in Supabase → **SQL Editor** → Run. It's cumulative and safe to re-run; it only adds columns, tables and policies.
 

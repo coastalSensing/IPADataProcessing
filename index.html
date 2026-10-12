@@ -1193,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v31';
+const APP_VERSION='v32';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1245,7 +1245,7 @@ function saveTrainingToDB(entry,harms){
   var ext=Object.assign({},legacy,{rules_class:entry.rulesCls,ai_class:entry.aiCls,lab_class:entry.labCls,lab_cos:entry.labCos,
     fused_class:entry.fusedCls,pred_conf_pct:entry.predConf,phase_slope:entry.fv.slope,dp_dev_json:entry.dpDev,
     lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION,
-    cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false});
+    cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false,ai_prediction_id:entry.aiPredictionId||null});
   return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true};})
     .catch(function(e){if(!isSchemaErr(e))throw e;
       return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false};});});
@@ -1333,35 +1333,24 @@ function pct(v){return v===null||v===undefined||!isFinite(v)?'—':(v*100).toFix
 function badgeClass(cls){cls=cls||'';var f=IPA.family(cls);
   return f==='hydrocarbon'?'badge-hydro':f==='metallic'?'badge-metal':f==='mixed'?'badge-mixed':f==='artifact'?'badge-art':'badge-weak';}
 
-// ── Claude API (browser direct access) ─────────────────────────────────────────
-async function classifyWithClaude(ev,harms,bg,training,apiKey,model){
-  var ctx='';
-  if(training.length){
-    ctx='\nCONFIRMED FIELD EXAMPLES (ground truth from this team; features are deviations from local background):\n'+training.slice(-25).map(function(t){
-      return '- '+t.material+': dev'+harms[0]+'Hz='+(+t.fv.dp1).toFixed(2)+', dev'+harms[2]+'Hz='+(+t.fv.dp3).toFixed(2)+
-        ', dev'+harms[5]+'Hz='+(+t.fv.dp_last).toFixed(2)+', mag%='+(+t.fv.magPct).toFixed(1)+', SNR='+(+t.fv.maxSNR).toFixed(1);}).join('\n');
+// ── Claude AI (server-side Edge Function 'classify'; shared key, learns from the shared DB) ──
+// The function pulls the nearest confirmed examples from everyone's confirmations, asks Claude,
+// and logs the prediction (ai_predictions). Confirming the event links the two for accuracy metrics.
+async function classifyWithClaude(ev,harms,bg,run,xmt,model){
+  var harmonics={};
+  harms.forEach(function(f){var p=bg.perHz[f];harmonics[f]={raw:ev.dp[f]||0,dev:ev.dpDev[f]||0,z:p&&p.std?Math.abs(ev.dpDev[f]||0)/p.std:null};});
+  var body={model:model,xmt_hz:xmt||harms[0],harms:harms,run:run,app_version:APP_VERSION,labels:CONFIRM_OPTIONS,
+    event:{ts:ev.ts,harmonics:harmonics,magPct:ev.magPct,nPkts:ev.nPkts,fundSNR:ev.maxSNR,maxSNR:ev.maxSNRall,phaseSlope:ev.phaseSlope,
+      rulesCls:ev.cls,rulesConf:ev.confPct,fusedCls:ev.fusedCls,
+      labMatches:(ev.labMatches||[]).slice(0,3).map(function(m){return{material:m.material,cos:m.cos,angleDeg:m.angleDeg,scale:m.scale,chi2red:m.chi2red};}),
+      features:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,slope:ev.phaseSlope}}};
+  var res=await supabase.functions.invoke('classify',{body:body});
+  if(res.error){
+    var msg=res.error.message;
+    try{var j=await res.error.context.json();if(j&&j.error)msg=j.error;}catch(e){}
+    throw new Error(msg);
   }
-  var lab=(ev.labMatches||[]).slice(0,3).map(function(m){return '- '+m.material+': cos='+m.cos.toFixed(3)+' (angle '+m.angleDeg.toFixed(1)+'°), scale='+m.scale.toFixed(2)+', chi2red='+m.chi2red.toFixed(2);}).join('\n');
-  var prompt='You are assisting a marine induced-polarization (MIP) classifier for towed-streamer IPA data. '+
-    'Transmit fundamental '+harms[0]+'Hz; phase is ch1-0 delta in mrad. Deviations are relative to a running-median background; z = deviation / robust noise sigma.\n'+
-    'EVENT:\n'+harms.map(function(f){var p=bg.perHz[f];return '  '+f+'Hz: raw='+(ev.dp[f]||0).toFixed(2)+' dev='+(ev.dpDev[f]||0).toFixed(2)+' z='+(p?(Math.abs(ev.dpDev[f]||0)/p.std).toFixed(1):'?');}).join('\n')+
-    '\n  mag%='+(ev.magPct||0).toFixed(2)+' nPkts='+ev.nPkts+' fundSNR='+ev.maxSNR.toFixed(1)+' maxSNR='+ev.maxSNRall.toFixed(1)+
-    ' phaseSlope='+(ev.phaseSlope||0).toFixed(2)+'mrad/decade\n'+
-    'RULE ENGINE: '+ev.cls+' ('+ev.confPct+'%)\n'+
-    (lab?'LAB REFERENCE SPECTRAL-ANGLE MATCHES (blank-subtracted, amplitude-invariant):\n'+lab+'\n':'No lab reference signatures loaded.\n')+ctx+
-    '\nPHYSICS GUIDE: Hydrocarbon/organic IP = growing positive deviation toward higher harmonics with near-zero fundamental deviation (Olhoeft 1985 organic reactions; Wynn marine IP oil work). '+
-    'Metallic/electronic polarisation (steel, ilmenite) = strong negative low-harmonic deviation, often with magnitude decrease (Pelton 1978 / Wong 1979 style Cole-Cole response). '+
-    'Artifact = |fundamental dev|>150 mrad or magnitude drop >30% or single-packet spikes. Prefer lab-match evidence when cos>0.9 and SNR>5.\n'+
-    'Allowed labels: '+CONFIRM_OPTIONS.join(', ')+'.\n'+
-    'Reply with JSON only: {"classification":"<label>","confidence_pct":<0-99>,"confidence_label":"<High|Medium|Low>","key_indicators":"<1 sentence>","reasoning":"<2-3 sentences>","caution":"<or null>"}';
-  var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-    headers:{'content-type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify({model:model,max_tokens:600,messages:[{role:'user',content:prompt}]})});
-  if(!r.ok){var t='';try{t=(await r.json()).error.message;}catch(e){}throw new Error('API '+r.status+(t?': '+t:''));}
-  var d=await r.json();
-  var raw=(d.content&&d.content[0])?d.content[0].text:'';
-  var m=raw.match(/\{[\s\S]*\}/);
-  return JSON.parse(m?m[0]:raw);
+  return res.data;
 }
 
 // ── Canvas drawing ─────────────────────────────────────────────────────────────
@@ -1468,8 +1457,9 @@ function App(){
   var [activeIdx,setActiveIdx]=useState(null);
   var [training,setTraining]=useState([]);
   var [trainPolicy,setTrainPolicy]=useState(lsGet('ipa_train_policy','current'));
-  var [apiKey,setApiKey]=useState('');
-  var [aiModel,setAiModel]=useState(lsGet('ipa_ai_model','claude-sonnet-4-5'));
+  var [isTeam,setIsTeam]=useState(null);var [codeIn,setCodeIn]=useState('');var [codeMsg,setCodeMsg]=useState('');var [codeBusy,setCodeBusy]=useState(false);
+  var aiReady=isTeam===true;
+  var [aiModel,setAiModel]=useState(lsGet('ipa_ai_model',''));
   var [selEv,setSelEv]=useState(null);
   var [aiResults,setAiResults]=useState({});
   var [aiLoading,setAiLoading]=useState(null);
@@ -1541,7 +1531,21 @@ function App(){
     return function(){if(sub&&sub.data&&sub.data.subscription)sub.data.subscription.unsubscribe();};
   },[]);
   useEffect(function(){
-    if(!authUser)return;
+    if(!authUser){setIsTeam(null);return;}
+    supabase.rpc('am_i_team').then(function(r){
+      if(r.error){setIsTeam('error');setCodeMsg('Team check failed: '+r.error.message+' — has supabase_schema.sql (v32) been run?');}
+      else setIsTeam(!!r.data);});
+  },[authUser]);
+  function redeemCode(){
+    if(!codeIn)return;setCodeBusy(true);setCodeMsg('');
+    supabase.rpc('redeem_access_code',{code:codeIn}).then(function(r){
+      setCodeBusy(false);
+      if(r.error){setCodeMsg(r.error.message);return;}
+      if(r.data){setCodeIn('');setIsTeam(true);}else setCodeMsg('That team password is not right.');
+    });
+  }
+  useEffect(function(){
+    if(!authUser||isTeam!==true)return;
     setDbStatus('loading');
     var notes=[];
     Promise.all([
@@ -1553,7 +1557,7 @@ function App(){
       listLibraryDB().then(function(r){setLibrary(r);}).catch(function(e){notes.push('data_files: '+e.message);})
     ]).then(function(){setDbStatus('ok');setDbNote(notes.length?'Run supabase_schema.sql to enable: '+notes.join('; '):'');})
       .catch(function(e){console.warn('Supabase load failed:',e.message);setDbStatus('error');setDbNote(e.message);});
-  },[authUser]);
+  },[authUser,isTeam]);
 
   // ── Analysis pipeline ─────────────────────────────────────────────────────
   var detKey=DET_KEYS.map(function(k){return proc[k];}).join('|');
@@ -1879,15 +1883,15 @@ function App(){
   function runAI(fi,ei){
     var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return Promise.resolve();
     var key=fi+'-'+ei;setAiLoading(key);
-    return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,eligibleTraining,apiKey,aiModel).then(function(r){
+    return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,files[fi]&&files[fi].run,fa.xmt,aiModel).then(function(r){
       setAiResults(function(p){var n=Object.assign({},p);n[key]=r;return n;});
     }).catch(function(e){
       setAiResults(function(p){var n=Object.assign({},p);n[key]={classification:'Error',confidence_pct:0,confidence_label:'Error',key_indicators:'',reasoning:e.message,caution:null};return n;});
     }).finally(function(){setAiLoading(null);});
   }
-  var doAI=function(fi,ei){if(!apiKey){alert('Enter API key');return;}runAI(fi,ei).then(function(){setSelEv(ei);});};
+  var doAI=function(fi,ei){if(!aiReady)return;runAI(fi,ei).then(function(){setSelEv(ei);});};
   var doAIAll=function(){
-    if(!analysis||analysis.isLab||!apiKey)return;
+    if(!analysis||analysis.isLab||!aiReady)return;
     var fi=activeIdx,n=analysis.events.length,i=0;
     (function next(){if(i>=n)return;var ei=i++;runAI(fi,ei).then(function(){setTimeout(next,500);});})();
   };
@@ -1901,7 +1905,7 @@ function App(){
       fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
       aiConf:ar?ar.confidence_pct:null,rulesCls:ev.cls,aiCls:ar&&ar.classification!=='Error'?ar.classification:null,
       labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
-      dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,
+      aiPredictionId:ar&&ar.prediction_id||null,dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,
       cohort:'current',featureBasis:'deviation',aiUsed:!!(ar&&ar.classification!=='Error'),excluded:false};
     setTraining(function(p){return p.concat([entry]);});
     setConfMat('');setDbStatus('loading');
@@ -1963,7 +1967,27 @@ function App(){
             <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.020-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
             Sign in with GitHub
           </button>
-          <div style={{fontSize:9,color:'var(--dim)',marginTop:16,lineHeight:1.6}}>Access restricted to authorised IPA team members.<br/>Contact coastalsensing to request access.</div>
+          <div style={{fontSize:9,color:'var(--dim)',marginTop:16,lineHeight:1.6}}>Team password required after sign-in.<br/>Contact coastalsensing to request access.</div>
+        </div>
+      </div>);
+  }
+
+  if(isTeam!==true){
+    return (
+      <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',fontFamily:'var(--font-mono)'}}>
+        <div style={{background:'var(--panel)',border:'1px solid var(--border2)',borderRadius:6,padding:'40px 48px',textAlign:'center',maxWidth:380}}>
+          <div style={{fontSize:22,fontWeight:700,color:'var(--accent)',marginBottom:8,letterSpacing:'.05em'}}>IPA MIP CLASSIFIER</div>
+          <div style={{fontSize:11,color:'var(--dim2)',marginBottom:6}}>Signed in as {authUser.email||(authUser.user_metadata&&authUser.user_metadata.user_name)||''}</div>
+          <div style={{width:40,height:1,background:'var(--border2)',margin:'16px auto'}}/>
+          {isTeam===null ? <div style={{fontSize:11,color:'var(--dim2)'}}>Checking team access...</div> : (
+            <div>
+              <div style={{fontSize:11,color:'var(--dim3)',marginBottom:14,lineHeight:1.7}}>Enter the team password to join. You only need to do this once.</div>
+              <input type="password" autoFocus value={codeIn} placeholder="team password" onChange={function(e){setCodeIn(e.target.value);}}
+                onKeyDown={function(e){if(e.key==='Enter')redeemCode();}} style={{width:'100%',padding:'9px 10px',fontFamily:'var(--font-mono)',fontSize:12,border:'1px solid var(--border2)',borderRadius:4,boxSizing:'border-box'}}/>
+              <button onClick={redeemCode} disabled={codeBusy||!codeIn} style={{marginTop:10,width:'100%',background:'var(--accent)',color:'#fff',border:'none',borderRadius:4,padding:'10px',cursor:'pointer',fontFamily:'var(--font-mono)',fontWeight:700,fontSize:12}}>{codeBusy?'Checking...':'Join team'}</button>
+              {codeMsg && <div style={{fontSize:10,color:'var(--neg)',marginTop:10,lineHeight:1.5}}>{codeMsg}</div>}
+            </div>)}
+          <button onClick={signOut} style={{marginTop:18,background:'none',border:'none',color:'var(--dim2)',fontSize:10,cursor:'pointer',fontFamily:'var(--font-mono)',textDecoration:'underline'}}>Sign out</button>
         </div>
       </div>);
   }
@@ -2212,7 +2236,7 @@ function App(){
                     <div className="chart-title" style={{padding:'0 10px 7px',display:'flex',alignItems:'center',gap:8}}>
                       <span>Events — {af.events.length}</span>
                       <span style={{color:'var(--dim)',flex:1,fontSize:9}}>deviations from local background · click row for spectrum</span>
-                      <button className="btn btn-ai btn-sm" onClick={doAIAll} disabled={!apiKey||!af.events.length||!!aiLoading}>{aiLoading?'Running...':'⚡ AI All'}</button>
+                      <button className="btn btn-ai btn-sm" onClick={doAIAll} disabled={!aiReady||!af.events.length||!!aiLoading}>{aiLoading?'Running...':'⚡ AI All'}</button>
                     </div>
                     <div className="events-wrap">
                       <table className="events-table">
@@ -2244,7 +2268,7 @@ function App(){
                                 <td><div className="conf-bar"><div className="conf-fill" style={{width:Math.max(4,conf*0.8)+'px',background:cc}}/><span className="conf-text">{conf}%</span></div></td>
                                 <td style={{fontSize:9,color:'var(--dim2)'}}>{src}</td>
                                 <td>{ld?<span className="spinner"/>:<button className="btn btn-ai btn-sm" style={{padding:'2px 7px',fontSize:9}}
-                                  onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}} disabled={!apiKey||!!aiLoading}>AI</button>}</td>
+                                  onClick={function(e){e.stopPropagation();doAI(activeIdx,ei);}} disabled={!aiReady||!!aiLoading}>AI</button>}</td>
                               </tr>);
                           })}
                         </tbody>
@@ -2691,11 +2715,9 @@ function App(){
         <div className="ai-panel">
           <div className="ai-section-title">AI Classifier</div>
           <div>
-            <div style={{fontSize:11,color:'var(--dim2)',marginBottom:5}}>Anthropic API key</div>
-            <div className="api-key-row"><input className="api-key-input" type="password" placeholder="sk-ant-..." value={apiKey} onChange={function(e){setApiKey(e.target.value);}}/></div>
-            <div style={{fontSize:11,color:'var(--dim2)',margin:'6px 0 3px'}}>Model</div>
-            <div className="api-key-row"><input className="api-key-input" value={aiModel} onChange={function(e){setAiModel(e.target.value);}}/></div>
-            <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Key is kept in memory for this session only and sent directly to api.anthropic.com.</div>
+            <div style={{fontSize:10,color:'var(--dim2)',lineHeight:1.6}}>Claude runs on the team server and learns from every confirmation in the shared database (nearest confirmed examples, balanced per material).</div>
+            <div style={{fontSize:11,color:'var(--dim2)',margin:'6px 0 3px'}}>Model (blank = server default)</div>
+            <div className="api-key-row"><input className="api-key-input" placeholder="server default" value={aiModel} onChange={function(e){setAiModel(e.target.value.trim());}}/></div>
           </div>
           <div className="sep" style={{height:1,width:'100%',background:'var(--border)'}}/>
           <div className="ai-section-title">Event Analysis</div>
@@ -2728,8 +2750,9 @@ function App(){
                   {aiRes.key_indicators && <div style={{fontSize:11,color:'var(--accent)',marginBottom:5,fontStyle:'italic'}}>{aiRes.key_indicators}</div>}
                   {aiRes.reasoning && <div style={{fontSize:11,color:'var(--dim3)',lineHeight:1.6,marginBottom:5}}>{aiRes.reasoning}</div>}
                   {aiRes.caution && <div style={{fontSize:10,color:'#b07800',lineHeight:1.5,borderTop:'1px solid var(--border)',paddingTop:5}}>⚠ {aiRes.caution}</div>}
+                  {aiRes.n_examples!==undefined && <div style={{fontSize:9,color:'var(--dim)',marginTop:4}}>Used {aiRes.n_examples} confirmed example{aiRes.n_examples===1?'':'s'}{aiRes.same_freq_examples===false?' (incl. other frequencies)':''} · {aiRes.model}</div>}
                 </div>)}
-              <button className="btn btn-ai" style={{width:'100%',marginTop:6}} onClick={function(){doAI(activeIdx,selEv);}} disabled={!apiKey||!!aiLoading}>
+              <button className="btn btn-ai" style={{width:'100%',marginTop:6}} onClick={function(){doAI(activeIdx,selEv);}} disabled={!aiReady||!!aiLoading}>
                 {aiLoading===aiKey?'Analyzing...':aiRes?'↻ Re-run Claude AI':'⚡ Analyze with Claude AI'}</button>
               <div className="sep" style={{height:1,width:'100%',background:'var(--border)',margin:'10px 0'}}/>
               <div className="ai-section-title">Confirm Material (ground truth)</div>

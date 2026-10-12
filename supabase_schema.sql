@@ -204,3 +204,196 @@ end $$;
 
 -- Make PostgREST pick up new columns immediately
 notify pgrst, 'reload schema';
+
+-- =====================================================================================
+-- v32: TEAM ACCESS CODE + SERVER-SIDE CLAUDE (continual learning from shared confirmations)
+-- =====================================================================================
+-- After running this file once, set the shared team password from the SQL Editor:
+--     select public.set_access_code('your-team-password');
+-- Change it any time the same way (existing members keep access).
+-- Remove someone:  delete from public.team_members where email = 'someone@example.com';
+
+create extension if not exists pgcrypto with schema extensions;
+create schema if not exists ipa_private;            -- not exposed through the REST API
+revoke all on schema ipa_private from anon, authenticated;
+
+create table if not exists ipa_private.settings (
+  key   text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+create table if not exists ipa_private.code_attempts (
+  user_id uuid not null,
+  ok boolean not null,
+  at timestamptz not null default now()
+);
+
+-- 9. Team membership ----------------------------------------------------------------
+create table if not exists public.team_members (
+  user_id   uuid primary key references auth.users(id) on delete cascade,
+  email     text,
+  user_name text,
+  is_admin  boolean not null default false,
+  joined_at timestamptz not null default now()
+);
+alter table public.team_members enable row level security;
+
+create or replace function public.is_team() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.team_members where user_id = auth.uid());
+$$;
+create or replace function public.am_i_team() returns boolean
+language sql stable security definer set search_path = public as $$ select public.is_team(); $$;
+grant execute on function public.is_team(), public.am_i_team() to authenticated;
+
+drop policy if exists tm_team_select on public.team_members;
+create policy tm_team_select on public.team_members for select to authenticated using (public.is_team());
+
+-- Shared password: stored only as a bcrypt hash; 10 wrong tries per hour per user.
+create or replace function public.redeem_access_code(code text) returns boolean
+language plpgsql volatile security definer set search_path = public, extensions as $$
+declare h text; uid uuid := auth.uid(); fails int; u record;
+begin
+  if uid is null then raise exception 'Not signed in'; end if;
+  if public.is_team() then return true; end if;
+  select count(*) into fails from ipa_private.code_attempts
+   where user_id = uid and not ok and at > now() - interval '1 hour';
+  if fails >= 10 then raise exception 'Too many attempts. Try again in an hour.'; end if;
+  select value into h from ipa_private.settings where key = 'access_code_hash';
+  if h is null then raise exception 'No team password has been set yet. Ask the administrator.'; end if;
+  if extensions.crypt(coalesce(code,''), h) = h then
+    select email, raw_user_meta_data->>'user_name' as un into u from auth.users where id = uid;
+    insert into public.team_members (user_id, email, user_name) values (uid, u.email, u.un)
+      on conflict (user_id) do nothing;
+    insert into ipa_private.code_attempts (user_id, ok) values (uid, true);
+    return true;
+  end if;
+  insert into ipa_private.code_attempts (user_id, ok) values (uid, false);
+  return false;
+end $$;
+revoke all on function public.redeem_access_code(text) from public, anon;
+grant execute on function public.redeem_access_code(text) to authenticated;
+
+create or replace function public.set_access_code(new_code text) returns text
+language plpgsql volatile security definer set search_path = public, extensions as $$
+begin
+  if length(coalesce(new_code,'')) < 8 then raise exception 'Use at least 8 characters'; end if;
+  insert into ipa_private.settings (key, value, updated_at)
+  values ('access_code_hash', extensions.crypt(new_code, extensions.gen_salt('bf', 10)), now())
+  on conflict (key) do update set value = excluded.value, updated_at = now();
+  return 'Team password updated';
+end $$;
+revoke all on function public.set_access_code(text) from public, anon, authenticated;  -- SQL Editor only
+
+-- 10. AI predictions log (every Claude call; linked to the confirmation that follows) --
+create table if not exists public.ai_predictions (
+  id               uuid primary key default gen_random_uuid(),
+  created_by       uuid default auth.uid(),
+  created_at       timestamptz not null default now(),
+  model            text,
+  run_name         text,
+  event_ts         text,
+  xmt_hz           integer,
+  features         jsonb,
+  rules_class      text,
+  fused_class      text,
+  lab_class        text,
+  classification   text,
+  confidence_pct   real,
+  response         jsonb,
+  example_ids      uuid[],
+  n_examples       integer,
+  input_tokens     integer,
+  output_tokens    integer,
+  latency_ms       integer,
+  app_version      text,
+  confirmation_id  uuid,
+  confirmed_material text,
+  confirmed_at     timestamptz
+);
+create index if not exists ai_predictions_created_idx on public.ai_predictions (created_at desc);
+alter table public.ai_predictions enable row level security;
+alter table public.training_confirmations add column if not exists ai_prediction_id uuid;
+
+create or replace function public.tc_link_prediction_fn() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.ai_prediction_id is not null then
+    update public.ai_predictions
+       set confirmation_id = new.id, confirmed_material = new.material, confirmed_at = now()
+     where id = new.ai_prediction_id;
+  end if;
+  return new;
+end $$;
+drop trigger if exists tc_link_prediction on public.training_confirmations;
+create trigger tc_link_prediction after insert on public.training_confirmations
+  for each row execute function public.tc_link_prediction_fn();
+revoke all on function public.tc_link_prediction_fn() from public, anon, authenticated;
+
+-- 11. Retrieval for continual learning: nearest confirmed events, balanced per class ----
+-- Distance = Euclidean on z-scored deviation features. Runs with the caller's rights (RLS applies).
+create or replace function public.nearest_confirmations(
+  p_xmt int, p_dp1 real, p_dp3 real, p_dplast real, p_mag real, p_slope real,
+  p_k_per_class int default 3, p_max int default 30)
+returns table (id uuid, material text, xmt_hz int, dp_fund_mrad real, dp_mid_mrad real, dp_high_mrad real,
+               mag_pct real, max_snr real, phase_slope real, ai_class text, fused_class text, dist double precision)
+language sql stable security invoker set search_path = public as $$
+  with pool as (
+    select * from public.training_confirmations t
+     where not coalesce(t.excluded,false) and coalesce(t.cohort,'current') = 'current'
+       and t.material is not null and (p_xmt is null or t.xmt_hz = p_xmt)),
+  sc as (
+    select coalesce(nullif(stddev_samp(dp_fund_mrad),0),1) s1, coalesce(nullif(stddev_samp(dp_mid_mrad),0),1) s2,
+           coalesce(nullif(stddev_samp(dp_high_mrad),0),1) s3, coalesce(nullif(stddev_samp(mag_pct),0),1) s4,
+           coalesce(nullif(stddev_samp(phase_slope),0),1) s5 from pool),
+  d as (
+    select p.*, sqrt(
+        power((coalesce(p.dp_fund_mrad,0)-coalesce(p_dp1,0))/sc.s1,2) + power((coalesce(p.dp_mid_mrad,0)-coalesce(p_dp3,0))/sc.s2,2)
+      + power((coalesce(p.dp_high_mrad,0)-coalesce(p_dplast,0))/sc.s3,2) + power((coalesce(p.mag_pct,0)-coalesce(p_mag,0))/sc.s4,2)
+      + power((coalesce(p.phase_slope,0)-coalesce(p_slope,0))/sc.s5,2)) as dist
+    from pool p cross join sc),
+  r as (select d.*, row_number() over (partition by d.material order by d.dist) rn from d)
+  select r.id, r.material, r.xmt_hz, r.dp_fund_mrad, r.dp_mid_mrad, r.dp_high_mrad, r.mag_pct, r.max_snr,
+         r.phase_slope, r.ai_class, r.fused_class, r.dist
+    from r where r.rn <= p_k_per_class order by r.dist limit p_max;
+$$;
+grant execute on function public.nearest_confirmations(int,real,real,real,real,real,int,int) to authenticated;
+
+create or replace function public.training_class_counts(p_xmt int default null)
+returns table (material text, n bigint)
+language sql stable security invoker set search_path = public as $$
+  select material, count(*) from public.training_confirmations
+   where not coalesce(excluded,false) and coalesce(cohort,'current') = 'current' and material is not null
+     and (p_xmt is null or xmt_hz = p_xmt)
+   group by material order by 2 desc;
+$$;
+grant execute on function public.training_class_counts(int) to authenticated;
+
+-- 12. Lock every shared table and the file bucket to team members ---------------------
+-- Drops ALL existing policies on these tables (including any "any signed-in user" ones)
+-- and replaces them with team-only policies.
+do $$
+declare t text; p record;
+begin
+  foreach t in array array['training_confirmations','lab_signatures','waypoints','layback_calibrations','data_files','ai_predictions'] loop
+    execute format('alter table public.%I enable row level security', t);
+    for p in select policyname from pg_policies where schemaname='public' and tablename=t loop
+      execute format('drop policy %I on public.%I', p.policyname, t);
+    end loop;
+    execute format('create policy %I on public.%I for select to authenticated using (public.is_team())', t||'_team_select', t);
+    execute format('create policy %I on public.%I for insert to authenticated with check (public.is_team())', t||'_team_insert', t);
+    execute format('create policy %I on public.%I for update to authenticated using (public.is_team()) with check (public.is_team())', t||'_team_update', t);
+    execute format('create policy %I on public.%I for delete to authenticated using (public.is_team())', t||'_team_delete', t);
+  end loop;
+  if to_regclass('storage.objects') is not null then
+    for p in select policyname from pg_policies where schemaname='storage' and tablename='objects'
+               and (coalesce(qual,'') like '%ipa-data%' or coalesce(with_check,'') like '%ipa-data%') loop
+      execute format('drop policy %I on storage.objects', p.policyname);
+    end loop;
+    create policy ipa_data_team_select on storage.objects for select to authenticated using (bucket_id = 'ipa-data' and public.is_team());
+    create policy ipa_data_team_insert on storage.objects for insert to authenticated with check (bucket_id = 'ipa-data' and public.is_team());
+    create policy ipa_data_team_delete on storage.objects for delete to authenticated using (bucket_id = 'ipa-data' and public.is_team());
+  end if;
+end $$;
+
+notify pgrst, 'reload schema';

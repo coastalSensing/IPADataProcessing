@@ -76,7 +76,7 @@ Anyone can sign in with GitHub, but **nothing is readable or writable until they
 
 ### 6c. Claude (server-side, v32+)
 Claude is called from the Supabase Edge Function `classify` (`supabase/functions/classify/index.ts`), using one shared key that browsers never see.
-1. Supabase → **Edge Functions → Secrets**: add `ANTHROPIC_API_KEY` (and optionally `CLAUDE_MODEL`, default `claude-sonnet-4-5`).
+1. Supabase → **Edge Functions → Secrets**: add `ANTHROPIC_API_KEY` (and optionally `CLAUDE_MODEL`, default `claude-sonnet-5-5`).
 2. Deploy the function: Supabase → **Edge Functions → Deploy a new function → Via Editor**, name it `classify`, paste `index.ts`, Deploy. (Or `supabase functions deploy classify` with the CLI.) Leave "Verify JWT" on.
 3. Each call retrieves the nearest confirmed events from the shared `training_confirmations` table (balanced per material, same transmit frequency first), so every lab or field confirmation improves the next classification. Every prediction is logged in `ai_predictions` and linked to its confirmation, so accuracy can be tracked over time.
 

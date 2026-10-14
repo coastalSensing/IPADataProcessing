@@ -1193,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v32';
+const APP_VERSION='v33';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1462,6 +1462,7 @@ function App(){
   var [aiModel,setAiModel]=useState(lsGet('ipa_ai_model',''));
   var [selEv,setSelEv]=useState(null);
   var [aiResults,setAiResults]=useState({});
+  var [aiErr,setAiErr]=useState('');
   var [aiLoading,setAiLoading]=useState(null);
   var [confMat,setConfMat]=useState('');
   var [drag,setDrag]=useState(false);
@@ -1884,16 +1885,17 @@ function App(){
     var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return Promise.resolve();
     var key=fi+'-'+ei;setAiLoading(key);
     return classifyWithClaude(fa.events[ei],fa.harms,fa.bg,files[fi]&&files[fi].run,fa.xmt,aiModel).then(function(r){
-      setAiResults(function(p){var n=Object.assign({},p);n[key]=r;return n;});
+      setAiResults(function(p){var n=Object.assign({},p);n[key]=r;return n;});setAiErr('');return true;
     }).catch(function(e){
       setAiResults(function(p){var n=Object.assign({},p);n[key]={classification:'Error',confidence_pct:0,confidence_label:'Error',key_indicators:'',reasoning:e.message,caution:null};return n;});
+      setAiErr(e.message||'Unknown error');return false;
     }).finally(function(){setAiLoading(null);});
   }
   var doAI=function(fi,ei){if(!aiReady)return;runAI(fi,ei).then(function(){setSelEv(ei);});};
   var doAIAll=function(){
     if(!analysis||analysis.isLab||!aiReady)return;
     var fi=activeIdx,n=analysis.events.length,i=0;
-    (function next(){if(i>=n)return;var ei=i++;runAI(fi,ei).then(function(){setTimeout(next,500);});})();
+    (function next(){if(i>=n)return;var ei=i++;runAI(fi,ei).then(function(ok){if(ok===false)return;setTimeout(next,500);});})();
   };
 
   // ── Training confirmations ────────────────────────────────────────────────
@@ -2714,6 +2716,8 @@ function App(){
 
         <div className="ai-panel">
           <div className="ai-section-title">AI Classifier</div>
+          {aiErr && <div role="alert" style={{fontSize:11,lineHeight:1.5,color:'var(--neg)',border:'1px solid var(--neg)',borderRadius:6,padding:'6px 8px',margin:'4px 0 8px'}}>
+            <b>Claude call failed:</b> {aiErr}<br/>No AI classification was made. Batch runs stop at the first failure. Confirmations saved now are recorded as not AI-reviewed.</div>}
           <div>
             <div style={{fontSize:10,color:'var(--dim2)',lineHeight:1.6}}>Claude runs on the team server and learns from every confirmation in the shared database (nearest confirmed examples, balanced per material).</div>
             <div style={{fontSize:11,color:'var(--dim2)',margin:'6px 0 3px'}}>Model (blank = server default)</div>
@@ -2740,7 +2744,10 @@ function App(){
                     <tbody>{activeEv.labMatches.slice(0,4).map(function(m,i){return <tr key={i}><td>{m.material}</td><td className="num">{m.cos.toFixed(3)}</td><td className="num">{m.angleDeg.toFixed(0)}°</td><td className="num">{fmt(m.chi2red,1)}</td></tr>;})}</tbody></table>)}
                 {!activeEv.labMatches.length && <div style={{fontSize:10,color:'var(--dim)',marginTop:4}}>No lab references for {af.xmt}Hz — add them in Lab Stats.</div>}
               </div>
-              {aiRes && (
+              {aiRes && aiRes.classification==='Error' && (
+                <div role="alert" style={{fontSize:11,lineHeight:1.5,color:'var(--neg)',border:'1px solid var(--neg)',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
+                  <b>AI classification failed</b> for this event: {aiRes.reasoning||'unknown error'}</div>)}
+              {aiRes && aiRes.classification!=='Error' && (
                 <div className="ai-classification">
                   <div className="ai-cls-row">
                     <div style={{width:10,height:10,borderRadius:2,background:MAT_COLORS[aiRes.classification]||'#333'}}/>

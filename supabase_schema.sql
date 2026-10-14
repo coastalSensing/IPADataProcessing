@@ -397,3 +397,160 @@ begin
 end $$;
 
 notify pgrst, 'reload schema';
+
+-- =====================================================================================
+-- v34: SURVEYS, KNOWN SITES, PROVENANCE (Phase 1 of the revamp) — additive, safe to re-run
+-- =====================================================================================
+
+-- 13. Surveys: one row per campaign ---------------------------------------------------
+create table if not exists public.surveys (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null unique,
+  start_date  date,
+  end_date    date,
+  area        text,
+  vessel      text,
+  rig         jsonb,            -- streamer geometry: cable length, GPS offset, electrode spacing…
+  notes       text,
+  created_by  uuid default auth.uid(),
+  created_at  timestamptz not null default now()
+);
+
+-- 14. Known sites (seeded / surveyed targets) — replaces the day-code-in-the-name convention
+create table if not exists public.sites (
+  id          uuid primary key default gen_random_uuid(),
+  survey_id   uuid references public.surveys(id) on delete set null,
+  name        text not null,
+  lat         double precision not null,
+  lon         double precision not null,
+  material    text,
+  placed_on   date,
+  depth_m     real,
+  source      text,             -- 'seeded' | 'surveyed' | 'chart' …
+  active      boolean not null default true,
+  notes       text,
+  created_by  uuid default auth.uid(),
+  created_at  timestamptz not null default now()
+);
+create unique index if not exists sites_survey_name_uq on public.sites (coalesce(survey_id, '00000000-0000-0000-0000-000000000000'::uuid), name);
+
+-- 15. Link files, waypoints and calibrations to a survey -------------------------------
+alter table public.data_files
+  add column if not exists survey_id  uuid references public.surveys(id) on delete set null,
+  add column if not exists survey_day integer,
+  add column if not exists purpose    text;   -- 'survey_line' | 'setup' | 'lab_material' | 'lab_blank' | 'waypoints'
+alter table public.waypoints
+  add column if not exists survey_id uuid references public.surveys(id) on delete set null,
+  add column if not exists site_id   uuid references public.sites(id) on delete set null;
+alter table public.layback_calibrations
+  add column if not exists survey_id        uuid references public.surveys(id) on delete set null,
+  add column if not exists is_active        boolean not null default false,
+  add column if not exists validation_rms_m real,
+  add column if not exists anchor_ids       jsonb;
+
+-- 16. Provenance on every confirmation ------------------------------------------------
+alter table public.training_confirmations
+  add column if not exists label_source text,   -- 'lab' | 'field_waypoint' | 'expert_review'
+  add column if not exists data_file_id uuid references public.data_files(id) on delete set null,
+  add column if not exists site_id      uuid references public.sites(id) on delete set null,
+  add column if not exists survey_id    uuid references public.surveys(id) on delete set null;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'tc_label_source_chk') then
+    alter table public.training_confirmations add constraint tc_label_source_chk
+      check (label_source is null or label_source in ('lab','field_waypoint','expert_review'));
+  end if;
+end $$;
+create index if not exists tc_label_source_idx on public.training_confirmations (label_source);
+create index if not exists data_files_survey_idx on public.data_files (survey_id, survey_day);
+
+-- 17. Guard: a confirmation only counts as AI-reviewed if it links to a real logged prediction.
+-- Unverified AI fields are stripped (the human label is kept), so bad AI labels can't creep back in.
+create or replace function public.tc_verify_ai_fn() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.ai_prediction_id is null
+     or not exists (select 1 from public.ai_predictions p where p.id = new.ai_prediction_id) then
+    new.ai_prediction_id := null;
+    new.ai_used  := false;
+    new.ai_class := null;
+    new.ai_conf_pct := null;
+  else
+    new.ai_used := true;
+  end if;
+  if new.label_source is null then new.label_source := 'expert_review'; end if;
+  return new;
+end $$;
+drop trigger if exists tc_verify_ai on public.training_confirmations;
+create trigger tc_verify_ai before insert or update on public.training_confirmations
+  for each row execute function public.tc_verify_ai_fn();
+revoke all on function public.tc_verify_ai_fn() from public, anon, authenticated;
+
+-- 18. Team-only access on the new tables -----------------------------------------------
+do $$
+declare t text; p record;
+begin
+  foreach t in array array['surveys','sites'] loop
+    execute format('alter table public.%I enable row level security', t);
+    for p in select policyname from pg_policies where schemaname='public' and tablename=t loop
+      execute format('drop policy %I on public.%I', p.policyname, t);
+    end loop;
+    execute format('create policy %I on public.%I for select to authenticated using (public.is_team())', t||'_team_select', t);
+    execute format('create policy %I on public.%I for insert to authenticated with check (public.is_team())', t||'_team_insert', t);
+    execute format('create policy %I on public.%I for update to authenticated using (public.is_team()) with check (public.is_team())', t||'_team_update', t);
+    execute format('create policy %I on public.%I for delete to authenticated using (public.is_team())', t||'_team_delete', t);
+  end loop;
+end $$;
+
+-- 19. Backfill: Fall 2024 survey, survey days, file purpose ------------------------------
+insert into public.surveys (name, start_date, end_date, notes)
+values ('Fall 2024', date '2024-10-29', date '2024-11-01', 'Created by v34 migration from data_files timestamps.')
+on conflict (name) do nothing;
+
+update public.data_files f
+   set survey_id = s.id
+  from public.surveys s
+ where s.name = 'Fall 2024' and f.survey_id is null
+   and f.first_ts is not null
+   and to_date(left(f.first_ts, 10), 'YYYY/MM/DD') between s.start_date and s.end_date;
+
+update public.data_files
+   set survey_day = (regexp_match(file_name, 'day[ _]?([0-9]+)', 'i'))[1]::int
+ where survey_day is null and file_name ~* 'day[ _]?[0-9]+';
+
+update public.data_files
+   set purpose = case
+     when file_kind = 'waypoints' then 'waypoints'
+     when lower(coalesce(run_name,'')) = 'setup' then 'setup'
+     when file_kind = 'lab' then 'lab_material'
+     else 'survey_line' end
+ where purpose is null;
+
+-- 20. New uploads are tagged automatically (survey by date, day from the file name, purpose) --
+create or replace function public.df_autotag_fn() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare d date;
+begin
+  if new.purpose is null then
+    new.purpose := case
+      when new.file_kind = 'waypoints' then 'waypoints'
+      when lower(coalesce(new.run_name,'')) = 'setup' then 'setup'
+      when new.file_kind = 'lab' then 'lab_material'
+      else 'survey_line' end;
+  end if;
+  if new.survey_day is null and new.file_name ~* 'day[ _]?[0-9]+' then
+    new.survey_day := (regexp_match(new.file_name, 'day[ _]?([0-9]+)', 'i'))[1]::int;
+  end if;
+  if new.survey_id is null and new.first_ts ~ '^[0-9]{4}/[0-9]{2}/[0-9]{2}' then
+    d := to_date(left(new.first_ts, 10), 'YYYY/MM/DD');
+    select s.id into new.survey_id from public.surveys s
+     where d between s.start_date and coalesce(s.end_date, s.start_date)
+     order by s.start_date desc limit 1;
+  end if;
+  return new;
+end $$;
+drop trigger if exists df_autotag on public.data_files;
+create trigger df_autotag before insert on public.data_files
+  for each row execute function public.df_autotag_fn();
+revoke all on function public.df_autotag_fn() from public, anon, authenticated;
+
+notify pgrst, 'reload schema';

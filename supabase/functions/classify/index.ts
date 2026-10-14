@@ -4,7 +4,7 @@
 //   1. checks the caller is signed in AND on the team (entered the team password),
 //   2. pulls the most similar confirmed events from the SHARED database (balanced per material),
 //      so every confirmation from the lab or field makes the next classification better,
-//   3. asks Claude for a structured classification (forced tool call → always valid JSON),
+//   3. asks Claude for a structured classification (JSON-schema output → always valid JSON),
 //   4. logs the prediction to ai_predictions; the app links it to the confirmation that follows.
 //
 // Secrets (Supabase → Edge Functions → Secrets):
@@ -115,23 +115,22 @@ TEAM CONFIRMATIONS IN DATABASE: ${countLine || "none yet"}
 ${exLines ? `NEAREST CONFIRMED EXAMPLES${sameFreq ? "" : " (few at this frequency, so other frequencies included — compare cautiously)"}:\n${exLines}` : "No confirmed examples yet — rely on physics and lab references."}
 
 Allowed labels: ${labels.join(", ")}.
-Classify this event with the classify_event tool.`;
+Classify this event. Reply only with the JSON object.`;
 
-  const tool = {
-    name: "classify_event",
-    description: "Return the classification for this IPA event.",
-    input_schema: {
-      type: "object",
-      properties: {
-        classification: { type: "string", enum: labels },
-        confidence_pct: { type: "integer", minimum: 0, maximum: 99 },
-        confidence_label: { type: "string", enum: ["High", "Medium", "Low"] },
-        key_indicators: { type: "string", description: "One sentence." },
-        reasoning: { type: "string", description: "2-3 sentences, cite the examples or lab matches used." },
-        caution: { type: ["string", "null"] },
-      },
-      required: ["classification", "confidence_pct", "confidence_label", "key_indicators", "reasoning", "caution"],
+  // Structured output (JSON schema). Sonnet 5.5+ rejects forced tool_choice, so the
+  // response format is enforced with output_config.format instead.
+  const schema = {
+    type: "object",
+    properties: {
+      classification: { type: "string", enum: labels },
+      confidence_pct: { type: "integer", description: "0 to 99" },
+      confidence_label: { type: "string", enum: ["High", "Medium", "Low"] },
+      key_indicators: { type: "string", description: "One sentence." },
+      reasoning: { type: "string", description: "2-3 sentences, cite the examples or lab matches used." },
+      caution: { type: ["string", "null"] },
     },
+    required: ["classification", "confidence_pct", "confidence_label", "key_indicators", "reasoning", "caution"],
+    additionalProperties: false,
   };
 
   const t0 = Date.now();
@@ -140,18 +139,25 @@ Classify this event with the classify_event tool.`;
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
       model,
-      max_tokens: 800,
+      max_tokens: 4000,
       system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      tools: [tool],
-      tool_choice: { type: "tool", name: "classify_event" },
+      output_config: { effort: "medium", format: { type: "json_schema", schema } },
       messages: [{ role: "user", content: userMsg }],
     }),
   });
   const latency = Date.now() - t0;
   const d = await r.json().catch(() => ({}));
   if (!r.ok) return json({ error: `Claude API ${r.status}: ${d?.error?.message || "error"}` }, 502);
-  const out = (d.content || []).find((c: any) => c.type === "tool_use")?.input;
-  if (!out) return json({ error: "Claude returned no classification" }, 502);
+  if (d.stop_reason === "max_tokens") return json({ error: "Claude ran out of tokens before finishing; try again." }, 502);
+  if (d.stop_reason === "refusal") return json({ error: "Claude declined to classify this event." }, 502);
+  const text = (d.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
+  let out: any;
+  try { out = JSON.parse(text); } catch { return json({ error: "Claude returned unreadable output" }, 502); }
+  // Enum casing can drift; map back to the exact allowed label.
+  const exact = labels.find((l) => l.toLowerCase() === String(out.classification || "").toLowerCase());
+  if (!exact) return json({ error: `Claude returned an unknown label: ${out.classification}` }, 502);
+  out.classification = exact;
+  out.confidence_pct = Math.max(0, Math.min(99, Math.round(Number(out.confidence_pct) || 0)));
 
   const { data: ins, error: insErr } = await sb.from("ai_predictions").insert({
     model: d.model || model,

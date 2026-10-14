@@ -18,7 +18,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 const SUPA_URL = Deno.env.get("SUPABASE_URL") || "https://cregneohqyqnllcylaof.supabase.co";
 const SUPA_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ||
   "sb_publishable_8VsxLgCQQ5yWnEK1g37s6Q_6mLFr-FB";
-const DEFAULT_MODEL = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-4-5";
+const DEFAULT_MODEL = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-5-5";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",

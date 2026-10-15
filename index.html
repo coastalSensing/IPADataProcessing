@@ -1193,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v34';
+const APP_VERSION='v35';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1263,8 +1263,12 @@ function loadLabSigsDB(){return q(supabase.from('lab_signatures').select('*').or
   return rows.map(function(r){return{id:r.id,material:r.material,xmt:r.xmt_hz,freqs:r.freqs_hz,mean:r.mean_mrad,std:r.std_mrad,n:r.n_pkts,run:r.run_name,src:'db'};});});}
 function saveLabSigDB(s){return q(supabase.from('lab_signatures').insert({material:s.material,xmt_hz:s.xmt,freqs_hz:s.freqs,mean_mrad:s.mean,std_mrad:s.std,n_pkts:s.n,run_name:s.run}).select());}
 function deleteLabSigDB(id){return q(supabase.from('lab_signatures').delete().eq('id',id));}
+// v35: only independent positions are targets. Earlier IP detections ('detection') and seabed
+// context features ('context') stay in the database but never anchor layback or score coverage.
+var TARGET_ROLES={known_site:1,bathy_target:1};
 function loadWaypointsDB(){return q(supabase.from('waypoints').select('*').order('created_at',{ascending:true})).then(function(rows){
-  return rows.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db'};});});}
+  return rows.filter(function(r){return !r.role||TARGET_ROLES[r.role];})
+    .map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db',role:r.role||null,siteId:r.site_id||null};});});}
 function saveWaypointsDB(wps){return q(supabase.from('waypoints').insert(wps.map(function(w){return{name:w.name,lat:w.lat,lon:w.lon,material:w.material,source:w.source};})).select());}
 function deleteWaypointsDB(ids){return q(supabase.from('waypoints').delete().in('id',ids));}
 // ── Shared data library (raw files in a private Storage bucket + data_files table) ──

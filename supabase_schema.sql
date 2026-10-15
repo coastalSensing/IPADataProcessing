@@ -554,3 +554,81 @@ create trigger df_autotag before insert on public.data_files
 revoke all on function public.df_autotag_fn() from public, anon, authenticated;
 
 notify pgrst, 'reload schema';
+
+-- =====================================================================================
+-- v35: NORTH BEACH GROUND TRUTH + WAYPOINT ROLES — additive, safe to re-run
+-- Source: Drive "waypoint_target_assignment.csv" / "NorthBeach_waypoint_assignment" and
+-- "waypoint_logs.xlsx" (field log, Apr 21–23 2026); "Eagle Harbor Survey Metadata.xlsx".
+-- =====================================================================================
+
+-- 21. What each waypoint is. Only known_site and bathy_target may anchor layback or score coverage.
+alter table public.waypoints add column if not exists role text;   -- known_site | bathy_target | detection | context
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'wp_role_chk') then
+    alter table public.waypoints add constraint wp_role_chk
+      check (role is null or role in ('known_site','bathy_target','detection','context'));
+  end if;
+end $$;
+alter table public.sites
+  add column if not exists segment        jsonb,     -- [[lat,lon],[lat,lon]] two most distant members
+  add column if not exists waypoint_names text[],
+  add column if not exists line_name      text;
+
+-- 22. Surveys --------------------------------------------------------------------------------
+insert into public.surveys (name, start_date, end_date, area, notes) values
+ ('North Beach April 2026', date '2026-04-21', date '2026-04-23', 'North Beach, Puget Sound, WA (~47.708 N, 122.386 W)',
+  'Seeded-target survey. Day 1-2 layback_drop lines, day 3 combo_drop lines. Ground truth: waypoint_target_assignment.csv + waypoint_logs.xlsx (Drive). Prior analysis: layback 10.5 +/- 4.7 m (NorthBeach_Layback_Findings_Summary).'),
+ ('Eagle Harbor multibeam Sept 2024', date '2024-09-10', date '2024-09-17', 'Mouth of Eagle Harbor, Puget Sound, WA',
+  'Norbit i80S multibeam + backscatter, R/V Phoenix (Survey ID 0002). Source of EH-TGT/EH-OUT/EH-MND bathymetry targets: independent of IP data, positions only.')
+on conflict (name) do nothing;
+update public.surveys set area = coalesce(area, 'Eagle Harbor (days 1-2), Point Wells area (day 4), Puget Sound, WA')
+ where name = 'Fall 2024';
+
+-- 23. North Beach seeded sites (12), from the waypoint assignment sheet ---------------------
+with m(site, material, placed, line_name, names, notes) as (values
+ ('1A','Steel',date '2026-04-21','Steel Pipe', array['1A-1','1A-2','1A-3','1A-4','1A-5'], 'Northernmost day-1 site. 1A-1 deep end, 1A-5 shallow end.'),
+ ('1B','Steel',date '2026-04-21','Steel Pipe Day 1 First Half', array['1B-2','1B-3','1B-4','1B-5'], 'Southernmost day-1 site, surveyed first; used until 14:45, then the pipe was pulled deeper (see 1C).'),
+ ('1C','Steel',date '2026-04-21','Steel Pipe Day 1 Second Half', array['1C-1','1C-2','1C-3','568','1C-4','1B-1'], 'Same pipe as 1B pulled deeper (downhill), in use from 14:45. 568 is a GPS mark on this line; 1B-1 sits on it.'),
+ ('2A','Steel',date '2026-04-22','Steel Pipe Day 2', array['2A-1','584','2A-2','2A-3','2A-4'], 'Northernmost day-2 site. 584 is coordinate-identical to 2A-2.'),
+ ('2B','Steel',date '2026-04-22','Steel Pipe Day 2', array['2B-1','2B-2','2B-3','2B-4','2B-5'], 'Middle day-2 site, oriented north/south.'),
+ ('2C','Steel',date '2026-04-22','Steel Pipe Day 2', array['2C-1','2C-2','2C-3','2C-4','2C-5','2C-6'], 'Southernmost day-2 site.'),
+ ('3A','Steel',date '2026-04-23','Steel Pipe Day 3', array['576','577','578','579','580','581','582','583'], 'Northernmost day-3 site (logged as 3A-1..8).'),
+ ('3B','Asphalt',date '2026-04-23','Asphalt - Day 3', array['585','586','587','588','589','590','591'], 'Asphalt target (logged as 3B-1..7).'),
+ ('3C (first)','Steel',date '2026-04-23','Steel Pipe Day 3', array['569','570','571','572','573','574','575'], 'Steel, first placement; line pulled from its spot and reset.'),
+ ('3C (second half)','Steel',date '2026-04-23','Steel Pipe Day 3 - Second Half', array['606','605','604','559','560','603','567'], 'Steel, reset placement used from 11:23.'),
+ ('3D','Ilmenite',date '2026-04-23','Ilminite - After 11 - Day 3', array['602','592','593','594','595','601','600','596','598','599'], 'Ilmenite. First drop (592-595) not seen; re-dropped ~8 m along-track at 11:00 (596-602).'),
+ ('3E','Steel',date '2026-04-23','Steel Pipe Day 3', array['561','562','563','597','564','565','566'], 'Southernmost day-3 site.')
+),
+src as (select * from public.waypoints where source = 'IPA_waypoints_202604_w_coords_Google.kmz'),
+pts as (select m.site, s.name, s.lat, s.lon from m join src s on s.name = any(m.names)),
+far as (
+  select distinct on (a.site) a.site, a.lat lat1, a.lon lon1, b.lat lat2, b.lon lon2
+    from pts a join pts b on a.site = b.site
+   order by a.site, (power(a.lat-b.lat,2) + power((a.lon-b.lon)*cos(radians(a.lat)),2)) desc)
+insert into public.sites (survey_id, name, lat, lon, material, placed_on, source, notes, segment, waypoint_names, line_name)
+select (select id from public.surveys where name = 'North Beach April 2026'), m.site,
+       avg(p.lat), avg(p.lon), m.material, m.placed, 'seeded', m.notes,
+       jsonb_build_array(jsonb_build_array(f.lat1, f.lon1), jsonb_build_array(f.lat2, f.lon2)), m.names, m.line_name
+  from m join pts p on p.site = m.site join far f on f.site = m.site
+ group by m.site, m.material, m.placed, m.notes, m.names, m.line_name, f.lat1, f.lon1, f.lat2, f.lon2
+on conflict do nothing;
+
+-- 24. Tag every waypoint with its role, survey and site ----------------------------------------
+update public.waypoints w
+   set role = 'known_site',
+       survey_id = (select id from public.surveys where name = 'North Beach April 2026'),
+       site_id = (select s.id from public.sites s join public.surveys v on v.id = s.survey_id
+                   where v.name = 'North Beach April 2026' and w.name = any(s.waypoint_names) limit 1),
+       material = coalesce(w.material, (select s.material from public.sites s join public.surveys v on v.id = s.survey_id
+                   where v.name = 'North Beach April 2026' and w.name = any(s.waypoint_names) limit 1))
+ where w.source = 'IPA_waypoints_202604_w_coords_Google.kmz' and w.role is null;
+
+update public.waypoints
+   set role = 'bathy_target', survey_id = (select id from public.surveys where name = 'Eagle Harbor multibeam Sept 2024')
+ where role is null and (name ~ '^EH-TGT-' or name ~ '^EH-OUT-' or name ~ '^EH-MND-');
+update public.waypoints set role = 'context'
+ where role is null and name ~ '^CTX-';
+update public.waypoints set role = 'detection', survey_id = (select id from public.surveys where name = 'Fall 2024')
+ where role is null and (name ~ '^EH-(C|T|IP)-' or name ~* '^IP line');
+
+notify pgrst, 'reload schema';

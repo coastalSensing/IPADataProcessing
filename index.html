@@ -1193,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v33';
+const APP_VERSION='v34';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1245,7 +1245,8 @@ function saveTrainingToDB(entry,harms){
   var ext=Object.assign({},legacy,{rules_class:entry.rulesCls,ai_class:entry.aiCls,lab_class:entry.labCls,lab_cos:entry.labCos,
     fused_class:entry.fusedCls,pred_conf_pct:entry.predConf,phase_slope:entry.fv.slope,dp_dev_json:entry.dpDev,
     lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION,
-    cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false,ai_prediction_id:entry.aiPredictionId||null});
+    cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false,ai_prediction_id:entry.aiPredictionId||null,
+    label_source:entry.labelSource||'expert_review',data_file_id:entry.dataFileId||null,survey_id:entry.surveyId||null});
   return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true};})
     .catch(function(e){if(!isSchemaErr(e))throw e;
       return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false};});});
@@ -1284,16 +1285,30 @@ function fileMeta(kind,pkts,wps){
   return m;
 }
 function listLibraryDB(){return q(supabase.from('data_files').select('*').order('created_at',{ascending:false}).limit(10000));}
+// v34: new uploads are stored gzipped (text shrinks several-fold), so the free-tier 1 GB lasts longer.
+// Older plain-text files keep working; the .gz suffix tells the downloader which is which.
+function gzipBlob(text){
+  if(!window.CompressionStream)return Promise.resolve(null);
+  var cs=new Blob([text],{type:'text/plain'}).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Response(cs).blob().then(function(b){return new Blob([b],{type:'application/gzip'});});
+}
 function uploadToLibrary(rec,email){
   var path=rec.kind+'/'+rec.hash.slice(0,16)+'_'+rec.name.replace(/[^A-Za-z0-9._-]/g,'_');
-  return supabase.storage.from(BUCKET).upload(path,new Blob([rec.text],{type:'text/plain'}),{upsert:false,contentType:'text/plain'})
+  return gzipBlob(rec.text).then(function(gz){
+    var blob=gz||new Blob([rec.text],{type:'text/plain'});
+    if(gz)path+='.gz';
+    return supabase.storage.from(BUCKET).upload(path,blob,{upsert:false,contentType:gz?'application/gzip':'text/plain'})
     .then(function(res){
       if(res.error&&!/exist|duplicate/i.test(res.error.message))throw new Error(res.error.message);
-      return q(supabase.from('data_files').insert(Object.assign({storage_path:path,sha256:rec.hash,file_name:rec.name,bytes:rec.text.length,uploaded_by_email:email||null},rec.meta)).select());
-    }).then(function(rows){return rows&&rows[0];})
+      return q(supabase.from('data_files').insert(Object.assign({storage_path:path,sha256:rec.hash,file_name:rec.name,bytes:blob.size,uploaded_by_email:email||null},rec.meta)).select());
+    });}).then(function(rows){return rows&&rows[0];})
     .catch(function(e){if(/duplicate key|unique/i.test(e.message))return null;throw e;});
 }
-function downloadFromLibrary(path){return supabase.storage.from(BUCKET).download(path).then(function(res){if(res.error)throw new Error(res.error.message);return res.data.text();});}
+function downloadFromLibrary(path){return supabase.storage.from(BUCKET).download(path).then(function(res){if(res.error)throw new Error(res.error.message);
+  if(/\.gz$/.test(path)){
+    if(!window.DecompressionStream)throw new Error('This browser cannot open compressed library files. Update Chrome, Edge, Firefox or Safari.');
+    return new Response(res.data.stream().pipeThrough(new DecompressionStream('gzip'))).text();}
+  return res.data.text();});}
 function deleteFromLibrary(rows){
   return supabase.storage.from(BUCKET).remove(rows.map(function(r){return r.storage_path;})).then(function(res){
     if(res&&res.error)throw new Error(res.error.message);
@@ -1903,12 +1918,14 @@ function App(){
     if(!confMat)return;
     var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return;
     var ev=fa.events[ei],harms=fa.harms,ar=aiResults[fi+'-'+ei];
+    var fh=files[fi]&&files[fi].hash,libRow=fh?library.find(function(r){return r.sha256===fh;}):null;
     var entry={material:confMat,run:files[fi].run,ts:ev.ts,
       fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
       aiConf:ar?ar.confidence_pct:null,rulesCls:ev.cls,aiCls:ar&&ar.classification!=='Error'?ar.classification:null,
       labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
       aiPredictionId:ar&&ar.prediction_id||null,dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,
-      cohort:'current',featureBasis:'deviation',aiUsed:!!(ar&&ar.classification!=='Error'),excluded:false};
+      cohort:'current',featureBasis:'deviation',aiUsed:!!(ar&&ar.classification!=='Error'),excluded:false,
+      labelSource:'expert_review',dataFileId:libRow?libRow.id:null,surveyId:libRow?libRow.survey_id||null:null};
     setTraining(function(p){return p.concat([entry]);});
     setConfMat('');setDbStatus('loading');
     saveTrainingToDB(entry,harms).then(function(res){
@@ -2496,7 +2513,7 @@ function App(){
 
           {mainTab==='library' && (function(){
             var q=libFilter.text.trim().toLowerCase();
-            var rows=library.filter(function(r){return (libFilter.kind==='all'||r.file_kind===libFilter.kind)&&
+            var rows=library.filter(function(r){return (libFilter.kind==='all'||(libFilter.kind==='setup'?r.purpose==='setup':libFilter.kind==='field'?(r.file_kind==='field'&&r.purpose!=='setup'):r.file_kind===libFilter.kind))&&
               (!q||[r.file_name,r.run_name,r.uploaded_by_email,r.first_ts].join(' ').toLowerCase().indexOf(q)>=0);});
             var loadedH={};files.forEach(function(f){if(f.hash)loadedH[f.hash]=1;});
             var sel=rows.filter(function(r){return libSel[r.id];});
@@ -2526,7 +2543,7 @@ function App(){
                   <div className="warnbox">Some uploads failed: {Object.keys(shareState).filter(function(h){return shareState[h].indexOf('error:')===0;}).map(function(h){return shareState[h].slice(6);}).filter(function(v,i,a){return a.indexOf(v)===i;}).join('; ')}. If it mentions a bucket or policy, run the latest <code>supabase_schema.sql</code>.</div>}
                 <div className="row" style={{marginBottom:8}}>
                   <select className="confirm-sel" style={{flex:'0 0 150px'}} value={libFilter.kind} onChange={function(e){setLibFilter(Object.assign({},libFilter,{kind:e.target.value}));}}>
-                    <option value="all">All types</option><option value="field">Field runs</option><option value="lab">Lab files</option><option value="waypoints">Waypoints</option></select>
+                    <option value="all">All types</option><option value="field">Survey lines</option><option value="setup">Setup recordings</option><option value="lab">Lab files</option><option value="waypoints">Waypoints</option></select>
                   <input className="api-key-input" style={{flex:'0 0 260px'}} placeholder="Search name, run, uploader, date…" value={libFilter.text} onChange={function(e){setLibFilter(Object.assign({},libFilter,{text:e.target.value}));}}/>
                   <div style={{flex:1}}/>
                   <button className="btn btn-primary btn-sm" disabled={!sel.length||!!libBusy} onClick={function(){loadFromLibrary(sel);}}>Load selected ({sel.length})</button>
@@ -2543,7 +2560,7 @@ function App(){
                         <tr key={r.id}>
                           <td><input type="checkbox" checked={!!libSel[r.id]} onChange={function(e){var n=Object.assign({},libSel);if(e.target.checked)n[r.id]=true;else delete n[r.id];setLibSel(n);}}/></td>
                           <td title={r.file_name} style={{maxWidth:220,overflow:'hidden',textOverflow:'ellipsis'}}>{r.file_name}</td>
-                          <td><span className="pill">{r.file_kind}</span></td><td>{r.run_name||'—'}</td><td className="num">{r.xmt_hz?r.xmt_hz+'Hz':'—'}</td>
+                          <td><span className="pill" title={r.purpose==='setup'?'Short setup/check recording, not a survey line or lab material run':''}>{r.purpose==='setup'?'setup':r.file_kind}</span>{r.survey_day?<span style={{fontSize:9,color:'var(--dim)',marginLeft:4}}>d{r.survey_day}</span>:null}</td><td>{r.run_name||'—'}</td><td className="num">{r.xmt_hz?r.xmt_hz+'Hz':'—'}</td>
                           <td className="num">{r.file_kind==='waypoints'?r.n_waypoints:r.n_packets}</td>
                           <td>{r.first_ts?String(r.first_ts).substring(0,16):'—'}</td><td>{r.uploaded_by_email||'—'}</td>
                           <td>{r.created_at?new Date(r.created_at).toLocaleDateString():'—'}</td><td className="num">{fmt((r.bytes||0)/1024,0)}</td>

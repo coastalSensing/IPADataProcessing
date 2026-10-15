@@ -1193,7 +1193,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v35';
+const APP_VERSION='v36';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1859,14 +1859,89 @@ function App(){
       return names.length?zip.files[names[0]].async('string'):'';
     });
   }
+  // ── v36: bulk import of Drive downloads (ZIP) or dropped folders → shared library ──
+  // Only processed files (*_p.txt) are taken; raw files and everything else are ignored.
+  // Files are imported one at a time (low memory), de-duplicated by content hash, stored
+  // gzipped, and tagged with their Drive path in data_files.notes. They are NOT added to the
+  // working set — load them from the Data Library when needed.
+  function isProcessedName(n){return /_p\.txt$/i.test(n||'');}
+  function importEntries(entries,label){
+    if(!authUser){setLibStatus('Sign in to import into the shared library.');return Promise.resolve();}
+    var known=Object.assign({},libraryHashes),i=0,added=0,dup=0,bad=0,failed=0;
+    setMainTab('library');
+    return new Promise(function(resolve){
+      (function next(){
+        if(i>=entries.length){
+          setLibBusy('');
+          setLibStatus(label+': '+added+' added, '+dup+' already in library'+(bad?', '+bad+' not IPA packet files':'')+(failed?', '+failed+' failed (see console)':'')+' — '+entries.length+' processed file(s) found.');
+          listLibraryDB().then(function(r){setLibrary(r);}).catch(function(){});
+          resolve();return;
+        }
+        var e=entries[i++];
+        setLibBusy('Importing '+label+' — '+i+'/'+entries.length+' ('+added+' added)…');
+        Promise.resolve().then(e.get).then(function(text){return sha256Hex(text).then(function(h){
+          if(h&&known[h]){dup++;return;}
+          var r=parseText(e.name,text,h,false);
+          if(!r||r.kind!=='ipa'){bad++;return;}
+          r.rec.meta=Object.assign({},r.rec.meta,{notes:'Drive path: '+e.path});
+          if(h)known[h]=1;
+          return uploadToLibrary(r.rec,userEmail).then(function(row){if(row)added++;else dup++;});
+        });}).catch(function(err){failed++;console.warn('[import]',e.path,err);}).then(function(){setTimeout(next,0);});
+      })();
+    });
+  }
+  function importArchive(file){
+    if(typeof JSZip==='undefined'){setLibStatus('JSZip not loaded; cannot open '+file.name);return Promise.resolve();}
+    setMainTab('library');setLibBusy('Opening '+file.name+'…');
+    return file.arrayBuffer().then(function(buf){return JSZip.loadAsync(buf);}).then(function(zip){
+      var names=Object.keys(zip.files).filter(function(n){return !zip.files[n].dir&&isProcessedName(n.split('/').pop());}).sort();
+      return importEntries(names.map(function(n){return{name:n.split('/').pop(),path:n,get:function(){return zip.files[n].async('string');}};}),file.name);
+    }).catch(function(e){setLibBusy('');setLibStatus('Could not open '+file.name+': '+e.message);});
+  }
+  function importLooseFiles(files,label){
+    var zips=files.filter(function(f){return /\.zip$/i.test(f.name);});
+    var proc=files.filter(function(f){return isProcessedName(f.name);});
+    var chain=zips.reduce(function(p,z){return p.then(function(){return importArchive(z);});},Promise.resolve());
+    return chain.then(function(){
+      if(proc.length)return importEntries(proc.map(function(f){return{name:f.name,path:f._path||f.webkitRelativePath||f.name,get:function(){return f.text();}};}),label);
+    });
+  }
+  // Drop handler: folders are walked recursively (must start synchronously inside the drop event).
+  function collectDropped(dt){
+    var items=dt.items?Array.prototype.slice.call(dt.items):[];
+    var entries=items.map(function(it){return it.webkitGetAsEntry?it.webkitGetAsEntry():null;}).filter(Boolean);
+    var plain=Array.prototype.slice.call(dt.files||[]);
+    if(!entries.some(function(en){return en.isDirectory;}))return Promise.resolve({files:plain,dir:false});
+    var out=[];
+    function walk(en,path){
+      if(en.isFile)return new Promise(function(res){en.file(function(f){try{f._path=path+f.name;}catch(x){}out.push(f);res();},function(){res();});});
+      var rd=en.createReader(),all=[];
+      return new Promise(function(res){(function read(){rd.readEntries(function(b){
+        if(!b.length){Promise.all(all.map(function(c){return walk(c,path+en.name+'/');})).then(function(){res();});}
+        else{all=all.concat(Array.prototype.slice.call(b));read();}
+      },function(){res();});})();});
+    }
+    return Promise.all(entries.map(function(en){return walk(en,'');})).then(function(){return{files:out,dir:true};});
+  }
+  function handleDrop(dt){
+    collectDropped(dt).then(function(r){
+      if(r.dir)return importLooseFiles(r.files,'Folder import');
+      var zips=r.files.filter(function(f){return /\.zip$/i.test(f.name);});
+      if(zips.length)importLooseFiles(zips,'ZIP import');
+      var rest=r.files.filter(function(f){return !/\.zip$/i.test(f.name);});
+      if(rest.length)loadFiles(rest);
+    });
+  }
   var loadFiles=function(fileList,forceWp){
     var arr=Array.prototype.slice.call(fileList);
+    var zipsIn=arr.filter(function(f){return /\.zip$/i.test(f.name);});
+    if(zipsIn.length){importLooseFiles(zipsIn,'ZIP import');arr=arr.filter(function(f){return !/\.zip$/i.test(f.name);});if(!arr.length)return;}
     Promise.all(arr.map(function(file){return readFileText(file).then(function(text){
       return sha256Hex(text).then(function(h){return parseText(file.name,text,h,forceWp);});
     });})).then(function(res){
       var nw=addParsed(res);
       var bad=res.filter(function(r){return !r;}).length;
-      if(bad)alert(bad+' file(s) could not be parsed as IPA packets or waypoints.');
+      if(bad)setLibStatus(bad+' file(s) could not be parsed as IPA packets or waypoints.');
       if(autoShare&&authUser){
         shareRecords(res.filter(Boolean).map(function(r){return r.rec;}));
         if(nw.length)shareWaypointsNow(nw);
@@ -2047,12 +2122,12 @@ function App(){
         <div className="sidebar">
           <div className={drag?'upload-zone drag':'upload-zone'}
             onDragOver={function(e){e.preventDefault();setDrag(true);}} onDragLeave={function(){setDrag(false);}}
-            onDrop={function(e){e.preventDefault();setDrag(false);loadFiles(e.dataTransfer.files);}}
+            onDrop={function(e){e.preventDefault();setDrag(false);handleDrop(e.dataTransfer);}}
             onClick={function(){fileRef.current&&fileRef.current.click();}}>
             <div className="icon">📡</div>
-            <p>Drop <code>_p.txt</code> files (lab or field)<br/>or waypoint <code>.csv/.gpx</code> · <span>click to browse</span></p>
+            <p>Drop <code>_p.txt</code> files (lab or field)<br/>or waypoint <code>.csv/.gpx</code> · <span>click to browse</span><br/><span style={{fontSize:10}}>Drive folder <code>.zip</code> or a folder → shared library (processed files only)</span></p>
           </div>
-          <input ref={fileRef} type="file" accept=".txt,.csv,.gpx,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
+          <input ref={fileRef} type="file" accept=".txt,.csv,.gpx,.kml,.kmz,.zip" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
           <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
 
           {(function(){
@@ -2158,7 +2233,7 @@ function App(){
                   var loc=waypoints.filter(function(w){return !w.id;});
                   saveWaypointsDB(IPA.alignWaypointHemisphere(loc,refLon)).then(function(d){
                     setWaypoints(function(p){return p.filter(function(w){return w.id;}).concat(d.map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source};}));});
-                  }).catch(function(e){alert('Could not save waypoints: '+e.message+'\nRun supabase_schema.sql in Supabase first.');});
+                  }).catch(function(e){setLibStatus('Could not save waypoints: '+e.message+' (run supabase_schema.sql in Supabase first).');});
                 }}>Save to DB</button>}
                 <button className="btn btn-ghost btn-sm" onClick={function(){
                   var ids=waypoints.filter(function(w){return w.id;}).map(function(w){return w.id;});
@@ -2459,7 +2534,7 @@ function App(){
                     {calib.seL>5 && <div className="warnbox">Layback uncertainty is large (±{fmt(calib.seL)} m). More passes at different speeds and in both directions will tighten it.</div>}
                     <div className="row" style={{marginBottom:10}}>
                       <button className="btn btn-primary" onClick={function(){setProc({laybackM:+calib.L.toFixed(2),latencyS:+(calib.tau||0).toFixed(3),applyLayback:true});}}>Apply fitted L & τ</button>
-                      <button className="btn btn-ghost" onClick={function(){saveCalibrationDB(calib,proc).then(function(){alert('Calibration saved.');}).catch(function(e){alert('Save failed: '+e.message);});}}>Save calibration to DB</button>
+                      <button className="btn btn-ghost" onClick={function(){saveCalibrationDB(calib,proc).then(function(){setDbNote('Calibration saved.');}).catch(function(e){setDbNote('Calibration save failed: '+e.message);});}}>Save calibration to DB</button>
                       <button className="btn btn-ghost" onClick={function(){downloadCSV('layback_anchors.csv',anchors.map(function(a){var m=calib.matches.find(function(x){return x.key===a.key;});return{run:a.run,target:a.target,day:a.dayRank,crossing:a.ei+1,along_m:a.along.toFixed(2),
                         boat_pass_m:a.cross.toFixed(2),sog_ms:fmt(a.sog,2),cog_deg:fmt(a.cog,0),snr:a.snr.toFixed(1),included:!anchorOff[a.key],resid_m:m?fmt(m.resid,2):'',inlier:m?m.inlier:''};}));}}>Export CSV</button>
                     </div>

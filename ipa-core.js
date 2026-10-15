@@ -19,7 +19,7 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  var HARM = { 2: [2, 6, 10, 14, 18, 22], 4: [4, 12, 20, 28, 36, 44], 8: [8, 24, 40, 56, 72, 88] };
+  var HARM = { 2: [2, 6, 10, 14, 18, 22], 3: [3, 9, 15, 21, 27, 33], 4: [4, 12, 20, 28, 36, 44], 8: [8, 24, 40, 56, 72, 88] };
   function getHarms(xmt) { return HARM[xmt] || HARM[4]; }
 
   var MAT_COLORS = {
@@ -27,16 +27,21 @@
     'ITB Rebel Crude': '#1a8c4e', 'Metallic IP': '#b02040', 'Steel': '#cc2233',
     'Ilmenite': '#a04010', 'Galvanized Steel': '#807030', 'Mixed': '#5a50c8',
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
-    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc'
+    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc',
+    'Group 5 Oil': '#2a6f97', 'Mineral Oil': '#5a8fb0', 'Copper': '#b86b2a', 'Lead': '#5c5c70', 'Zinc': '#7d8591',
+    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39'
   };
-  var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
-  var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Metallic IP', 'Mixed'];
+  var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
+  var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
+    'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore',
+    'Bronze', 'Rutile', 'Metallic IP', 'Mixed'];
 
   var FAMILY = {
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
-    'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon',
+    'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon', 'Group 5 Oil': 'hydrocarbon', 'Mineral Oil': 'hydrocarbon',
+    'Copper': 'metallic', 'Lead': 'metallic', 'Zinc': 'metallic', 'Silver': 'metallic', 'Gold': 'metallic', 'Silver Ore': 'metallic',
+    'Bronze': 'metallic', 'Rutile': 'metallic',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
     'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
@@ -271,7 +276,9 @@
   }
   function matchMaterial(s) {
     if (!s) return null; var t = String(s).toLowerCase();
-    var keys = [['seawater', 'Seawater blank'], ['blank', 'Seawater blank'], ['galv', 'Galvanized Steel'], ['steel', 'Steel'],
+    var keys = [['seawater', 'Seawater blank'], ['blank', 'Seawater blank'], ['baseline', 'Seawater blank'], ['galv', 'Galvanized Steel'], ['steel', 'Steel'],
+      ['group 5', 'Group 5 Oil'], ['group_5', 'Group 5 Oil'], ['mineral oil', 'Mineral Oil'], ['silver ore', 'Silver Ore'], ['silver', 'Silver'],
+      ['gold', 'Gold'], ['copper', 'Copper'], ['cu wire', 'Copper'], ['bronze', 'Bronze'], ['rutile', 'Rutile'], ['lead', 'Lead'], ['zinc', 'Zinc'],
       ['ilmen', 'Ilmenite'], ['gas oil', 'Class 3 Gas Oil'], ['class 3', 'Class 3 Gas Oil'], ['class3', 'Class 3 Gas Oil'],
       ['alaska', 'Alaska Crude Oil'], ['ans', 'Alaska Crude Oil'], ['rebel', 'ITB Rebel Crude'], ['itb', 'ITB Rebel Crude'],
       ['asphalt', 'Asphalt'], ['bitum', 'Asphalt'], ['crude', 'Hydrocarbon IP'], ['oil', 'Hydrocarbon IP'], ['hydro', 'Hydrocarbon IP'],
@@ -518,13 +525,29 @@
   }
 
   // ── Lab signature matching (weighted spectral angle) ───────────────────────
+  // Average several blank runs from one lab session into one blank (per-harmonic mean; pooled std).
+  function avgBlank(list) {
+    if (!list.length) return null; if (list.length === 1) return list[0];
+    var fr = list[0].freqs, m_ = [], s_ = [];
+    fr.forEach(function (f) {
+      var m = [], v = [];
+      list.forEach(function (b) { var k = b.freqs.indexOf(f); if (k >= 0 && finite(b.mean[k])) { m.push(b.mean[k]); v.push(Math.pow(b.std[k] || 0, 2)); } });
+      m_.push(m.length ? mean(m) : NaN); s_.push(v.length ? Math.sqrt(mean(v)) : 0);
+    });
+    return { material: 'Seawater blank', xmt: list[0].xmt, freqs: fr, mean: m_, std: s_, project: list[0].project };
+  }
+  // v37: each target run is blank-subtracted with the baselines from ITS OWN lab session (same project + xmt);
+  // falls back to the latest blank at that frequency. Returns the best-matching run per material.
   function labMatch(ev, harms, bg, sigs) {
     if (!sigs || !sigs.length) return [];
-    var xmt = harms[0] === 2 ? 2 : harms[0] === 8 ? 8 : 4;
+    var xmt = harms[0];
     var blanks = sigs.filter(function (s) { return s.material === 'Seawater blank' && s.xmt === xmt; });
-    var blank = blanks.length ? blanks[blanks.length - 1] : null, out = [];
+    var lastBlank = blanks.length ? blanks[blanks.length - 1] : null, byProj = {}, projBlank = {}, out = [];
+    blanks.forEach(function (b) { if (b.project) (byProj[b.project] = byProj[b.project] || []).push(b); });
+    Object.keys(byProj).forEach(function (p) { projBlank[p] = avgBlank(byProj[p]); });
     sigs.forEach(function (s) {
-      if (s.material === 'Seawater blank' || s.xmt !== xmt) return;
+      if (s.material === 'Seawater blank' || s.material === 'No anomaly' || s.xmt !== xmt) return;
+      var blank = (s.project && projBlank[s.project]) || lastBlank;
       var sx = 0, ss = 0, xx = 0, n = 0, W = [], X = [], S = [];
       harms.forEach(function (f) {
         var k = s.freqs.indexOf(f); if (k < 0) return;
@@ -538,9 +561,13 @@
       var cos = sx / Math.sqrt(ss * xx), a = sx / ss, chi = 0;
       for (var k = 0; k < n; k++) chi += W[k] * Math.pow(X[k] - a * S[k], 2);
       out.push({ material: s.material, run: s.run, cos: cos, angleDeg: Math.acos(Math.max(-1, Math.min(1, cos))) / D2R,
-        scale: a, chi2red: chi / Math.max(1, n - 1), nHarm: n, blankUsed: !!blank });
+        scale: a, chi2red: chi / Math.max(1, n - 1), nHarm: n, blankUsed: !!blank,
+        sessionBlank: !!(s.project && projBlank[s.project]), project: s.project || null });
     });
-    return out.sort(function (p, q) { return q.cos - p.cos; });
+    out.sort(function (p, q) { return q.cos - p.cos; });
+    var seen = {}, best = [];
+    out.forEach(function (m) { if (seen[m.material]) { seen[m.material].nRuns++; return; } m.nRuns = 1; seen[m.material] = m; best.push(m); });
+    return best;
   }
   function fuseClass(ev, best, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});

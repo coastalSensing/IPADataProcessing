@@ -275,7 +275,7 @@ canvas{display:block;width:100%;}
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  var HARM = { 2: [2, 6, 10, 14, 18, 22], 4: [4, 12, 20, 28, 36, 44], 8: [8, 24, 40, 56, 72, 88] };
+  var HARM = { 2: [2, 6, 10, 14, 18, 22], 3: [3, 9, 15, 21, 27, 33], 4: [4, 12, 20, 28, 36, 44], 8: [8, 24, 40, 56, 72, 88] };
   function getHarms(xmt) { return HARM[xmt] || HARM[4]; }
 
   var MAT_COLORS = {
@@ -283,16 +283,21 @@ canvas{display:block;width:100%;}
     'ITB Rebel Crude': '#1a8c4e', 'Metallic IP': '#b02040', 'Steel': '#cc2233',
     'Ilmenite': '#a04010', 'Galvanized Steel': '#807030', 'Mixed': '#5a50c8',
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
-    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc'
+    'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc',
+    'Group 5 Oil': '#2a6f97', 'Mineral Oil': '#5a8fb0', 'Copper': '#b86b2a', 'Lead': '#5c5c70', 'Zinc': '#7d8591',
+    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39'
   };
-  var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
-  var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude',
-    'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Metallic IP', 'Mixed'];
+  var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
+  var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
+    'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore',
+    'Bronze', 'Rutile', 'Metallic IP', 'Mixed'];
 
   var FAMILY = {
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
-    'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon',
+    'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon', 'Group 5 Oil': 'hydrocarbon', 'Mineral Oil': 'hydrocarbon',
+    'Copper': 'metallic', 'Lead': 'metallic', 'Zinc': 'metallic', 'Silver': 'metallic', 'Gold': 'metallic', 'Silver Ore': 'metallic',
+    'Bronze': 'metallic', 'Rutile': 'metallic',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
     'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
@@ -527,7 +532,9 @@ canvas{display:block;width:100%;}
   }
   function matchMaterial(s) {
     if (!s) return null; var t = String(s).toLowerCase();
-    var keys = [['seawater', 'Seawater blank'], ['blank', 'Seawater blank'], ['galv', 'Galvanized Steel'], ['steel', 'Steel'],
+    var keys = [['seawater', 'Seawater blank'], ['blank', 'Seawater blank'], ['baseline', 'Seawater blank'], ['galv', 'Galvanized Steel'], ['steel', 'Steel'],
+      ['group 5', 'Group 5 Oil'], ['group_5', 'Group 5 Oil'], ['mineral oil', 'Mineral Oil'], ['silver ore', 'Silver Ore'], ['silver', 'Silver'],
+      ['gold', 'Gold'], ['copper', 'Copper'], ['cu wire', 'Copper'], ['bronze', 'Bronze'], ['rutile', 'Rutile'], ['lead', 'Lead'], ['zinc', 'Zinc'],
       ['ilmen', 'Ilmenite'], ['gas oil', 'Class 3 Gas Oil'], ['class 3', 'Class 3 Gas Oil'], ['class3', 'Class 3 Gas Oil'],
       ['alaska', 'Alaska Crude Oil'], ['ans', 'Alaska Crude Oil'], ['rebel', 'ITB Rebel Crude'], ['itb', 'ITB Rebel Crude'],
       ['asphalt', 'Asphalt'], ['bitum', 'Asphalt'], ['crude', 'Hydrocarbon IP'], ['oil', 'Hydrocarbon IP'], ['hydro', 'Hydrocarbon IP'],
@@ -774,13 +781,29 @@ canvas{display:block;width:100%;}
   }
 
   // ── Lab signature matching (weighted spectral angle) ───────────────────────
+  // Average several blank runs from one lab session into one blank (per-harmonic mean; pooled std).
+  function avgBlank(list) {
+    if (!list.length) return null; if (list.length === 1) return list[0];
+    var fr = list[0].freqs, m_ = [], s_ = [];
+    fr.forEach(function (f) {
+      var m = [], v = [];
+      list.forEach(function (b) { var k = b.freqs.indexOf(f); if (k >= 0 && finite(b.mean[k])) { m.push(b.mean[k]); v.push(Math.pow(b.std[k] || 0, 2)); } });
+      m_.push(m.length ? mean(m) : NaN); s_.push(v.length ? Math.sqrt(mean(v)) : 0);
+    });
+    return { material: 'Seawater blank', xmt: list[0].xmt, freqs: fr, mean: m_, std: s_, project: list[0].project };
+  }
+  // v37: each target run is blank-subtracted with the baselines from ITS OWN lab session (same project + xmt);
+  // falls back to the latest blank at that frequency. Returns the best-matching run per material.
   function labMatch(ev, harms, bg, sigs) {
     if (!sigs || !sigs.length) return [];
-    var xmt = harms[0] === 2 ? 2 : harms[0] === 8 ? 8 : 4;
+    var xmt = harms[0];
     var blanks = sigs.filter(function (s) { return s.material === 'Seawater blank' && s.xmt === xmt; });
-    var blank = blanks.length ? blanks[blanks.length - 1] : null, out = [];
+    var lastBlank = blanks.length ? blanks[blanks.length - 1] : null, byProj = {}, projBlank = {}, out = [];
+    blanks.forEach(function (b) { if (b.project) (byProj[b.project] = byProj[b.project] || []).push(b); });
+    Object.keys(byProj).forEach(function (p) { projBlank[p] = avgBlank(byProj[p]); });
     sigs.forEach(function (s) {
-      if (s.material === 'Seawater blank' || s.xmt !== xmt) return;
+      if (s.material === 'Seawater blank' || s.material === 'No anomaly' || s.xmt !== xmt) return;
+      var blank = (s.project && projBlank[s.project]) || lastBlank;
       var sx = 0, ss = 0, xx = 0, n = 0, W = [], X = [], S = [];
       harms.forEach(function (f) {
         var k = s.freqs.indexOf(f); if (k < 0) return;
@@ -794,9 +817,13 @@ canvas{display:block;width:100%;}
       var cos = sx / Math.sqrt(ss * xx), a = sx / ss, chi = 0;
       for (var k = 0; k < n; k++) chi += W[k] * Math.pow(X[k] - a * S[k], 2);
       out.push({ material: s.material, run: s.run, cos: cos, angleDeg: Math.acos(Math.max(-1, Math.min(1, cos))) / D2R,
-        scale: a, chi2red: chi / Math.max(1, n - 1), nHarm: n, blankUsed: !!blank });
+        scale: a, chi2red: chi / Math.max(1, n - 1), nHarm: n, blankUsed: !!blank,
+        sessionBlank: !!(s.project && projBlank[s.project]), project: s.project || null });
     });
-    return out.sort(function (p, q) { return q.cos - p.cos; });
+    out.sort(function (p, q) { return q.cos - p.cos; });
+    var seen = {}, best = [];
+    out.forEach(function (m) { if (seen[m.material]) { seen[m.material].nRuns++; return; } m.nRuns = 1; seen[m.material] = m; best.push(m); });
+    return best;
   }
   function fuseClass(ev, best, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
@@ -1193,7 +1220,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v36';
+const APP_VERSION='v37';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1260,8 +1287,11 @@ var TRAIN_POLICIES={
 };
 function deleteTrainingFromDB(id){return q(supabase.from('training_confirmations').delete().eq('id',id));}
 function loadLabSigsDB(){return q(supabase.from('lab_signatures').select('*').order('created_at',{ascending:true})).then(function(rows){
-  return rows.map(function(r){return{id:r.id,material:r.material,xmt:r.xmt_hz,freqs:r.freqs_hz,mean:r.mean_mrad,std:r.std_mrad,n:r.n_pkts,run:r.run_name,src:'db'};});});}
-function saveLabSigDB(s){return q(supabase.from('lab_signatures').insert({material:s.material,xmt_hz:s.xmt,freqs_hz:s.freqs,mean_mrad:s.mean,std_mrad:s.std,n_pkts:s.n,run_name:s.run}).select());}
+  return rows.map(function(r){return{id:r.id,material:r.material,xmt:r.xmt_hz,freqs:r.freqs_hz,mean:r.mean_mrad,std:r.std_mrad,n:r.n_pkts,run:r.run_name,src:'db',
+    project:r.project||null,source:r.source||null,dataFileId:r.data_file_id||null};});});}
+function saveLabSigDB(s){var row={material:s.material,xmt_hz:s.xmt,freqs_hz:s.freqs,mean_mrad:s.mean,std_mrad:s.std,n_pkts:s.n,run_name:s.run};
+  if(s.dataFileId){row.data_file_id=s.dataFileId;row.project=s.project||null;row.source=s.source||'library';}
+  return q(supabase.from('lab_signatures').insert(row).select());}
 function deleteLabSigDB(id){return q(supabase.from('lab_signatures').delete().eq('id',id));}
 // v35: only independent positions are targets. Earlier IP detections ('detection') and seabed
 // context features ('context') stay in the database but never anchor layback or score coverage.
@@ -1499,6 +1529,10 @@ function App(){
   var [libFilter,setLibFilter]=useState({kind:'all',text:''});
   var [libBusy,setLibBusy]=useState('');
   var [labSigs,setLabSigs]=useState([]);
+  var [labBuild,setLabBuild]=useState('');
+  var [labShowAll,setLabShowAll]=useState(false);
+  var [stoBusy,setStoBusy]=useState('');
+  var [orphans,setOrphans]=useState(null);
   var [labTag,setLabTag]=useState({});
   var [waypoints,setWaypoints]=useState([]);
   var [metricPred,setMetricPred]=useState('fused');
@@ -2015,6 +2049,87 @@ function App(){
   };
 
   // ── Lab signatures ────────────────────────────────────────────────────────
+  // v37: build reference signatures from every labelled lab run in the shared library
+  // (data_files.purpose lab_material / lab_blank with a material). One signature per run per
+  // transmit frequency; runs already built are skipped, so it is safe to click again after new imports.
+  function buildLabRefsFromLibrary(){
+    if(!authUser){setLabBuild('Sign in first.');return;}
+    setLabBuild('Finding labelled lab runs…');
+    Promise.all([
+      q(supabase.from('data_files').select('id,file_name,storage_path,run_name,project,material,purpose').in('purpose',['lab_material','lab_blank']).not('material','is',null).limit(5000)),
+      q(supabase.from('lab_signatures').select('data_file_id').not('data_file_id','is',null).limit(20000))
+    ]).then(function(r){
+      var have={};r[1].forEach(function(x){have[x.data_file_id]=1;});
+      var all=r[0],todo=all.filter(function(f){return !have[f.id];}),i=0,added=0,failed=0,empty=0;
+      (function next(){
+        if(i>=todo.length){
+          setLabBuild('Built '+added+' signature(s) from '+todo.length+' new lab run(s)'+(empty?' · '+empty+' had no packets':'')+(failed?' · '+failed+' failed (see console)':'')+' · '+(all.length-todo.length)+' run(s) were already built.');
+          loadLabSigsDB().then(function(rows){setLabSigs(function(prev){return rows.concat(prev.filter(function(s){return s.src!=='db';}));});});
+          return;
+        }
+        var f=todo[i++];setLabBuild('Building lab references — '+i+'/'+todo.length+' · '+(f.project||'')+' · '+(f.run_name||''));
+        downloadFromLibrary(f.storage_path).then(function(text){
+          var pk=IPA.parseAnyFile(text);if(!pk.length){empty++;return;}
+          return Promise.all(IPA.computeLabStats(pk).map(function(g){
+            var s=IPA.labSignatureFromGroup(g,f.material,f.run_name||f.file_name);
+            s.project=f.project||null;s.dataFileId=f.id;s.source='library';
+            return saveLabSigDB(s).then(function(){added++;}).catch(function(e){if(!/duplicate|unique/i.test(e.message))throw e;});
+          }));
+        }).catch(function(e){failed++;console.warn('[labrefs]',f.file_name,e);}).then(function(){setTimeout(next,0);});
+      })();
+    }).catch(function(e){setLabBuild('Could not list lab runs: '+e.message+' — run the v37 section of supabase_schema.sql first.');});
+  }
+  // v37: storage tools. Compress = copy each uncompressed file to <path>.gz, verify the copy byte-for-byte
+  // and re-point data_files to it (non-destructive). Unreferenced = objects no data_files row points to.
+  function compressOldFiles(){
+    listLibraryDB().then(function(rows){
+      var todo=rows.filter(function(r){return r.storage_path&&!/\.gz$/.test(r.storage_path);}),i=0,ok=0,failed=0,saved=0;
+      (function next(){
+        if(i>=todo.length){
+          setStoBusy('');setLibStatus('Compressed '+ok+' of '+todo.length+' file(s), saving '+fmt(saved/1048576,1)+' MB'+(failed?' · '+failed+' failed (see console)':'')+'. The old uncompressed copies are still in storage until removed below.');
+          listLibraryDB().then(function(r2){setLibrary(r2);});return;
+        }
+        var r=todo[i++];setStoBusy('Compressing '+i+'/'+todo.length+' ('+ok+' done)…');
+        supabase.storage.from(BUCKET).download(r.storage_path).then(function(res){if(res.error)throw new Error(res.error.message);return res.data.text();})
+        .then(function(text){return sha256Hex(text).then(function(h){
+          if(h&&r.sha256&&h!==r.sha256)throw new Error('content hash does not match the catalogue');
+          return gzipBlob(text);
+        }).then(function(gz){
+          if(!gz)throw new Error('this browser cannot compress');
+          var np=r.storage_path+'.gz';
+          return supabase.storage.from(BUCKET).upload(np,gz,{upsert:false,contentType:'application/gzip'}).then(function(u){
+            if(u.error&&!/exist|duplicate/i.test(u.error.message))throw new Error(u.error.message);
+            return downloadFromLibrary(np).then(function(back){
+              if(back!==text)throw new Error('compressed copy did not verify');
+              return q(supabase.from('data_files').update({storage_path:np,bytes:gz.size}).eq('id',r.id).select('id')).then(function(){ok++;saved+=(r.bytes||text.length)-gz.size;});
+            });
+          });
+        });}).catch(function(e){failed++;console.warn('[compress]',r.file_name,e);}).then(function(){setTimeout(next,0);});
+      })();
+    });
+  }
+  function findUnreferenced(){
+    setStoBusy('Checking storage against the catalogue…');setOrphans(null);
+    listLibraryDB().then(function(rows){
+      var refd={};rows.forEach(function(r){refd[r.storage_path]=1;});
+      var all=[];
+      function listAll(prefix,offset){return supabase.storage.from(BUCKET).list(prefix,{limit:1000,offset:offset}).then(function(res){
+        if(res.error)throw new Error(res.error.message);var d=res.data||[];
+        d.forEach(function(o){if(o.id)all.push({path:prefix+'/'+o.name,size:(o.metadata&&o.metadata.size)||0});});
+        if(d.length===1000)return listAll(prefix,offset+1000);});}
+      return ['field','lab','waypoints'].reduce(function(p,x){return p.then(function(){return listAll(x,0);});},Promise.resolve()).then(function(){
+        setOrphans(all.filter(function(o){return !refd[o.path];}));setStoBusy('');
+      });
+    }).catch(function(e){setStoBusy('');setLibStatus('Storage check failed: '+e.message);});
+  }
+  function deleteUnreferenced(){
+    if(!orphans||!orphans.length)return;
+    var paths=orphans.map(function(o){return o.path;}),chunks=[];for(var k=0;k<paths.length;k+=100)chunks.push(paths.slice(k,k+100));
+    setStoBusy('Removing '+paths.length+' unreferenced file(s)…');
+    chunks.reduce(function(p,c){return p.then(function(){return supabase.storage.from(BUCKET).remove(c).then(function(r){if(r.error)throw new Error(r.error.message);});});},Promise.resolve())
+      .then(function(){setStoBusy('');setOrphans(null);setLibStatus('Removed '+paths.length+' unreferenced file(s) from storage.');})
+      .catch(function(e){setStoBusy('');setLibStatus('Remove failed: '+e.message);});
+  }
   function addLabSig(grp,material,run){
     var s=IPA.labSignatureFromGroup(grp,material,run);s.src='local';
     setLabSigs(function(p){return p.concat([s]);});
@@ -2457,9 +2572,23 @@ function App(){
             <div>
               <div className="section">
                 <h3>Lab reference signatures ({labSigs.length})</h3>
+                <div className="row" style={{gap:8,margin:'6px 0 10px',flexWrap:'wrap'}}>
+                  <button className="btn btn-primary btn-sm" onClick={buildLabRefsFromLibrary} disabled={!!labBuild&&/Building|Finding/.test(labBuild)}>Build references from library lab runs</button>
+                  <button className="btn btn-ghost btn-sm" onClick={function(){setLabShowAll(!labShowAll);}}>{labShowAll?'Show summary by material':'Show every run'}</button>
+                  {labBuild && <span style={{fontSize:11,color:'var(--dim2)',fontFamily:'var(--font-mono)'}}>{labBuild}</span>}
+                </div>
+                {!labShowAll && labSigs.length>0 && (function(){
+                  var m={};labSigs.forEach(function(s){var k=s.material+'|'+s.xmt;var g=m[k]=m[k]||{material:s.material,xmt:s.xmt,runs:0,proj:{},sum:{},cnt:{}};g.runs++;if(s.project)g.proj[s.project]=1;
+                    (s.freqs||[]).forEach(function(f,j){var v=s.mean[j];if(isFinite(v)){g.sum[f]=(g.sum[f]||0)+v;g.cnt[f]=(g.cnt[f]||0)+1;}});});
+                  var rows=Object.keys(m).map(function(k){return m[k];}).sort(function(a,b){return a.material<b.material?-1:a.material>b.material?1:a.xmt-b.xmt;});
+                  return (<table className="mt"><thead><tr><th>Material</th><th>xmt</th><th className="num">Runs</th><th>Sessions</th>{[1,2,3,4,5,6].map(function(k){return <th key={k} className="num">H{k} mean (mrad)</th>;})}</tr></thead>
+                    <tbody>{rows.map(function(g,i){var hs=getHarms(g.xmt);return (<tr key={i}><td style={{color:MAT_COLORS[g.material]||'var(--text)',fontWeight:700}}>{g.material}</td><td>{g.xmt}Hz</td><td className="num">{g.runs}</td>
+                      <td style={{fontSize:10}}>{Object.keys(g.proj).map(function(p){return p.replace(/^Lab-?/,'');}).join(', ')||'—'}</td>
+                      {hs.map(function(h,k){return <td key={k} className="num">{g.cnt[h]?fmt(g.sum[h]/g.cnt[h],2):'—'}</td>;})}</tr>);})}</tbody></table>);
+                })()}
                 <div className="note">Field events are compared with these signatures using a <b>weighted spectral angle</b> (Kruse et al. 1993). This measures how alike the phase-deviation spectra are in shape, regardless of amplitude, because amplitude depends on target size, burial and streamer height. Tag a <b>Seawater blank</b> run for each transmit frequency; it is subtracted from every sample signature, matching how field deviations are measured against background.</div>
                 {!labSigs.length && <div className="warnbox">No references yet. Load a lab <code>_p.txt</code> file, pick its material below and click <b>Use as reference</b>.</div>}
-                {labSigs.length>0 && (
+                {labShowAll && labSigs.length>0 && (
                   <table className="mt"><thead><tr><th>Material</th><th>xmt</th><th>Run</th><th className="num">N</th>{getHarms(4).map(function(h,k){return <th key={k} className="num">H{k+1}</th>;})}<th>Stored</th><th/></tr></thead>
                     <tbody>{labSigs.map(function(s,i){return (
                       <tr key={i}><td style={{color:MAT_COLORS[s.material]||'var(--text)',fontWeight:700}}>{s.material}</td><td>{s.xmt}Hz</td>
@@ -2603,6 +2732,14 @@ function App(){
               <div className="section">
                 <h3>Shared data library</h3>
                 <div className="note">Raw <code>_p.txt</code> runs, lab files and waypoint files are stored once in a <b>private</b> Supabase Storage bucket. Only signed-in team members can see or download them, and nothing goes into the public GitHub repo. Every team member sees the full library and can load any file. Files are identified by content hash, so loading the same file twice never stores a duplicate.</div>
+                <div className="row" style={{gap:8,margin:'4px 0 10px',flexWrap:'wrap',alignItems:'center'}}>
+                  <span style={{fontSize:11,fontWeight:700}}>Storage</span>
+                  <button className="btn btn-ghost btn-sm" disabled={!!stoBusy} onClick={compressOldFiles}>Compress older files</button>
+                  <button className="btn btn-ghost btn-sm" disabled={!!stoBusy} onClick={findUnreferenced}>Find unreferenced files</button>
+                  {orphans && orphans.length>0 && <button className="btn btn-sm" style={{background:'var(--neg)',color:'#fff'}} disabled={!!stoBusy} onClick={deleteUnreferenced}>Delete {orphans.length} unreferenced file(s) ({fmt(orphans.reduce(function(s,o){return s+o.size;},0)/1048576,1)} MB)</button>}
+                  {orphans && !orphans.length && <span style={{fontSize:11,color:'var(--dim2)'}}>No unreferenced files.</span>}
+                  {stoBusy && <span style={{fontSize:11,color:'var(--dim2)',fontFamily:'var(--font-mono)'}}>{stoBusy}</span>}
+                </div>
                 <div className="tiles">
                   <Tile label="Files in library" value={library.length} sub={fmt(mb,1)+' MB total'}/>
                   <Tile label="Field runs" value={counts.field||0}/>

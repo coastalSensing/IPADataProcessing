@@ -632,3 +632,96 @@ update public.waypoints set role = 'detection', survey_id = (select id from publ
  where role is null and (name ~ '^EH-(C|T|IP)-' or name ~* '^IP line');
 
 notify pgrst, 'reload schema';
+
+-- =====================================================================================
+-- v37: LAB / SHORE / NEAR-SHORE LABELS + LAB REFERENCE PROVENANCE — additive, safe to re-run
+-- Source: Drive "IPA data inventory.xlsx" (lab projects, shore stations, near-shore surveys) and
+-- the run designator recorded in each processed file header (data_files.run_name).
+-- =====================================================================================
+
+-- 25. File labels ---------------------------------------------------------------------------
+alter table public.data_files
+  add column if not exists project  text,   -- Drive project folder, e.g. 'Lab-Galvanized Steel_02'
+  add column if not exists material text;   -- target material for target runs; 'Seawater blank' for lab baselines
+create index if not exists data_files_purpose_idx on public.data_files (purpose, material);
+
+alter table public.lab_signatures
+  add column if not exists data_file_id uuid references public.data_files(id) on delete cascade,
+  add column if not exists project      text,
+  add column if not exists source       text;   -- 'library' (built from the shared library) | 'manual'
+create unique index if not exists lab_sig_file_xmt_uq on public.lab_signatures (data_file_id, xmt_hz) where data_file_id is not null;
+
+-- 26. Surveys for the newly imported groups --------------------------------------------------
+insert into public.surveys (name, start_date, end_date, area, notes) values
+ ('Eagle Harbor March 2024', date '2024-03-18', date '2024-03-19', 'Eagle Harbor, Puget Sound, WA', 'Near Shore-Eagle Harbor March 2024 (R/V Phoenix, dipole-dipole 01).'),
+ ('Near Shore Fall 2025',    date '2025-09-22', date '2025-09-23', 'Puget Sound, WA', 'Near Shore-IPA Fall Survey 2025.'),
+ ('Shore Station tests',     date '2024-01-19', date '2025-06-13', 'Golden Gardens, Seattle, WA', 'Stationary beach tests, dipole-dipole 01, ~28.5 ppt. Sessions 1.19.24, 2.13.24, 3.15.24, 8.30.24, 4.29.25, 6.12.25.'),
+ ('Lab tank tests',          date '2024-06-25', date '2025-08-12', 'Lab tank', 'Wenner array, Ag/AgCl RX. Each session alternates baseline (seawater only) and target runs.')
+on conflict (name) do nothing;
+update public.surveys set notes = coalesce(notes,'') || ' Inventory: Near Shore-Eagle Harbor, Point Wells October 2024 (10/29-11/1).'
+ where name = 'Fall 2024' and coalesce(notes,'') not like '%Point Wells October 2024%';
+
+update public.data_files set project = split_part(notes, '/', 3)
+ where project is null and notes like 'Drive path: %/%/%';
+
+update public.data_files set survey_id = (select id from public.surveys where name = 'Eagle Harbor March 2024')
+ where survey_id is null and project = 'Near Shore-Eagle Harbor March 2024';
+update public.data_files set survey_id = (select id from public.surveys where name = 'Near Shore Fall 2025')
+ where survey_id is null and project = 'Near Shore-IPA Fall Survey 2025';
+update public.data_files set survey_id = (select id from public.surveys where name = 'Shore Station tests')
+ where survey_id is null and project like 'Shore Station-%';
+update public.data_files set survey_id = (select id from public.surveys where name = 'Lab tank tests')
+ where survey_id is null and notes like 'Drive path: %/Lab Data/%';
+
+-- 27. Role and material for every lab and shore-station run ---------------------------------
+with x as (
+  select id, lower(coalesce(run_name,'')) rn, coalesce(project,'') p,
+         (notes like 'Drive path: %/Beach Data/%') shore
+    from public.data_files
+   where notes like 'Drive path: %/Lab Data/%' or notes like 'Drive path: %/Beach Data/%'),
+y as (
+  select id, shore,
+    case
+      when rn ~ '^(setup|setuo|default|startup)' then 'setup'
+      when rn ~ 'hydrolysis' then 'lab_test'
+      when rn ~ '(baseline|^bl[0-9])' then case when shore then 'shore_blank' else 'lab_blank' end
+      when rn ~ '(tea bag|^sandbag)' then 'lab_control'
+      else case when shore then 'shore_target' else 'lab_material' end
+    end as purpose,
+    case
+      when rn ~ '(baseline|^bl[0-9])' then case when shore then 'No anomaly' else 'Seawater blank' end
+      when rn ~ '^(setup|setuo|default|startup)' or rn ~ 'hydrolysis' or rn ~ '(tea bag|^sandbag)' then null
+      -- lab projects: the project defines the target (inventory "target(s)")
+      when p ~* 'ag coin'           then 'Silver'
+      when p ~* 'au paddle'         then 'Gold'
+      when p ~* 'yukon gold'        then 'Gold'
+      when p ~* 'cu wire|cu sand'   then 'Copper'
+      when p ~* 'ilmenite'          then 'Ilmenite'
+      when p ~* 'lab-pb'            then 'Lead'
+      when p ~* 'lab-zn'            then 'Zinc'
+      when p ~* 'mineral oil'       then 'Mineral Oil'
+      when p ~* 'group 5'           then 'Group 5 Oil'
+      when p ~* 'alaska crude'      then 'Alaska Crude Oil'
+      when p ~* 'itb rebel'         then 'ITB Rebel Crude'
+      when p ~* 'galvanized steel'  then 'Galvanized Steel'
+      when p ~* 'silver ore'        then 'Silver Ore'
+      when p ~* 'class 3 gas oil'   then 'Class 3 Gas Oil'
+      -- shore sessions and the lab 'backup' folder: the run name defines the target
+      when p ~* 'shore station-(4\.29\.25|6\.12\.25)' and rn ~ '^target' then 'Group 5 Oil'
+      when p ~* 'shore station-6\.12\.25' and rn ~ '^silver' then 'Silver Ore'
+      when rn ~ '^(sp[0-9]|steel pipe)' then 'Steel'
+      when rn ~ '^(il[0-9]|ilmen|luminite)' then 'Ilmenite'
+      when rn ~ '^pb' then 'Lead'
+      when rn ~ '^cu' then 'Copper'
+      when rn ~ '^au' then 'Gold'
+      when rn ~ '^silver' then 'Silver'
+      when rn ~ '^rutile' then 'Rutile'
+      when rn ~ '^bronze' then 'Bronze'
+      else null   -- unknown target (e.g. Shore Station 1.19.24 'ab#pl#', 3.15.24 'ss#-#'): left for review
+    end as material
+  from x)
+update public.data_files d
+   set purpose = y.purpose, material = y.material
+  from y where d.id = y.id;
+
+notify pgrst, 'reload schema';

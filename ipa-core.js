@@ -55,7 +55,9 @@
     rules: 'r7',           // crossing classifier: 'r7' (WaTech-MatChar-r7 §17 field rules) | 'v32' (previous phase-shape rules)
     artifactDevMrad: 150,  // |Δφ deviation| above this = phase wrap / dropout artifact
     reviewDevMrad: 100,    // r7: |Δφ| > 100 mrad at any harmonic = possible cable snag/contact → manual review flag
-    magDetectPct: 5,       // r7 §18 step 3: a packet whose fundamental magnitude changes by ≥ this % is also flagged (0 = off)
+    magDetectPct: 5,       // r7 §18 step 3: a packet whose fundamental magnitude DROPS by ≥ this % is also flagged (0 = off).
+                           // Decreases only: field magnitude has routine +8–12% upward excursions (p95, Nbeach/Fall 2024).
+    minSNRmaterial: 6,     // r7 rules name a material only above this crossing SNR (r7 steel mean SNR 31, ilmenite 19.7)
     artifactMagPct: -50,   // Mag% below this = physical contact artifact (r7: cable snag −73.8%; steel reaches −30%)
     gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
     mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
@@ -454,7 +456,7 @@
         if (z >= T) hits++; if (z > zmax) zmax = z;
       }
       var ref = magRefAt(bg, i), magPct = ref ? (v0[1] - ref) / ref * 100 : 0;
-      var magHit = !legacy && opts.magDetectPct > 0 && Math.abs(magPct) >= opts.magDetectPct;
+      var magHit = !legacy && opts.magDetectPct > 0 && magPct <= -opts.magDetectPct;
       if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits) || magHit)) continue;
       var rec = { i: i, pk: pk, snr: zmax, snr0: z0, hits: hits };
       if (Math.abs(dev0) > opts.artifactDevMrad || magPct < opts.artifactMagPct) artifacts.push(rec); else normal.push(rec);
@@ -504,8 +506,9 @@
     harms.forEach(function (f) { var p = bg.perHz[f]; if (p) { var z = Math.abs(dpDev[f]) / p.std; if (z > maxSNRall) maxSNRall = z; } });
     maxSNRall = Math.max(maxSNRall, rep.snr);
     var mag0 = rep.pk.freqs[f0], ref = magRefAt(bg, rep.i), magPct = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
-    // r7 §18 step 3: Mag% of the crossing = the strongest fundamental-magnitude change among its packets
-    cluster.forEach(function (a) { var v = a.pk.freqs[f0], r = magRefAt(bg, a.i); if (v && r) { var m = (v[1] - r) / r * 100; if (Math.abs(m) > Math.abs(magPct)) magPct = m; } });
+    // r7 §18 step 3: Mag% of the crossing = the strongest magnitude DECREASE among its packets (else the peak packet's value)
+    var magMin = Infinity; cluster.forEach(function (a) { var v = a.pk.freqs[f0], r = magRefAt(bg, a.i); if (v && r) { var m = (v[1] - r) / r * 100; if (m < magMin) magMin = m; } });
+    if (magMin < 0 && magMin < magPct) magPct = magMin;
     var posHigh = 0, negLow = 0, h;
     for (h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
     for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
@@ -522,6 +525,7 @@
     else if (opts.rules === 'r7') {
       // WaTech-MatChar-r7 §17 decision table: magnitude first, then Δφ at the 5th harmonic for ilmenite.
       if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); note = note || 'single packet below SNR 8'; }
+      else if (maxSNRall < opts.minSNRmaterial && !(magPct <= -20)) { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); note = note || 'crossing SNR below ' + opts.minSNRmaterial + ': no material call'; }
       else if (magPct <= -20 && z1 < 3 && nAnom <= 1) { cls = 'Resistive (non-IP)'; conf = 55; note = note || 'Mag <= -20% flat with no phase (r7 rule 7, e.g. mineral oil displacing saline)'; }
       else if (magPct < -2) {
         if (d5 > 5 && !altPol && magPct > -8) { cls = 'Ilmenite'; conf = Math.min(85, 60 + maxSNRall / 2); note = note || 'Mag% < -2, Δφ(5th) = +' + d5.toFixed(1) + ' mrad, no alternating polarity (r7 §12/§17)'; }
@@ -529,7 +533,7 @@
         else { cls = 'Steel'; conf = Math.min(88, 60 + maxSNRall / 2); note = note || ('Mag% = ' + magPct.toFixed(1) + ' (r7: magnitude decrease is the primary steel indicator)' + (altPol ? ', alternating polarity' : (d1 < 0 && d3 < 0 && d5 < 0 && d7 < 0 ? ', uniform negative' : ''))); }
       }
       else if (Math.abs(magPct) < 2 && posGrow && maxSNRall > 2) { cls = 'Hydrocarbon IP'; conf = Math.min(70, 45 + maxSNRall); note = note || 'Mag ~ 0 with positive phase growing with harmonic (r7 rules 5/6, lab 250 mA+)'; }
-      else if (magPct > 7 && z1 < 1) { cls = 'Hydrocarbon IP'; conf = 35; note = note || 'Mag > +7% flat, phase SNR < 1 (r7 rule 6: bulk resistivity at low current)'; }
+      // r7 rule 6 (Mag > +7% flat, no phase = crude at <=125 mA) is lab-only: at 500 mA field magnitude routinely rises +8-12% (noise), so it is not applied.
       else if (snrInt >= 8 && n >= 4) { cls = 'Strong Anomaly'; conf = Math.min(85, 50 + snrInt * 2); }
       else { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); }
       if (review) conf = Math.min(conf, 50);

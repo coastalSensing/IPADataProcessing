@@ -285,10 +285,10 @@ canvas{display:block;width:100%;}
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
     'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc',
     'Group 5 Oil': '#2a6f97', 'Mineral Oil': '#5a8fb0', 'Copper': '#b86b2a', 'Lead': '#5c5c70', 'Zinc': '#7d8591',
-    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39'
+    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39', 'Resistive (non-IP)': '#4f7f7a'
   };
   var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Resistive (non-IP)', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
   var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
     'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore',
     'Bronze', 'Rutile', 'Metallic IP', 'Mixed'];
@@ -297,7 +297,7 @@ canvas{display:block;width:100%;}
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
     'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon', 'Group 5 Oil': 'hydrocarbon', 'Mineral Oil': 'hydrocarbon',
     'Copper': 'metallic', 'Lead': 'metallic', 'Zinc': 'metallic', 'Silver': 'metallic', 'Gold': 'metallic', 'Silver Ore': 'metallic',
-    'Bronze': 'metallic', 'Rutile': 'metallic',
+    'Bronze': 'metallic', 'Rutile': 'metallic', 'Resistive (non-IP)': 'resistive',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
     'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
@@ -307,7 +307,12 @@ canvas{display:block;width:100%;}
     mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
     zThresh: 3.0,          // robust z threshold for anomalous packet
-    minHarmHits: 2,        // harmonics (excl. fundamental) that must exceed zThresh
+    minHarmHits: 1,        // harmonics (excl. fundamental) that must exceed zThresh (r7 §18 step 2: any single harmonic)
+    rules: 'r7',           // crossing classifier: 'r7' (WaTech-MatChar-r7 §17 field rules) | 'v32' (previous phase-shape rules)
+    artifactDevMrad: 150,  // |Δφ deviation| above this = phase wrap / dropout artifact
+    reviewDevMrad: 100,    // r7: |Δφ| > 100 mrad at any harmonic = possible cable snag/contact → manual review flag
+    magDetectPct: 5,       // r7 §18 step 3: a packet whose fundamental magnitude changes by ≥ this % is also flagged (0 = off)
+    artifactMagPct: -50,   // Mag% below this = physical contact artifact (r7: cable snag −73.8%; steel reaches −30%)
     gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
     mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
     minPkts: 1,            // min packets per crossing
@@ -332,6 +337,9 @@ canvas{display:block;width:100%;}
 
   // ── Small maths helpers ────────────────────────────────────────────────────
   function finite(v) { return typeof v === 'number' && isFinite(v); }
+  // Phase deviation in mrad wrapped to (−π, π]: angles that differ by 2π are equal (MIP Data Processing Procedure r2 §2.4).
+  var PI_M = Math.PI * 1000;
+  function wrapMrad(x) { if (!finite(x)) return x; var y = ((x + PI_M) % (2 * PI_M) + 2 * PI_M) % (2 * PI_M) - PI_M; return y === -PI_M ? PI_M : y; }
   function median(arr) {
     var a = arr.filter(finite).sort(function (x, y) { return x - y; });
     if (!a.length) return NaN;
@@ -695,16 +703,17 @@ canvas{display:block;width:100%;}
     var T = legacy ? 3 : opts.zThresh, normal = [], artifacts = [];
     for (var i = 0; i < packets.length; i++) {
       var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
-      var dev0 = v0[0] * 1000 - bgAt(bg, f0, i), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
+      var dev0 = wrapMrad(v0[0] * 1000 - bgAt(bg, f0, i)), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
       if (!legacy) for (var h = 1; h < harms.length; h++) {
         var v = pk.freqs[harms[h]]; if (!v) continue;
-        var z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / bg.perHz[harms[h]].std;
+        var z = Math.abs(wrapMrad(v[0] * 1000 - bgAt(bg, harms[h], i))) / bg.perHz[harms[h]].std;
         if (z >= T) hits++; if (z > zmax) zmax = z;
       }
-      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits))) continue;
       var ref = magRefAt(bg, i), magPct = ref ? (v0[1] - ref) / ref * 100 : 0;
+      var magHit = !legacy && opts.magDetectPct > 0 && Math.abs(magPct) >= opts.magDetectPct;
+      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits) || magHit)) continue;
       var rec = { i: i, pk: pk, snr: zmax, snr0: z0, hits: hits };
-      if (Math.abs(dev0) > 150 || magPct < -30) artifacts.push(rec); else normal.push(rec);
+      if (Math.abs(dev0) > opts.artifactDevMrad || magPct < opts.artifactMagPct) artifacts.push(rec); else normal.push(rec);
     }
     var gap = legacy ? 2 : opts.gapPkts;
     function sub(items) {
@@ -732,30 +741,56 @@ canvas{display:block;width:100%;}
   }
 
   // ── Crossing classifier: integrated over the whole crossing ────────────────
-  function classifyRules(cluster, harms, bg, kin) {
+  function classifyRules(cluster, harms, bg, kin, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var rep = cluster[0], n = cluster.length, f0 = harms[0];
     cluster.forEach(function (a) { if (a.snr > rep.snr) rep = a; });
     var s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
     var wSum = cluster.reduce(function (s, a) { return s + a.snr; }, 0) || 1, dpDev = {}, dp = {};
     harms.forEach(function (f) {
       var acc = 0;
-      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += ((v ? v[0] * 1000 : b) - b) * a.snr; });
+      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += (v ? wrapMrad(v[0] * 1000 - b) : 0) * a.snr; });
       dpDev[f] = acc / wSum;
       dp[f] = dpDev[f] + bgAt(bg, f, rep.i);
     });
     var dp1dev = dpDev[f0];
-    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += (v ? v[0] * 1000 : b) - b; });
+    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += v ? wrapMrad(v[0] * 1000 - b) : 0; });
     var snrInt = Math.abs(mAcc / n) / (s0 / Math.sqrt(n));
     var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, eff = Math.max(maxSNR, snrInt), maxSNRall = eff;
     harms.forEach(function (f) { var p = bg.perHz[f]; if (p) { var z = Math.abs(dpDev[f]) / p.std; if (z > maxSNRall) maxSNRall = z; } });
     maxSNRall = Math.max(maxSNRall, rep.snr);
     var mag0 = rep.pk.freqs[f0], ref = magRefAt(bg, rep.i), magPct = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
+    // r7 §18 step 3: Mag% of the crossing = the strongest fundamental-magnitude change among its packets
+    cluster.forEach(function (a) { var v = a.pk.freqs[f0], r = magRefAt(bg, a.i); if (v && r) { var m = (v[1] - r) / r * 100; if (Math.abs(m) > Math.abs(magPct)) magPct = m; } });
     var posHigh = 0, negLow = 0, h;
     for (h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
     for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
     var altPol = dpDev[harms[0]] * dpDev[harms[1]] < 0 && dpDev[harms[1]] * dpDev[harms[2]] < 0;
-    var cls, conf;
-    if (cluster.isArtifact || Math.abs(dp1dev) > 150 || magPct < -30) { cls = 'Artifact'; conf = 99; }
+    var cls, conf, note = null, review = false;
+    // r7 features (WaTech-MatChar-r7 §18 step 4): Δφ at fundamental, 3rd, 5th, 7th harmonic (4/12/20/28 Hz at 4 Hz)
+    var d1 = dpDev[harms[0]], d3 = dpDev[harms[1]], d5 = dpDev[harms[2]], d7 = dpDev[harms[3]];
+    var maxAbs = 0, nAnom = 0;
+    harms.forEach(function (f) { var v = Math.abs(dpDev[f]); if (v > maxAbs) maxAbs = v; var p = bg.perHz[f]; if (p && v / p.std >= 3) nAnom++; });
+    var z1 = Math.abs(d1) / s0, slope7 = (d7 - d1) / 3;
+    var posGrow = d5 > 0 && d7 > 0 && slope7 > 0.5 && d7 >= d3;
+    if (maxAbs > opts.reviewDevMrad) { review = true; note = '|Δφ| > ' + opts.reviewDevMrad + ' mrad: possible cable snag/contact (r7 §17), review manually'; }
+    if (cluster.isArtifact || Math.abs(dp1dev) > opts.artifactDevMrad || magPct < opts.artifactMagPct) { cls = 'Artifact'; conf = 99; }
+    else if (opts.rules === 'r7') {
+      // WaTech-MatChar-r7 §17 decision table: magnitude first, then Δφ at the 5th harmonic for ilmenite.
+      if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); note = note || 'single packet below SNR 8'; }
+      else if (magPct <= -20 && z1 < 3 && nAnom <= 1) { cls = 'Resistive (non-IP)'; conf = 55; note = note || 'Mag <= -20% flat with no phase (r7 rule 7, e.g. mineral oil displacing saline)'; }
+      else if (magPct < -2) {
+        if (d5 > 5 && !altPol && magPct > -8) { cls = 'Ilmenite'; conf = Math.min(85, 60 + maxSNRall / 2); note = note || 'Mag% < -2, Δφ(5th) = +' + d5.toFixed(1) + ' mrad, no alternating polarity (r7 §12/§17)'; }
+        else if (nAnom === 1 && maxSNRall > 2 && z1 < 3) { cls = 'Asphalt'; conf = 40; note = note || 'Mag% < -2 with a single-harmonic anomaly (r7 §17; asphalt vs steel not yet discriminated)'; }
+        else { cls = 'Steel'; conf = Math.min(88, 60 + maxSNRall / 2); note = note || ('Mag% = ' + magPct.toFixed(1) + ' (r7: magnitude decrease is the primary steel indicator)' + (altPol ? ', alternating polarity' : (d1 < 0 && d3 < 0 && d5 < 0 && d7 < 0 ? ', uniform negative' : ''))); }
+      }
+      else if (Math.abs(magPct) < 2 && posGrow && maxSNRall > 2) { cls = 'Hydrocarbon IP'; conf = Math.min(70, 45 + maxSNRall); note = note || 'Mag ~ 0 with positive phase growing with harmonic (r7 rules 5/6, lab 250 mA+)'; }
+      else if (magPct > 7 && z1 < 1) { cls = 'Hydrocarbon IP'; conf = 35; note = note || 'Mag > +7% flat, phase SNR < 1 (r7 rule 6: bulk resistivity at low current)'; }
+      else if (snrInt >= 8 && n >= 4) { cls = 'Strong Anomaly'; conf = Math.min(85, 50 + snrInt * 2); }
+      else { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); }
+      if (review) conf = Math.min(conf, 50);
+    }
+    // v32 phase-shape rules (Processing -> Classifier rules)
     else if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); }
     else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; conf = Math.min(95, 80 + maxSNRall / 5); }
     else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; conf = Math.min(80, 60 + maxSNRall / 4); }
@@ -775,6 +810,7 @@ canvas{display:block;width:100%;}
     var k = kin && kin[rep.i] ? kin[rep.i] : { cog: null, sog: null };
     return { cls: cls, confPct: Math.round(conf), dp: dp, dpDev: dpDev, magPct: magPct, maxSNR: maxSNR, maxSNRall: maxSNRall,
       snrInt: Math.round(snrInt * 10) / 10, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow, isArtifact: !!cluster.isArtifact,
+      altPol: altPol, nAnom: nAnom, slope7: slope7, rulesNote: note, review: review, rulesVersion: opts.rules,
       pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: rep.pk.idx, i: rep.i,
       ts: rep.pk.ts, t: rep.pk.t, nPkts: n, lat: w ? la / w : rep.pk.lat, lon: w ? lo / w : rep.pk.lon,
       cum: w && kin ? cu / w : (kin && kin[rep.i] ? kin[rep.i].cum : null), cog: k.cog, sog: k.sog };
@@ -829,6 +865,9 @@ canvas{display:block;width:100%;}
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var base = { cls: ev.cls, conf: ev.confPct, src: 'rules', conflict: false };
     if (!best || best.cos < opts.labCosMin || best.scale <= 0 || ev.cls === 'Artifact') return base;
+    // r7: field-validated material calls are not overridden by lab spectral shape (r7 §19: lab currents differ from field).
+    if (opts.rules === 'r7' && ['Steel', 'Ilmenite', 'Asphalt', 'Resistive (non-IP)'].indexOf(ev.cls) >= 0)
+      return { cls: ev.cls, conf: ev.confPct, src: 'rules (r7)', conflict: family(best.material) !== family(ev.cls), labCls: best.material };
     var rf = family(ev.cls), lf = family(best.material);
     if (rf === lf) return { cls: best.material, conf: Math.round(Math.min(97, Math.max(ev.confPct, 50 + 45 * best.cos * Math.min(1, ev.maxSNRall / 10)))), src: 'rules+lab', conflict: false };
     if ((rf === 'weak' || rf === 'strong') && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(rf === 'strong' ? 80 : 70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
@@ -842,7 +881,7 @@ canvas{display:block;width:100%;}
     var kin = computeKinematics(packets);
     var clusters = detectAnomalies(packets, harms, bg, opts, kin);
     var events = clusters.map(function (cl) {
-      var ev = classifyRules(cl, harms, bg, kin);
+      var ev = classifyRules(cl, harms, bg, kin, opts);
       ev.labMatches = labMatch(ev, harms, bg, labSigs);
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
@@ -1198,7 +1237,7 @@ canvas{display:block;width:100%;}
     haversine: haversine, bearing: bearing, enu: enu, offsetLL: offsetLL, angDiff: angDiff,
     nmeaDD: nmeaDD, parseTime: parseTime, parseAnyFile: parseAnyFile, parseCoord: parseCoord, parseWaypoints: parseWaypoints,
     alignWaypointHemisphere: alignWaypointHemisphere, matchMaterial: matchMaterial,
-    computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup,
+    computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,
@@ -1220,14 +1259,14 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v37';
+const APP_VERSION='v38';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
 const CONFIRM_OPTIONS=MAT_OPTIONS.concat(['No anomaly']);
 const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
 const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
-const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','mergeGapM','minPkts','labCosMin'];
+const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','mergeGapM','minPkts','labCosMin','rules','artifactDevMrad','reviewDevMrad','artifactMagPct','magDetectPct'];
 const GROUP_COLORS=['#0071b8','#1d9e75','#d8641e','#7f77dd','#b03a5b','#846b00','#2d6a4f','#c77d0a'];
 
 // ── Supabase client (handles auth + data) ─────────────────────────────────────
@@ -1390,7 +1429,7 @@ async function classifyWithClaude(ev,harms,bg,run,xmt,model){
   harms.forEach(function(f){var p=bg.perHz[f];harmonics[f]={raw:ev.dp[f]||0,dev:ev.dpDev[f]||0,z:p&&p.std?Math.abs(ev.dpDev[f]||0)/p.std:null};});
   var body={model:model,xmt_hz:xmt||harms[0],harms:harms,run:run,app_version:APP_VERSION,labels:CONFIRM_OPTIONS,
     event:{ts:ev.ts,harmonics:harmonics,magPct:ev.magPct,nPkts:ev.nPkts,fundSNR:ev.maxSNR,maxSNR:ev.maxSNRall,phaseSlope:ev.phaseSlope,
-      rulesCls:ev.cls,rulesConf:ev.confPct,fusedCls:ev.fusedCls,
+      rulesCls:ev.cls,rulesConf:ev.confPct,fusedCls:ev.fusedCls,rulesNote:ev.rulesNote||null,review:!!ev.review,altPol:!!ev.altPol,
       labMatches:(ev.labMatches||[]).slice(0,3).map(function(m){return{material:m.material,cos:m.cos,angleDeg:m.angleDeg,scale:m.scale,chi2red:m.chi2red};}),
       features:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,slope:ev.phaseSlope}}};
   var res=await supabase.functions.invoke('classify',{body:body});
@@ -1519,7 +1558,7 @@ function App(){
   var [dbStatus,setDbStatus]=useState('loading');
   var [dbNote,setDbNote]=useState('');
   var [authUser,setAuthUser]=useState(null);
-  var [proc,setProcState]=useState(function(){var sv=lsGet('ipa_proc',{});return Object.assign({},IPA.DEFAULT_PROC,sv&&sv._v===30?sv:{},{_v:30});});
+  var [proc,setProcState]=useState(function(){var sv=lsGet('ipa_proc',{});return Object.assign({},IPA.DEFAULT_PROC,sv&&sv._v===38?sv:{},{_v:38});});
   var [showProc,setShowProc]=useState(false);
   var [library,setLibrary]=useState([]);
   var [libStatus,setLibStatus]=useState('');
@@ -2371,6 +2410,14 @@ function App(){
                   <option value="robust">Robust (detrended, multi-harmonic)</option>
                   <option value="legacy">Legacy (fundamental 3σ, fixed background)</option>
                 </select></div>
+              <div><label>Classifier rules</label>
+                <select value={proc.rules} onChange={function(e){setProc({rules:e.target.value});}}>
+                  <option value="r7">r7 field rules (WaTech-MatChar-r7 §17)</option>
+                  <option value="v32">v32 phase-shape rules (previous)</option>
+                </select></div>
+              <Num label="Review flag |Δφ| > (mrad)" value={proc.reviewDevMrad} onChange={function(v){setProc({reviewDevMrad:Math.max(10,v)});}}/>
+              <Num label="Flag |Mag%| ≥" value={proc.magDetectPct} onChange={function(v){setProc({magDetectPct:Math.max(0,v)});}}/>
+              <Num label="Artifact Mag% <" value={proc.artifactMagPct} onChange={function(v){setProc({artifactMagPct:Math.min(-5,v)});}}/>
               {proc.mode==='robust' && <Num label="Detrend window (pkts)" value={proc.detrendWin} onChange={function(v){setProc({detrendWin:Math.max(5,Math.round(v))});}}/>}
               {proc.mode==='robust' && <Num label="z threshold" step={0.5} value={proc.zThresh} onChange={function(v){setProc({zThresh:v});}}/>}
               {proc.mode==='robust' && <Num label="Harmonic hits" value={proc.minHarmHits} onChange={function(v){setProc({minHarmHits:Math.max(1,Math.round(v))});}}/>}
@@ -2571,7 +2618,15 @@ function App(){
           {mainTab==='lab' && (
             <div>
               <div className="section">
-                <h3>Lab reference signatures ({labSigs.length})</h3>
+                <h3>Field reference: WaTech-MatChar-r7 (North Beach, 4 Hz 500 mA, 72 confirmed detections)</h3>
+                <div className="note">Mean deviation from background at confirmed detections, from the IPA Material Characterization Reference r7 (§12.3, §14.1, §15.2). These drive the <b>r7 classifier rules</b>: magnitude decrease first (Mag% &lt; −2%), then Δφ at the 5th harmonic (20 Hz) for ilmenite. |Δφ| &gt; 100 mrad is flagged for review as a possible cable snag. Lab references below are shown for comparison; r7 notes lab currents (50–1250 mA) may not transfer to field (500 mA).</div>
+                <table className="mt"><thead><tr><th>Material (field)</th><th className="num">N</th><th className="num">Δφ 4 Hz</th><th className="num">Δφ 12 Hz</th><th className="num">Δφ 20 Hz</th><th className="num">Δφ 28 Hz</th><th className="num">Mag %</th><th>Key indicator</th></tr></thead>
+                  <tbody>
+                    <tr><td style={{color:MAT_COLORS['Steel'],fontWeight:700}}>Steel</td><td className="num">53</td><td className="num">−25.2 ±28.1</td><td className="num">−16.8 ±38.8</td><td className="num">−4.0 ±24.4</td><td className="num">+3.6 ±19.2</td><td className="num">−10.2 ±7.7</td><td>Mag &lt; −2% in 89%; phase shape variable (34% alternating)</td></tr>
+                    <tr><td style={{color:MAT_COLORS['Ilmenite'],fontWeight:700}}>Ilmenite</td><td className="num">7</td><td className="num">−15.1 ±17.9</td><td className="num">−15.0 ±34.0</td><td className="num">+13.4 ±8.2</td><td className="num">+3.0 ±13.0</td><td className="num">−4.0 ±7.4</td><td>Δφ 20 Hz always positive (+7.9 to +32.5); never alternating</td></tr>
+                    <tr><td style={{color:MAT_COLORS['Asphalt'],fontWeight:700}}>Asphalt</td><td className="num">8</td><td className="num">−29.0</td><td className="num">+8.1</td><td className="num">−0.8</td><td className="num">+19.5</td><td className="num">−10.0</td><td>Detected in 38% of passes; no discriminator from steel yet</td></tr>
+                  </tbody></table>
+                <h3 style={{marginTop:16}}>Lab reference signatures ({labSigs.length})</h3>
                 <div className="row" style={{gap:8,margin:'6px 0 10px',flexWrap:'wrap'}}>
                   <button className="btn btn-primary btn-sm" onClick={buildLabRefsFromLibrary} disabled={!!labBuild&&/Building|Finding/.test(labBuild)}>Build references from library lab runs</button>
                   <button className="btn btn-ghost btn-sm" onClick={function(){setLabShowAll(!labShowAll);}}>{labShowAll?'Show summary by material':'Show every run'}</button>
@@ -2969,7 +3024,9 @@ function App(){
               </div>
               <div className="ai-classification" style={{marginBottom:8}}>
                 <div style={{fontSize:10,color:'var(--dim2)',fontFamily:'var(--font-mono)',lineHeight:1.8}}>
-                  Rules: <b style={{color:MAT_COLORS[activeEv.cls]}}>{activeEv.cls}</b> ({activeEv.confPct}%)<br/>
+                  Rules{activeEv.rulesVersion?' ('+activeEv.rulesVersion+')':''}: <b style={{color:MAT_COLORS[activeEv.cls]}}>{activeEv.cls}</b> ({activeEv.confPct}%)<br/>
+                  {activeEv.rulesNote && <span style={{color:activeEv.review?'var(--neg)':'var(--dim2)'}}>{activeEv.review?'⚠ ':''}{activeEv.rulesNote}<br/></span>}
+                  Mag {fmt(activeEv.magPct,1)}% · {activeEv.altPol?'alternating polarity':'no alternating polarity'} · {activeEv.nAnom} harmonic{activeEv.nAnom===1?'':'s'} above 3σ<br/>
                   Fused: <b style={{color:MAT_COLORS[activeEv.fusedCls]}}>{activeEv.fusedCls}</b> ({activeEv.fusedConf}%, {activeEv.fusedSrc}){activeEv.labConflict?<span style={{color:'var(--neg)'}}> ⚠ lab suggests {activeEv.labBest.material}</span>:null}
                 </div>
                 {activeEv.labMatches.length>0 && (

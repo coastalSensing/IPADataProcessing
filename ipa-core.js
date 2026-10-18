@@ -29,10 +29,10 @@
     'Asphalt': '#607060', 'Artifact': '#c05000', 'Weak/Inconclusive': '#708090', 'No anomaly': '#9090a0',
     'Seawater blank': '#90a0b0', 'Strong Anomaly': '#8a3ffc',
     'Group 5 Oil': '#2a6f97', 'Mineral Oil': '#5a8fb0', 'Copper': '#b86b2a', 'Lead': '#5c5c70', 'Zinc': '#7d8591',
-    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39'
+    'Silver': '#8f98a3', 'Gold': '#c9a227', 'Silver Ore': '#6f7480', 'Bronze': '#a0662a', 'Rutile': '#8b4f39', 'Resistive (non-IP)': '#4f7f7a'
   };
   var MAT_OPTIONS = ['Hydrocarbon IP', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
-    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
+    'Metallic IP', 'Steel', 'Ilmenite', 'Galvanized Steel', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore', 'Bronze', 'Rutile', 'Mixed', 'Resistive (non-IP)', 'Asphalt', 'Strong Anomaly', 'Artifact', 'Weak/Inconclusive'];
   var LAB_REF_OPTIONS = ['Seawater blank', 'Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil',
     'Asphalt', 'Hydrocarbon IP', 'Steel', 'Galvanized Steel', 'Ilmenite', 'Copper', 'Lead', 'Zinc', 'Silver', 'Gold', 'Silver Ore',
     'Bronze', 'Rutile', 'Metallic IP', 'Mixed'];
@@ -41,7 +41,7 @@
     'Hydrocarbon IP': 'hydrocarbon', 'Class 3 Gas Oil': 'hydrocarbon', 'Alaska Crude Oil': 'hydrocarbon',
     'ITB Rebel Crude': 'hydrocarbon', 'Asphalt': 'hydrocarbon', 'Group 5 Oil': 'hydrocarbon', 'Mineral Oil': 'hydrocarbon',
     'Copper': 'metallic', 'Lead': 'metallic', 'Zinc': 'metallic', 'Silver': 'metallic', 'Gold': 'metallic', 'Silver Ore': 'metallic',
-    'Bronze': 'metallic', 'Rutile': 'metallic',
+    'Bronze': 'metallic', 'Rutile': 'metallic', 'Resistive (non-IP)': 'resistive',
     'Metallic IP': 'metallic', 'Steel': 'metallic', 'Ilmenite': 'metallic', 'Galvanized Steel': 'metallic',
     'Mixed': 'mixed', 'Strong Anomaly': 'strong', 'Artifact': 'artifact', 'Weak/Inconclusive': 'weak', 'No anomaly': 'none'
   };
@@ -51,7 +51,12 @@
     mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
     zThresh: 3.0,          // robust z threshold for anomalous packet
-    minHarmHits: 2,        // harmonics (excl. fundamental) that must exceed zThresh
+    minHarmHits: 1,        // harmonics (excl. fundamental) that must exceed zThresh (r7 §18 step 2: any single harmonic)
+    rules: 'r7',           // crossing classifier: 'r7' (WaTech-MatChar-r7 §17 field rules) | 'v32' (previous phase-shape rules)
+    artifactDevMrad: 150,  // |Δφ deviation| above this = phase wrap / dropout artifact
+    reviewDevMrad: 100,    // r7: |Δφ| > 100 mrad at any harmonic = possible cable snag/contact → manual review flag
+    magDetectPct: 5,       // r7 §18 step 3: a packet whose fundamental magnitude changes by ≥ this % is also flagged (0 = off)
+    artifactMagPct: -50,   // Mag% below this = physical contact artifact (r7: cable snag −73.8%; steel reaches −30%)
     gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
     mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
     minPkts: 1,            // min packets per crossing
@@ -76,6 +81,9 @@
 
   // ── Small maths helpers ────────────────────────────────────────────────────
   function finite(v) { return typeof v === 'number' && isFinite(v); }
+  // Phase deviation in mrad wrapped to (−π, π]: angles that differ by 2π are equal (MIP Data Processing Procedure r2 §2.4).
+  var PI_M = Math.PI * 1000;
+  function wrapMrad(x) { if (!finite(x)) return x; var y = ((x + PI_M) % (2 * PI_M) + 2 * PI_M) % (2 * PI_M) - PI_M; return y === -PI_M ? PI_M : y; }
   function median(arr) {
     var a = arr.filter(finite).sort(function (x, y) { return x - y; });
     if (!a.length) return NaN;
@@ -439,16 +447,17 @@
     var T = legacy ? 3 : opts.zThresh, normal = [], artifacts = [];
     for (var i = 0; i < packets.length; i++) {
       var pk = packets[i], v0 = pk.freqs[f0]; if (!v0) continue;
-      var dev0 = v0[0] * 1000 - bgAt(bg, f0, i), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
+      var dev0 = wrapMrad(v0[0] * 1000 - bgAt(bg, f0, i)), z0 = Math.abs(dev0) / s0, zmax = z0, hits = 0;
       if (!legacy) for (var h = 1; h < harms.length; h++) {
         var v = pk.freqs[harms[h]]; if (!v) continue;
-        var z = Math.abs(v[0] * 1000 - bgAt(bg, harms[h], i)) / bg.perHz[harms[h]].std;
+        var z = Math.abs(wrapMrad(v[0] * 1000 - bgAt(bg, harms[h], i))) / bg.perHz[harms[h]].std;
         if (z >= T) hits++; if (z > zmax) zmax = z;
       }
-      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits))) continue;
       var ref = magRefAt(bg, i), magPct = ref ? (v0[1] - ref) / ref * 100 : 0;
+      var magHit = !legacy && opts.magDetectPct > 0 && Math.abs(magPct) >= opts.magDetectPct;
+      if (!(z0 >= T || (!legacy && hits >= opts.minHarmHits) || magHit)) continue;
       var rec = { i: i, pk: pk, snr: zmax, snr0: z0, hits: hits };
-      if (Math.abs(dev0) > 150 || magPct < -30) artifacts.push(rec); else normal.push(rec);
+      if (Math.abs(dev0) > opts.artifactDevMrad || magPct < opts.artifactMagPct) artifacts.push(rec); else normal.push(rec);
     }
     var gap = legacy ? 2 : opts.gapPkts;
     function sub(items) {
@@ -476,30 +485,56 @@
   }
 
   // ── Crossing classifier: integrated over the whole crossing ────────────────
-  function classifyRules(cluster, harms, bg, kin) {
+  function classifyRules(cluster, harms, bg, kin, opts) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var rep = cluster[0], n = cluster.length, f0 = harms[0];
     cluster.forEach(function (a) { if (a.snr > rep.snr) rep = a; });
     var s0 = bg.perHz[f0] ? bg.perHz[f0].std : bg.std;
     var wSum = cluster.reduce(function (s, a) { return s + a.snr; }, 0) || 1, dpDev = {}, dp = {};
     harms.forEach(function (f) {
       var acc = 0;
-      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += ((v ? v[0] * 1000 : b) - b) * a.snr; });
+      cluster.forEach(function (a) { var v = a.pk.freqs[f]; var b = bgAt(bg, f, a.i); acc += (v ? wrapMrad(v[0] * 1000 - b) : 0) * a.snr; });
       dpDev[f] = acc / wSum;
       dp[f] = dpDev[f] + bgAt(bg, f, rep.i);
     });
     var dp1dev = dpDev[f0];
-    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += (v ? v[0] * 1000 : b) - b; });
+    var mAcc = 0; cluster.forEach(function (a) { var v = a.pk.freqs[f0]; var b = bgAt(bg, f0, a.i); mAcc += v ? wrapMrad(v[0] * 1000 - b) : 0; });
     var snrInt = Math.abs(mAcc / n) / (s0 / Math.sqrt(n));
     var maxSNR = finite(rep.snr0) ? rep.snr0 : rep.snr, eff = Math.max(maxSNR, snrInt), maxSNRall = eff;
     harms.forEach(function (f) { var p = bg.perHz[f]; if (p) { var z = Math.abs(dpDev[f]) / p.std; if (z > maxSNRall) maxSNRall = z; } });
     maxSNRall = Math.max(maxSNRall, rep.snr);
     var mag0 = rep.pk.freqs[f0], ref = magRefAt(bg, rep.i), magPct = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
+    // r7 §18 step 3: Mag% of the crossing = the strongest fundamental-magnitude change among its packets
+    cluster.forEach(function (a) { var v = a.pk.freqs[f0], r = magRefAt(bg, a.i); if (v && r) { var m = (v[1] - r) / r * 100; if (Math.abs(m) > Math.abs(magPct)) magPct = m; } });
     var posHigh = 0, negLow = 0, h;
     for (h = 2; h < harms.length; h++) if (dpDev[harms[h]] > 3) posHigh++;
     for (h = 0; h < 3; h++) if (dpDev[harms[h]] < -5) negLow++;
     var altPol = dpDev[harms[0]] * dpDev[harms[1]] < 0 && dpDev[harms[1]] * dpDev[harms[2]] < 0;
-    var cls, conf;
-    if (cluster.isArtifact || Math.abs(dp1dev) > 150 || magPct < -30) { cls = 'Artifact'; conf = 99; }
+    var cls, conf, note = null, review = false;
+    // r7 features (WaTech-MatChar-r7 §18 step 4): Δφ at fundamental, 3rd, 5th, 7th harmonic (4/12/20/28 Hz at 4 Hz)
+    var d1 = dpDev[harms[0]], d3 = dpDev[harms[1]], d5 = dpDev[harms[2]], d7 = dpDev[harms[3]];
+    var maxAbs = 0, nAnom = 0;
+    harms.forEach(function (f) { var v = Math.abs(dpDev[f]); if (v > maxAbs) maxAbs = v; var p = bg.perHz[f]; if (p && v / p.std >= 3) nAnom++; });
+    var z1 = Math.abs(d1) / s0, slope7 = (d7 - d1) / 3;
+    var posGrow = d5 > 0 && d7 > 0 && slope7 > 0.5 && d7 >= d3;
+    if (maxAbs > opts.reviewDevMrad) { review = true; note = '|Δφ| > ' + opts.reviewDevMrad + ' mrad: possible cable snag/contact (r7 §17), review manually'; }
+    if (cluster.isArtifact || Math.abs(dp1dev) > opts.artifactDevMrad || magPct < opts.artifactMagPct) { cls = 'Artifact'; conf = 99; }
+    else if (opts.rules === 'r7') {
+      // WaTech-MatChar-r7 §17 decision table: magnitude first, then Δφ at the 5th harmonic for ilmenite.
+      if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); note = note || 'single packet below SNR 8'; }
+      else if (magPct <= -20 && z1 < 3 && nAnom <= 1) { cls = 'Resistive (non-IP)'; conf = 55; note = note || 'Mag <= -20% flat with no phase (r7 rule 7, e.g. mineral oil displacing saline)'; }
+      else if (magPct < -2) {
+        if (d5 > 5 && !altPol && magPct > -8) { cls = 'Ilmenite'; conf = Math.min(85, 60 + maxSNRall / 2); note = note || 'Mag% < -2, Δφ(5th) = +' + d5.toFixed(1) + ' mrad, no alternating polarity (r7 §12/§17)'; }
+        else if (nAnom === 1 && maxSNRall > 2 && z1 < 3) { cls = 'Asphalt'; conf = 40; note = note || 'Mag% < -2 with a single-harmonic anomaly (r7 §17; asphalt vs steel not yet discriminated)'; }
+        else { cls = 'Steel'; conf = Math.min(88, 60 + maxSNRall / 2); note = note || ('Mag% = ' + magPct.toFixed(1) + ' (r7: magnitude decrease is the primary steel indicator)' + (altPol ? ', alternating polarity' : (d1 < 0 && d3 < 0 && d5 < 0 && d7 < 0 ? ', uniform negative' : ''))); }
+      }
+      else if (Math.abs(magPct) < 2 && posGrow && maxSNRall > 2) { cls = 'Hydrocarbon IP'; conf = Math.min(70, 45 + maxSNRall); note = note || 'Mag ~ 0 with positive phase growing with harmonic (r7 rules 5/6, lab 250 mA+)'; }
+      else if (magPct > 7 && z1 < 1) { cls = 'Hydrocarbon IP'; conf = 35; note = note || 'Mag > +7% flat, phase SNR < 1 (r7 rule 6: bulk resistivity at low current)'; }
+      else if (snrInt >= 8 && n >= 4) { cls = 'Strong Anomaly'; conf = Math.min(85, 50 + snrInt * 2); }
+      else { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); }
+      if (review) conf = Math.min(conf, 50);
+    }
+    // v32 phase-shape rules (Processing -> Classifier rules)
     else if (n === 1 && maxSNRall < 8) { cls = 'Weak/Inconclusive'; conf = Math.min(30, 10 + maxSNRall * 3); }
     else if (posHigh >= 3 && Math.abs(dp1dev) < 10 && maxSNRall > 10) { cls = 'Hydrocarbon IP'; conf = Math.min(95, 80 + maxSNRall / 5); }
     else if (posHigh >= 2 && Math.abs(dp1dev) < 12 && maxSNRall > 5) { cls = 'Hydrocarbon IP'; conf = Math.min(80, 60 + maxSNRall / 4); }
@@ -519,6 +554,7 @@
     var k = kin && kin[rep.i] ? kin[rep.i] : { cog: null, sog: null };
     return { cls: cls, confPct: Math.round(conf), dp: dp, dpDev: dpDev, magPct: magPct, maxSNR: maxSNR, maxSNRall: maxSNRall,
       snrInt: Math.round(snrInt * 10) / 10, phaseSlope: sxx ? sxy / sxx : 0, posHigh: posHigh, negLow: negLow, isArtifact: !!cluster.isArtifact,
+      altPol: altPol, nAnom: nAnom, slope7: slope7, rulesNote: note, review: review, rulesVersion: opts.rules,
       pktStart: cluster[0].pk.idx, pktEnd: cluster[cluster.length - 1].pk.idx, pktPeak: rep.pk.idx, i: rep.i,
       ts: rep.pk.ts, t: rep.pk.t, nPkts: n, lat: w ? la / w : rep.pk.lat, lon: w ? lo / w : rep.pk.lon,
       cum: w && kin ? cu / w : (kin && kin[rep.i] ? kin[rep.i].cum : null), cog: k.cog, sog: k.sog };
@@ -573,6 +609,9 @@
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var base = { cls: ev.cls, conf: ev.confPct, src: 'rules', conflict: false };
     if (!best || best.cos < opts.labCosMin || best.scale <= 0 || ev.cls === 'Artifact') return base;
+    // r7: field-validated material calls are not overridden by lab spectral shape (r7 §19: lab currents differ from field).
+    if (opts.rules === 'r7' && ['Steel', 'Ilmenite', 'Asphalt', 'Resistive (non-IP)'].indexOf(ev.cls) >= 0)
+      return { cls: ev.cls, conf: ev.confPct, src: 'rules (r7)', conflict: family(best.material) !== family(ev.cls), labCls: best.material };
     var rf = family(ev.cls), lf = family(best.material);
     if (rf === lf) return { cls: best.material, conf: Math.round(Math.min(97, Math.max(ev.confPct, 50 + 45 * best.cos * Math.min(1, ev.maxSNRall / 10)))), src: 'rules+lab', conflict: false };
     if ((rf === 'weak' || rf === 'strong') && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(rf === 'strong' ? 80 : 70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
@@ -586,7 +625,7 @@
     var kin = computeKinematics(packets);
     var clusters = detectAnomalies(packets, harms, bg, opts, kin);
     var events = clusters.map(function (cl) {
-      var ev = classifyRules(cl, harms, bg, kin);
+      var ev = classifyRules(cl, harms, bg, kin, opts);
       ev.labMatches = labMatch(ev, harms, bg, labSigs);
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
@@ -942,7 +981,7 @@
     haversine: haversine, bearing: bearing, enu: enu, offsetLL: offsetLL, angDiff: angDiff,
     nmeaDD: nmeaDD, parseTime: parseTime, parseAnyFile: parseAnyFile, parseCoord: parseCoord, parseWaypoints: parseWaypoints,
     alignWaypointHemisphere: alignWaypointHemisphere, matchMaterial: matchMaterial,
-    computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup,
+    computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,

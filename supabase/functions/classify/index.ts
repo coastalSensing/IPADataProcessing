@@ -28,18 +28,25 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 
 const SYSTEM = `You classify anomalies in marine induced-polarization (MIP) towed-streamer IPA data for a survey team.
-Data: ch1-0 phase difference in mrad at the transmit fundamental and its odd harmonics. "dev" values are deviations from a running-median background; z = |dev| / robust noise sigma (1.4826*MAD).
+Data: ch1-0 phase difference (Δφ) in mrad at the transmit fundamental and its odd harmonics (4 Hz → 4/12/20/28/36/44 Hz). "dev" values are deviations from a running-median background; z = |dev| / robust noise sigma (1.4826*MAD). Mag% = change of the fundamental magnitude vs background.
 
-Physics guide:
-- Hydrocarbon / organic IP: growing positive deviation toward higher harmonics with near-zero fundamental deviation (Olhoeft 1985 organic reactions; Wynn marine IP oil work).
-- Metallic / electronic polarisation (steel, ilmenite): strong negative low-harmonic deviation, often with a magnitude decrease (Pelton 1978 / Wong 1979 Cole-Cole response).
-- Artifact: |fundamental dev| > 150 mrad, magnitude drop > 30%, or single-packet spikes.
-- Prefer lab-reference evidence when cos > 0.9 and SNR > 5.
+Team reference: IPA Material Characterization Reference r7 (WaTech-MatChar-r7), field-validated on 72 confirmed detections at North Beach (4 Hz, 500 mA, dipole-dipole tow): Steel N=53, Ilmenite N=7, Asphalt N=8–10.
+Field rules, in priority order:
+- Magnitude first. Mag% < −2% at the fundamental is the most reliable field indicator of a metallic/resistive target (89% of steel, 80% of asphalt, 71% of ilmenite detections).
+- Ilmenite: Δφ at the 5th harmonic (20 Hz at 4 Hz) consistently POSITIVE (+7.9 to +32.5 mrad, mean +13.4), never alternating polarity, smaller magnitude drop than steel (mean −4% vs −10%).
+- Steel: magnitude decrease (mean −10.2%, 89% below −2%); phase shape is NOT reliable (mean Δφ4 −25 ± 28 mrad; 34% alternate ± across harmonics). Do not rule out steel from phase shape alone.
+- Asphalt: no spectral discriminator from steel yet; detected in only ~38% of passes; a single-harmonic anomaly with a magnitude drop is suggestive only.
+- |Δφ| > 100 mrad at any harmonic: possible cable snag / physical contact; say so in "caution" and keep confidence low.
+Lab (not yet field-validated; lab currents 50–1250 mA may not transfer to 500 mA field):
+- Hydrocarbons (Class 3 Gas Oil, ITB Rebel, Alaska crude at ≥250 mA, Group 5): positive phase growing with harmonic, Mag ≈ 0. At low current (≤125 mA) crude shows a flat +7 to +31% magnitude with no phase.
+- Mineral oil / high-resistivity non-IP: large NEGATIVE flat magnitude (~−43%), no phase.
+- Gold, silver ore, copper: no IP response (bulk resistivity only); do not label a strong phase anomaly as these.
+- Galvanized steel / ilmenite in lab: negative phase growing with harmonic; polarity can reverse at high current.
 
 How to use the team's confirmed examples:
 - They are ground truth from this team's lab and field work, retrieved as the nearest neighbours of this event in feature space (smaller dist = more similar), balanced across materials.
-- When several close neighbours agree, weight them heavily; they encode this rig's real behaviour. When they conflict with the physics guide, say so in "caution".
-- If there are few or no examples for a material, rely on physics and lab references and lower your confidence.
+- When several close neighbours agree, weight them heavily; when they conflict with the reference rules, say so in "caution".
+- If there are few or no examples for a material, rely on the reference rules and lower your confidence.
 Only use the allowed labels. Report calibrated confidence: a 70% label should be right about 70% of the time.`;
 
 function num(v: unknown, d = 2) {
@@ -108,7 +115,7 @@ EVENT:
 ${evLines}
   mag%=${num(ev.magPct)} nPkts=${ev.nPkts ?? "?"} fundSNR=${num(ev.fundSNR, 1)} maxSNR=${num(ev.maxSNR, 1)} phaseSlope=${num(ev.phaseSlope)} mrad/decade
   summary features: devFund=${num(f.dp1)} devMid=${num(f.dp3)} devHigh=${num(f.dp_last)}
-RULE ENGINE: ${ev.rulesCls ?? "?"} (${ev.rulesConf ?? "?"}%)   FUSED (rules+lab): ${ev.fusedCls ?? "?"}
+RULE ENGINE: ${ev.rulesCls ?? "?"} (${ev.rulesConf ?? "?"}%)   FUSED (rules+lab): ${ev.fusedCls ?? "?"}\nRULE NOTE: ${ev.rulesNote ?? "none"}${ev.review ? " [REVIEW: |Δφ| > 100 mrad, possible cable snag]" : ""}  alternating polarity: ${ev.altPol ? "yes" : "no"}
 ${labLines ? "LAB REFERENCE SPECTRAL-ANGLE MATCHES (blank-subtracted, amplitude-invariant):\n" + labLines : "No lab reference signatures for this frequency."}
 
 TEAM CONFIRMATIONS IN DATABASE: ${countLine || "none yet"}

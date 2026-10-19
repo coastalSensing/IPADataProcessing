@@ -799,28 +799,37 @@
   // knownDays (optional): [{date, lat, lon}] for every line in the library, so day numbers don't
   // depend on which lines happen to be open.
   function surveyDays(fileInfos, targets, knownDays) {
-    var info = {}, byPlace = {};
-    (knownDays || []).forEach(function (k) {
-      var place = finite(k.lat) && finite(k.lon) ? placeOf([[k.lat, k.lon]]) : null;
-      if (k.date && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(k.date) < 0) byPlace[place].push(k.date); }
-    });
+    // Each survey date gets ONE place: the named area most of that date's lines are in
+    // (transit legs and lines outside the area stay with their day).
+    var info = {}, votes = {};
+    function vote(date, place) { if (!date || !place) return; var v = votes[date] = votes[date] || {}; v[place] = (v[place] || 0) + 1; }
+    (knownDays || []).forEach(function (k) { if (finite(k.lat) && finite(k.lon)) vote(k.date, placeOf([[k.lat, k.lon]])); });
     fileInfos.forEach(function (f) {
       var pts = samplePts(f.packets), d = dateOf(f.packets[0]), place = placeOf(pts);
-      info[f.fi] = { date: d, place: place, pts: pts, near: nearTargets(pts, targets, 2000) };
-      if (d && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(d) < 0) byPlace[place].push(d); }
+      info[f.fi] = { date: d, linePlace: place, pts: pts, near: nearTargets(pts, targets, 2000) };
+      if (!knownDays || !knownDays.length) vote(d, place);
     });
+    var datePlace = {};
+    Object.keys(votes).forEach(function (d) {
+      var v = votes[d], named = Object.keys(v).filter(function (p) { return PLACES.some(function (P) { return P.name === p; }); });
+      var pool = named.length ? named : Object.keys(v);
+      datePlace[d] = pool.sort(function (a, b) { return v[b] - v[a]; })[0];
+    });
+    var byPlace = {};
+    Object.keys(datePlace).forEach(function (d) { (byPlace[datePlace[d]] = byPlace[datePlace[d]] || []).push(d); });
     var dayOf = {};
     Object.keys(byPlace).forEach(function (place) {
-      var ds = byPlace[place].sort(), start = null, n = 0, prev = null;
-      ds.forEach(function (d) {
+      var start = null, n = 0, prev = null;
+      byPlace[place].sort().forEach(function (d) {
         if (!prev || dayDiff(prev, d) > 7) { start = d; n = 0; }
         n++; prev = d;
         var m = start.split('-');
-        dayOf[place + '|' + d] = { rank: n, survey: place + ' ' + MONTHS[+m[1] - 1] + ' ' + m[0] };
+        dayOf[d] = { rank: n, survey: place + ' ' + MONTHS[+m[1] - 1] + ' ' + m[0] };
       });
     });
     Object.keys(info).forEach(function (fi) {
-      var r = info[fi], k = dayOf[r.place + '|' + r.date];
+      var r = info[fi], k = r.date ? dayOf[r.date] : null;
+      r.place = r.date ? (datePlace[r.date] || r.linePlace) : r.linePlace;
       r.dayRank = k ? k.rank : 0; r.survey = k ? k.survey : null;
     });
     return { byFile: info };

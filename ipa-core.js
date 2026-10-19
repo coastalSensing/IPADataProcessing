@@ -516,9 +516,16 @@
     var cls, conf, note = null, review = false;
     // r7 features (WaTech-MatChar-r7 §18 step 4): Δφ at fundamental, 3rd, 5th, 7th harmonic (4/12/20/28 Hz at 4 Hz)
     var d1 = dpDev[harms[0]], d3 = dpDev[harms[1]], d5 = dpDev[harms[2]], d7 = dpDev[harms[3]];
+    var magPk = mag0 && ref ? (mag0[1] - ref) / ref * 100 : 0;
+    if (opts.rules === 'r7') {
+      // r7 §18 step 4 reads Δφ at the single most anomalous packet of the crossing, not the SNR-weighted integral
+      var pkDev = function (f) { var v = rep.pk.freqs[f]; return v ? wrapMrad(v[0] * 1000 - bgAt(bg, f, rep.i)) : 0; };
+      d1 = pkDev(harms[0]); d3 = pkDev(harms[1]); d5 = pkDev(harms[2]); d7 = pkDev(harms[3]);
+      altPol = d1 * d3 < 0 && d3 * d5 < 0;
+    }
     var maxAbs = 0, nAnom = 0;
     harms.forEach(function (f) { var v = Math.abs(dpDev[f]); if (v > maxAbs) maxAbs = v; var p = bg.perHz[f]; if (p && v / p.std >= 3) nAnom++; });
-    var z1 = Math.abs(d1) / s0, slope7 = (d7 - d1) / 3;
+    var z1 = Math.abs(dpDev[harms[0]]) / s0, slope7 = (d7 - d1) / 3;
     var posGrow = d5 > 0 && d7 > 0 && slope7 > 0.5 && d7 >= d3;
     if (maxAbs > opts.reviewDevMrad) { review = true; note = '|Δφ| > ' + opts.reviewDevMrad + ' mrad: possible cable snag/contact (r7 §17), review manually'; }
     if (cluster.isArtifact || Math.abs(dp1dev) > opts.artifactDevMrad || magPct < opts.artifactMagPct) { cls = 'Artifact'; conf = 99; }
@@ -528,7 +535,7 @@
       else if (maxSNRall < opts.minSNRmaterial && !(magPct <= -20)) { cls = 'Weak/Inconclusive'; conf = Math.min(35, 15 + eff * 3); note = note || 'crossing SNR below ' + opts.minSNRmaterial + ': no material call'; }
       else if (magPct <= -20 && z1 < 3 && nAnom <= 1) { cls = 'Resistive (non-IP)'; conf = 55; note = note || 'Mag <= -20% flat with no phase (r7 rule 7, e.g. mineral oil displacing saline)'; }
       else if (magPct < -2) {
-        if (d5 > 5 && !altPol && magPct > -8) { cls = 'Ilmenite'; conf = Math.min(85, 60 + maxSNRall / 2); note = note || 'Mag% < -2, Δφ(5th) = +' + d5.toFixed(1) + ' mrad, no alternating polarity (r7 §12/§17)'; }
+        if (d5 > 5 && !altPol && magPk > -8) { cls = 'Ilmenite'; conf = Math.min(85, 60 + maxSNRall / 2); note = note || 'Mag% < -2, Δφ(5th) = +' + d5.toFixed(1) + ' mrad, no alternating polarity (r7 §12/§17)'; }
         else if (nAnom === 1 && maxSNRall > 2 && z1 < 3) { cls = 'Asphalt'; conf = 40; note = note || 'Mag% < -2 with a single-harmonic anomaly (r7 §17; asphalt vs steel not yet discriminated)'; }
         else { cls = 'Steel'; conf = Math.min(88, 60 + maxSNRall / 2); note = note || ('Mag% = ' + magPct.toFixed(1) + ' (r7: magnitude decrease is the primary steel indicator)' + (altPol ? ', alternating polarity' : (d1 < 0 && d3 < 0 && d5 < 0 && d7 < 0 ? ', uniform negative' : ''))); }
       }

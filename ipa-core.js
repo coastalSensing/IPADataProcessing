@@ -62,6 +62,9 @@
     gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
     mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
     minPkts: 1,            // min packets per crossing
+    detChannels: 'ch1',    // receiver channels used for DETECTION: 'ch1' | 'all' (every active channel). Features always use all.
+    nHarm: 6,              // odd harmonics used for detection: 6 (r7) … 'all' (every odd harmonic in the file, up to 31)
+    magRef: 'ch0',         // magnitude reference: 'ch0' = channel mag ÷ ch0 mag (removes TX-current drift) | 'raw'
     labCosMin: 0.90,       // spectral-angle cosine required to accept a lab match
     applyLayback: true,
     laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
@@ -189,7 +192,7 @@
       var lat = lab ? null : nmeaDD((p[6] || '').trim(), false);
       var lon = lab ? null : nmeaDD((p[7] || '').trim(), true);
       if (!isNaN(idx) && !isNaN(xmt)) {
-        var freqs = {};
+        var freqs = {}, chan = {};
         for (var r = i + 2; r < i + 33 && r < lines.length; r++) {
           var dl = lines[r].trim();
           if (!dl || dl.startsWith('#')) break;
@@ -197,9 +200,16 @@
           if (c.length < 10) continue;
           var freq = parseFloat(c[0]), dp = parseFloat(c[1]), mg = parseFloat(c[9]);
           if (!isNaN(freq) && !isNaN(dp) && !isNaN(mg)) freqs[freq] = [dp, mg];
+          // every receiver channel: ch1-0 … ch7-0 phase deltas (rad) and ch0 … ch7 magnitudes
+          if (!isNaN(freq) && c.length >= 16) {
+            var cd = [], cm = [];
+            for (var k = 1; k <= 7; k++) cd.push(parseFloat(c[k]));
+            for (var k2 = 8; k2 <= 15; k2++) cm.push(parseFloat(c[k2]));
+            chan[freq] = { d: cd, m: cm };
+          }
         }
         if (Object.keys(freqs).length) {
-          pkts.push({ idx: idx, ts: ts, t: parseTime(ts), run: run, xmt: xmt, lat: lat, lon: lon, freqs: freqs, type: lab ? 'lab' : 'field' });
+          pkts.push({ idx: idx, ts: ts, t: parseTime(ts), run: run, xmt: xmt, lat: lat, lon: lon, freqs: freqs, chan: Object.keys(chan).length ? chan : null, type: lab ? 'lab' : 'field', gpsT: (p[5] || '').trim() });
         }
       }
       i += 33;
@@ -629,22 +639,91 @@
     return { cls: ev.cls, conf: Math.max(10, ev.confPct - 20), src: 'rules', conflict: true, labCls: best.material };
   }
 
+  // ── Receiver channels ─────────────────────────────────────────────────────
+  // A channel is active when its fundamental phase is stable; unconnected inputs read ±π noise.
+  function activeChannels(packets) {
+    if (!packets.length || !packets[0].chan) return [1];
+    var f0 = getHarms(packets[0].xmt)[0], out = [];
+    for (var c = 1; c <= 7; c++) {
+      var d = [], m = [];
+      for (var i = 0; i < packets.length; i++) { var v = packets[i].chan && packets[i].chan[f0]; if (v && finite(v.d[c - 1])) { d.push(v.d[c - 1]); m.push(v.m[c]); } }
+      if (d.length < 5) continue;
+      var med = median(d), sc = 1.4826 * mad(d, med), mm = median(m.filter(finite));
+      if (Math.abs(med) < 0.6 && sc < 0.05 && mm > 0) out.push(c);
+    }
+    return out.length ? out : [1];
+  }
+  // Every odd harmonic of the transmit frequency present in the file (4, 12, 20 … at 4 Hz)
+  function oddHarmonics(packets, xmt) {
+    var s = {}; packets.slice(0, 5).forEach(function (pk) { Object.keys(pk.freqs).forEach(function (f) { s[f] = 1; }); });
+    return Object.keys(s).map(Number).filter(function (f) { var k = f / xmt; return Math.abs(k - Math.round(k)) < 1e-6 && Math.round(k) % 2 === 1; }).sort(function (a, b) { return a - b; });
+  }
+  // Packets as seen by channel c (phase delta + magnitude, optionally ÷ ch0 magnitude)
+  function channelPackets(packets, c, magRef) {
+    if (c === 1 && magRef !== 'ch0') return packets;
+    return packets.map(function (pk) {
+      if (!pk.chan) return pk;
+      var fr = {};
+      Object.keys(pk.chan).forEach(function (f) { var v = pk.chan[f], mg = v.m[c]; if (magRef === 'ch0') mg = v.m[0] ? mg / v.m[0] : NaN; fr[f] = [v.d[c - 1], mg]; });
+      return Object.assign({}, pk, { freqs: fr });
+    });
+  }
+  // Deviation from background (mrad), robust z and Mag% at packet i, for every channel and odd harmonic
+  function channelSpectra(per, chans, freqs, i) {
+    var out = {};
+    chans.forEach(function (c) {
+      var P = per[c]; if (!P || !P.vp[i]) return;
+      var pk = P.vp[i], dev = [], z = [], mag = [], zMax = 0, n = P.vp.length;
+      freqs.forEach(function (f) {
+        var v = pk.freqs[f], pz = P.bg.perHz[f];
+        if (!v || !pz) { dev.push(null); z.push(null); mag.push(null); return; }
+        var d = wrapMrad(v[0] * 1000 - bgAt(P.bg, f, i)), zz = Math.abs(d) / pz.std;
+        dev.push(Math.round(d * 100) / 100); z.push(Math.round(zz * 10) / 10); if (zz > zMax) zMax = zz;
+        var w = []; for (var j = Math.max(0, i - 30); j <= Math.min(n - 1, i + 30); j++) { var q = P.vp[j].freqs[f]; if (q && finite(q[1])) w.push(q[1]); }
+        var ref = w.length ? median(w) : NaN; mag.push(ref && finite(v[1]) ? Math.round((v[1] - ref) / ref * 1000) / 10 : null);
+      });
+      out[c] = { dev: dev, z: z, mag: mag, zMax: Math.round(zMax * 10) / 10, magPct: mag[0] };
+    });
+    return out;
+  }
+
   // ── Per-file analysis (raw frame; layback applied separately) ──────────────
   function analyzeField(packets, opts, labSigs) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var xmt = packets[0].xmt, harms = getHarms(xmt), bg = computeBG(packets, harms, opts);
-    var kin = computeKinematics(packets);
-    var clusters = detectAnomalies(packets, harms, bg, opts, kin);
+    var xmt = packets[0].xmt, harms = getHarms(xmt), kin = computeKinematics(packets);
+    var chans = activeChannels(packets), odd = oddHarmonics(packets, xmt);
+    if (odd.length < harms.length) odd = harms.slice();
+    var nH = opts.nHarm === 'all' ? odd.length : Math.max(harms.length, +opts.nHarm || harms.length);
+    var detH = odd.slice(0, nH); harms.forEach(function (f) { if (detH.indexOf(f) < 0) detH.push(f); });
+    var per = {};
+    [1].concat(chans).forEach(function (c) { if (!per[c]) { var vp = channelPackets(packets, c, opts.magRef); per[c] = { vp: vp, bg: computeBG(vp, odd, opts) }; } });
+    var bg = per[1].bg;
+    var clusters = detectAnomalies(per[1].vp, detH, bg, opts, kin);
+    clusters.forEach(function (cl) { cl.detCh = 1; });
+    if (opts.detChannels === 'all') chans.forEach(function (c) {
+      if (c === 1) return;
+      detectAnomalies(per[c].vp, detH, per[c].bg, opts, kin).forEach(function (cl) {
+        var a = cl[0].pk.idx, b = cl[cl.length - 1].pk.idx, g = opts.gapPkts + 2;
+        if (!clusters.some(function (k) { return k[0].pk.idx - g <= b && a <= k[k.length - 1].pk.idx + g; })) { cl.detCh = c; clusters.push(cl); }
+      });
+    });
+    clusters.sort(function (x, y) { return x[0].pk.idx - y[0].pk.idx; });
+    var T = opts.mode === 'legacy' ? 3 : opts.zThresh;
     var events = clusters.map(function (cl) {
-      var ev = classifyRules(cl, harms, bg, kin, opts);
-      ev.labMatches = labMatch(ev, harms, bg, labSigs);
+      var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts);
+      ev.detCh = c;
+      ev.spec = channelSpectra(per, chans, odd, ev.i);
+      ev.seenOn = chans.filter(function (ch) { return ev.spec[ch] && ev.spec[ch].zMax >= T; });
+      ev.labMatches = c === 1 ? labMatch(ev, harms, bg, labSigs) : [];
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
       return ev;
     });
-    var lenM = kin.length ? kin[kin.length - 1].cum : 0;
-    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM };
+    var lenM = kin.length ? kin[kin.length - 1].cum : 0, chBg = {};
+    chans.forEach(function (c) { chBg[c] = per[c].bg; });
+    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM,
+      chans: chans, freqsAll: odd, detH: detH, chBg: chBg };
   }
   // Apply the linear layback model: every event and packet is moved BACK along the
   // recorded path by L + τ·v. L=τ=0 returns raw positions.
@@ -668,7 +747,7 @@
   // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
   // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
   // Lab matching is redone on open, so new lab references apply without reprocessing.
-  var SUMMARY_VER = 1;
+  var SUMMARY_VER = 2;
   function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
   function summarizeField(fa, packets) {
     var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });
@@ -682,7 +761,7 @@
     var p0 = packets[0], pN = packets[packets.length - 1];
     return { sv: SUMMARY_VER, run: p0.run, type: p0.type, xmt: fa.xmt, harms: fa.harms, ts0: p0.ts, tsN: pN.ts,
       bg: { mode: fa.bg.mode, mean: fa.bg.mean, std: fa.bg.std, magMean: fa.bg.magMean, perHz: perHz },
-      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events };
+      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events, chans: fa.chans || [1], freqsAll: fa.freqsAll || fa.harms };
   }
   // Rebuild a light file from a summary: packets carry position/time only (no harmonics).
   function expandSummary(s) {
@@ -697,13 +776,13 @@
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var events = s.events.map(function (e) {
       var ev = Object.assign({}, e);
-      ev.labMatches = labMatch(ev, s.harms, s.bg, labSigs);
+      ev.labMatches = (ev.detCh || 1) === 1 ? labMatch(ev, s.harms, s.bg, labSigs) : [];
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
       return ev;
     });
-    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true };
+    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true, chans: s.chans || [1], freqsAll: s.freqsAll || s.harms };
   }
 
   // ── Known targets: waypoints → physical target sites ───────────────────────
@@ -1101,7 +1180,7 @@
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
-    analyzeField: analyzeField, correctFile: correctFile,
+    analyzeField: analyzeField, correctFile: correctFile, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,

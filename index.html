@@ -919,6 +919,49 @@ canvas{display:block;width:100%;}
     return Object.assign({}, fa, { events: events, track: track });
   }
 
+  // ── Saved per-line results ("summaries") ─────────────────────────────────
+  // A summary is everything the map, corroboration, coverage and layback need from one line:
+  // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
+  // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
+  // Lab matching is redone on open, so new lab references apply without reprocessing.
+  var SUMMARY_VER = 1;
+  function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
+  function summarizeField(fa, packets) {
+    var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });
+    var perHz = {};
+    Object.keys(fa.bg.perHz).forEach(function (f) { var p = fa.bg.perHz[f]; perHz[f] = { mean: p.mean, std: p.std }; });
+    var events = fa.events.map(function (ev) {
+      var o = {};
+      Object.keys(ev).forEach(function (k) { if (k === 'labMatches' || k === 'labBest' || k === 'labConflict' || k.indexOf('fused') === 0) return; o[k] = ev[k]; });
+      return o;
+    });
+    var p0 = packets[0], pN = packets[packets.length - 1];
+    return { sv: SUMMARY_VER, run: p0.run, type: p0.type, xmt: fa.xmt, harms: fa.harms, ts0: p0.ts, tsN: pN.ts,
+      bg: { mode: fa.bg.mode, mean: fa.bg.mean, std: fa.bg.std, magMean: fa.bg.magMean, perHz: perHz },
+      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events };
+  }
+  // Rebuild a light file from a summary: packets carry position/time only (no harmonics).
+  function expandSummary(s) {
+    var n = s.pk.length;
+    var packets = s.pk.map(function (a, i) {
+      return { lat: a[0], lon: a[1], t: a[2], idx: a[3], ts: i === 0 ? s.ts0 : i === n - 1 ? s.tsN : '', run: s.run, xmt: s.xmt, type: s.type || 'field', freqs: {} };
+    });
+    return { packets: packets, kin: computeKinematics(packets) };
+  }
+  // Analysis object for a light file, with lab matching / fusion redone against the current references.
+  function liteAnalysis(s, kin, opts, labSigs) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var events = s.events.map(function (e) {
+      var ev = Object.assign({}, e);
+      ev.labMatches = labMatch(ev, s.harms, s.bg, labSigs);
+      ev.labBest = ev.labMatches[0] || null;
+      var fu = fuseClass(ev, ev.labBest, opts);
+      ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
+      return ev;
+    });
+    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true };
+  }
+
   // ── Known targets: waypoints → physical target sites ───────────────────────
   // Waypoints within linkM of each other are one target. A target is a segment between
   // its two most distant members, so a long/linear target is judged along its length.
@@ -1252,6 +1295,7 @@ canvas{display:block;width:100%;}
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,
+    SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
     collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,
@@ -1270,7 +1314,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v39';
+const APP_VERSION='v40';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1393,6 +1437,22 @@ function downloadFromLibrary(path){return supabase.storage.from(BUCKET).download
     if(!window.DecompressionStream)throw new Error('This browser cannot open compressed library files. Update Chrome, Edge, Firefox or Safari.');
     return new Response(res.data.stream().pipeThrough(new DecompressionStream('gzip'))).text();}
   return res.data.text();});}
+// Saved per-line results ("summaries"): summaries/<settings key>/<sha256 prefix>.json.gz in the same private bucket.
+function procKey(proc){var s=DET_KEYS.map(function(k){return k+'='+proc[k];}).join('&'),h=0;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return 'e'+IPA.SUMMARY_VER+'-'+(h>>>0).toString(36);}
+function summaryPath(hash,key){return 'summaries/'+key+'/'+hash.slice(0,32)+'.json.gz';}
+function downloadSummary(hash,key){return downloadFromLibrary(summaryPath(hash,key)).then(function(t){return JSON.parse(t);});}
+function uploadSummary(hash,key,sum){var txt=JSON.stringify(sum);return gzipBlob(txt).then(function(gz){var path=summaryPath(hash,key);if(!gz)path=path.replace(/\.gz$/,'');
+  return supabase.storage.from(BUCKET).upload(path,gz||new Blob([txt],{type:'application/json'}),{upsert:false,contentType:gz?'application/gzip':'application/json'})
+    .then(function(res){if(res.error&&!/exist|duplicate/i.test(res.error.message))throw new Error(res.error.message);});});}
+function liteFile(row,sum,key){var ex=IPA.expandSummary(sum);
+  return{name:row.file_name,run:sum.run||row.run_name||row.file_name,packets:ex.packets,kin:ex.kin,xmt:sum.xmt,type:'field',hash:row.sha256,lite:true,summary:sum,sumKey:key};}
+// Lab run kept as its per-frequency statistics only (that is all the Lab Stats view uses).
+function labLite(name,hash,info){return{name:name,run:info.run,packets:[],nPkts:info.nPkts,labStats:info.labStats,xmt:info.xmt,type:'lab',hash:hash,lite:true};}
+function labInfoFromFile(f){return{run:f.run,xmt:f.xmt,nPkts:f.packets.length,labStats:IPA.computeLabStats(f.packets)};}
+// Run fn over items with n parallel workers; onStep(done,total) after each item.
+function pool(items,n,fn,onStep){var i=0,done=0,out=new Array(items.length);function w(){if(i>=items.length)return Promise.resolve();var k=i++;
+  return Promise.resolve().then(function(){return fn(items[k]);}).catch(function(e){console.warn(e);return {err:e};}).then(function(r){out[k]=r;done++;if(onStep)onStep(done,items.length);return w();});}
+  var W=[];for(var j=0;j<Math.min(n,items.length);j++)W.push(w());return Promise.all(W).then(function(){return out;});}
 function deleteFromLibrary(rows){
   return supabase.storage.from(BUCKET).remove(rows.map(function(r){return r.storage_path;})).then(function(res){
     if(res&&res.error)throw new Error(res.error.message);
@@ -1579,6 +1639,8 @@ function App(){
   var [libFilter,setLibFilter]=useState({kind:'all',text:''});
   var [libBusy,setLibBusy]=useState('');
   var [labSigs,setLabSigs]=useState([]);
+  var [surveys,setSurveys]=useState([]);
+  var [pickSurvey,setPickSurvey]=useState('');
   var [labBuild,setLabBuild]=useState('');
   var [labShowAll,setLabShowAll]=useState(false);
   var [stoBusy,setStoBusy]=useState('');
@@ -1658,7 +1720,8 @@ function App(){
         .catch(function(e){notes.push('lab_signatures: '+e.message);}),
       loadWaypointsDB().then(function(r){if(r.length)setWaypoints(function(prev){return r.concat(prev.filter(function(w){return !w.id;}));});})
         .catch(function(e){notes.push('waypoints: '+e.message);}),
-      listLibraryDB().then(function(r){setLibrary(r);}).catch(function(e){notes.push('data_files: '+e.message);})
+      listLibraryDB().then(function(r){setLibrary(r);}).catch(function(e){notes.push('data_files: '+e.message);}),
+      q(supabase.from('surveys').select('id,name,start_date').order('start_date',{ascending:false})).then(function(r){setSurveys(r||[]);}).catch(function(){})
     ]).then(function(){setDbStatus('ok');setDbNote(notes.length?'Run supabase_schema.sql to enable: '+notes.join('; '):'');})
       .catch(function(e){console.warn('Supabase load failed:',e.message);setDbStatus('error');setDbNote(e.message);});
   },[authUser,isTeam]);
@@ -1666,10 +1729,18 @@ function App(){
   // ── Analysis pipeline ─────────────────────────────────────────────────────
   var detKey=DET_KEYS.map(function(k){return proc[k];}).join('|');
   useEffect(function(){setAiResults({});setSelEv(null);},[detKey]);
+  // Each line is analysed once per settings/lab-reference change (cached per file), so adding
+  // lines does not re-run the ones already open. Light lines reuse their saved results.
+  var faCache=useRef(new WeakMap());
   var baseAnalyses=useMemo(function(){
+    var key=procKey(proc);
     return files.map(function(f){
       if(f.type!=='field'||!f.packets.length)return null;
-      try{return IPA.analyzeField(f.packets,proc,labSigs);}catch(e){console.error(e);return null;}
+      var c=faCache.current.get(f);if(c&&c.det===detKey&&c.sigs===labSigs)return c.fa;
+      var fa=null;
+      try{fa=f.lite?IPA.liteAnalysis(f.summary,f.kin,proc,labSigs):IPA.analyzeField(f.packets,proc,labSigs);}catch(e){console.error(e);}
+      if(fa&&f.lite&&f.sumKey!==key)fa.stale=true;
+      faCache.current.set(f,{det:detKey,sigs:labSigs,fa:fa});return fa;
     });
   },[files,detKey,labSigs]);
   var fileAnalyses=useMemo(function(){
@@ -1759,8 +1830,9 @@ function App(){
   var analysis=useMemo(function(){
     if(activeIdx===null||!files[activeIdx])return null;
     var f=files[activeIdx];
-    if(f.type==='lab')return{isLab:true,run:f.run,labStats:IPA.computeLabStats(f.packets),nPkts:f.packets.length};
+    if(f.type==='lab')return{isLab:true,run:f.run,labStats:f.labStats||IPA.computeLabStats(f.packets),nPkts:f.nPkts||f.packets.length};
     var fa=fileAnalyses[activeIdx];if(!fa)return null;
+    if(f.lite)return{isLab:false,isLite:true,run:f.run,nPkts:f.packets.length,xmt:fa.xmt,harms:fa.harms,bg:fa.bg,events:fa.events};
     var pkts=f.packets,harms=fa.harms,bg=fa.bg,T=proc.mode==='legacy'?3:proc.zThresh;
     var ser=function(h){return pkts.map(function(pk){var v=pk.freqs[h];return v?v[0]*1000:NaN;});};
     var d1=ser(harms[0]),dH=ser(harms[5]),d3=ser(harms[2]);
@@ -1775,7 +1847,7 @@ function App(){
   },[files,activeIdx,fileAnalyses,aiResults,selEv,proc.mode,proc.zThresh]);
 
   useEffect(function(){
-    if(!analysis||analysis.isLab||mainTab!=='analysis')return;
+    if(!analysis||analysis.isLab||analysis.isLite||mainTab!=='analysis')return;
     var a=analysis;
     var allPh=a.d1.concat(a.dH).filter(function(v){return isFinite(v)&&Math.abs(v)<200;});
     var phMin=allPh.length?Math.min.apply(null,allPh):-50,phMax=allPh.length?Math.max.apply(null,allPh):50;
@@ -1904,15 +1976,40 @@ function App(){
   }
   // Restore this browser's last session once signed in
   var restoredRef=useRef(false);
+  function summaryRec(f){return{hash:f.hash,name:f.name,kind:'summary',text:JSON.stringify(f.summary),sumKey:f.sumKey,at:Date.now()};}
   useEffect(function(){
-    if(!authUser||restoredRef.current)return;restoredRef.current=true;
+    // Wait for the library list (dbStatus) so cached raw field lines can be switched to quick mode.
+    if(!authUser||restoredRef.current||dbStatus==='loading')return;restoredRef.current=true;
     idbLoadFiles().then(function(recs){
       if(!recs||!recs.length)return;
       recs.sort(function(a,b){return (a.at||0)-(b.at||0);});
-      addParsed(recs.map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
-      setLibStatus('Restored '+recs.length+' file(s) from this browser\'s last session.');
+      var key=procKey(proc),lite=[],full=[],migrate=[],labConv=[];
+      recs.forEach(function(r){
+        if(r.kind==='summary'){try{lite.push(liteFile({file_name:r.name,sha256:r.hash},JSON.parse(r.text),r.sumKey));}catch(e){}return;}
+        if(r.kind==='labsum'){try{lite.push(labLite(r.name,r.hash,JSON.parse(r.text)));}catch(e){}return;}
+        if(r.kind==='lab'&&r.hash&&libraryHashes[r.hash]){var res=parseText(r.name,r.text,r.hash,false);
+          if(res&&res.kind==='ipa'&&res.f.type==='lab'){var info=labInfoFromFile(res.f);labConv.push({hash:r.hash,name:r.name,kind:'labsum',text:JSON.stringify(info),at:r.at});lite.push(labLite(r.name,r.hash,info));return;}}
+        if(r.kind==='field'&&r.hash&&libraryHashes[r.hash]){migrate.push(r);return;}
+        full.push(r);
+      });
+      addParsed(full.map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
+      addLite(lite,true);
+      if(labConv.length)idbSaveFiles(labConv);
+      setLibStatus('Restored '+(full.length+lite.length)+' file(s) from this browser\'s last session.');
+      if(!migrate.length)return;
+      // One-time: raw field lines cached in this browser → saved results (built from the cached copy if missing)
+      pool(migrate,4,function(r){var row=libraryHashes[r.hash];
+        return downloadSummary(r.hash,key).then(function(sum){return liteFile(row,sum,key);},function(){
+          var res=parseText(r.name,r.text,r.hash,false);if(!res||res.kind!=='ipa'||res.f.type!=='field')return null;
+          var sum=JSON.parse(JSON.stringify(IPA.summarizeField(IPA.analyzeField(res.f.packets,proc,labSigs),res.f.packets)));
+          return uploadSummary(r.hash,key,sum).catch(function(e){console.warn('summary upload: '+e.message);}).then(function(){return liteFile(row,sum,key);});
+        });
+      },function(d,n){setLibBusy('Restoring '+d+' / '+n+' cached line(s) in quick mode…');})
+      .then(function(res){var l=res.filter(function(x){return x&&!x.err;});
+        idbSaveFiles(l.map(summaryRec));addLite(l,true);setLibBusy('');
+        setLibStatus('Restored '+(full.length+lite.length+l.length)+' file(s); '+l.length+' cached line(s) switched to quick mode.');});
     });
-  },[authUser]);
+  },[authUser,dbStatus]);
   function shareRecords(recs){
     var todo=recs.filter(function(r){return r&&r.hash&&!libraryHashes[r.hash]&&shareState[r.hash]!=='uploading';});
     if(!todo.length)return Promise.resolve(0);
@@ -2038,18 +2135,76 @@ function App(){
     shareRecords(recs).then(function(n){setLibBusy('');setLibStatus(n+' file(s) added to the shared library.');});
     shareWaypointsNow(waypoints);
   }
-  function loadFromLibrary(rows){
+  // Field line → light file from its saved results; builds and saves them the first time.
+  function fetchLine(r,key){
+    return downloadSummary(r.sha256,key).then(function(sum){return{lite:liteFile(r,sum,key)};},function(){
+      return downloadFromLibrary(r.storage_path).then(function(text){
+        var res=parseText(r.file_name,text,r.sha256,false);
+        if(!res||res.kind!=='ipa'||res.f.type!=='field')return{full:res};
+        var sum=JSON.parse(JSON.stringify(IPA.summarizeField(IPA.analyzeField(res.f.packets,proc,labSigs),res.f.packets)));
+        return uploadSummary(r.sha256,key,sum).catch(function(e){console.warn('summary upload: '+e.message);})
+          .then(function(){return{lite:liteFile(r,sum,key),built:true};});
+      });});
+  }
+  function loadFromLibrary(rows,full){
     var have={};files.forEach(function(f){if(f.hash)have[f.hash]=1;});
     var todo=rows.filter(function(r){return !have[r.sha256];});
-    if(!todo.length){setLibStatus('Those files are already loaded.');return;}
-    setLibBusy('Downloading '+todo.length+' file(s)…');
-    var out=[],errs=0;
-    todo.reduce(function(chain,r){return chain.then(function(){
-      return downloadFromLibrary(r.storage_path).then(function(text){out.push(parseText(r.file_name,text,r.sha256,r.file_kind==='waypoints'));})
-        .catch(function(){errs++;});});},Promise.resolve())
-    .then(function(){addParsed(out);setLibBusy('');setLibSel({});
-      setLibStatus('Loaded '+out.filter(Boolean).length+' file(s)'+(errs?' · '+errs+' failed':'')+'.');});
+    if(!todo.length){setLibStatus('Those files are already open.');return Promise.resolve();}
+    var key=procKey(proc),out=[],lites=[],labs=[],errs=0,built=0;
+    setLibBusy('Opening '+todo.length+' file(s)…');
+    return pool(todo.slice(),10,function(r){
+      if(!full&&r.file_kind==='field')return fetchLine(r,key).then(function(x){if(x.lite){lites.push(x.lite);if(x.built)built++;}else if(x.full)out.push(x.full);});
+      return downloadFromLibrary(r.storage_path).then(function(text){var res=parseText(r.file_name,text,r.sha256,r.file_kind==='waypoints');
+        if(!full&&res&&res.kind==='ipa'&&res.f.type==='lab'){var info=labInfoFromFile(res.f);labs.push({f:labLite(r.file_name,r.sha256,info),rec:{hash:r.sha256,name:r.file_name,kind:'labsum',text:JSON.stringify(info),at:Date.now()}});return;}
+        out.push(res);});
+    },function(d,n){setLibBusy('Opening '+d+' / '+n+(built?' (building saved results: '+built+')':'')+'…');})
+    .then(function(res){errs=res.filter(function(x){return x&&x.err;}).length;
+      addParsed(out);addLite(lites);
+      if(labs.length){idbSaveFiles(labs.map(function(x){return x.rec;}));addLite(labs.map(function(x){return x.f;}),true);}
+      setLibBusy('');setLibSel({});
+      setLibStatus('Opened '+(out.filter(Boolean).length+lites.length+labs.length)+' file(s)'+(built?' · saved results built for '+built+' (faster next time)':'')+(errs?' · '+errs+' failed':'')+'.');});
   }
+  function addLite(lites,noCache){
+    if(!lites.length)return;
+    if(!noCache){var now=Date.now();idbSaveFiles(lites.map(function(f,k){return{hash:f.hash,name:f.name,kind:'summary',text:JSON.stringify(f.summary),sumKey:f.sumKey,at:now+k};}));}
+    setFiles(function(prev){var have={};prev.forEach(function(f){if(f.hash)have[f.hash]=1;});
+      var add=lites.filter(function(f){if(have[f.hash])return false;have[f.hash]=1;return true;});
+      var u=prev.concat(add);if(!prev.length&&u.length)setActiveIdx(0);return u;});
+  }
+  // Swap a light line for its full data (charts in the Analysis tab need every packet's harmonics)
+  var fullBusy=useRef({});
+  function loadFull(fi){
+    var f=files[fi];if(!f||!f.lite||f.type!=='field'||fullBusy.current[f.hash])return;
+    var row=libraryHashes[f.hash];if(!row){setLibStatus('This line is not in the shared library.');return;}
+    fullBusy.current[f.hash]=1;
+    downloadFromLibrary(row.storage_path).then(function(text){
+      var res=parseText(row.file_name,text,row.sha256,false);if(!res||res.kind!=='ipa')throw new Error('could not read the file');
+      setFiles(function(prev){return prev.map(function(x){return x.hash===f.hash?res.f:x;});});
+    }).catch(function(e){setLibStatus('Could not open the full data: '+e.message);}).finally(function(){delete fullBusy.current[f.hash];});
+  }
+  useEffect(function(){
+    var f=activeIdx!==null&&files[activeIdx];
+    if(mainTab==='analysis'&&f&&f.lite&&f.type==='field')loadFull(activeIdx);
+  },[mainTab,activeIdx,files,library]);
+  // Settings changed → fetch (or build) saved results for the new settings for every light line
+  var refreshTried=useRef({});
+  useEffect(function(){
+    var key=procKey(proc);
+    var stale=files.filter(function(f){return f.lite&&f.type==='field'&&f.sumKey!==key&&!refreshTried.current[f.hash+key]&&libraryHashes[f.hash];});
+    if(!stale.length)return;
+    var t=setTimeout(function(){
+      stale.forEach(function(f){refreshTried.current[f.hash+key]=1;});
+      setLibBusy('Updating '+stale.length+' line(s) to the new settings…');
+      pool(stale.map(function(f){return libraryHashes[f.hash];}),10,function(r){return fetchLine(r,key);},
+        function(d,n){setLibBusy('Updating '+d+' / '+n+' line(s) to the new settings…');})
+      .then(function(res){var by={};res.forEach(function(x){if(x&&x.lite)by[x.lite.hash]=x.lite;});
+        var list=Object.keys(by).map(function(h){return by[h];});
+        idbSaveFiles(list.map(function(f){return{hash:f.hash,name:f.name,kind:'summary',text:JSON.stringify(f.summary),sumKey:f.sumKey,at:Date.now()};}));
+        setFiles(function(prev){return prev.map(function(x){return x.lite&&by[x.hash]?by[x.hash]:x;});});
+        setLibBusy('');setLibStatus('Updated '+list.length+' line(s) to the new settings.');});
+    },1500);
+    return function(){clearTimeout(t);};
+  },[detKey,files,library]);
   function removeFromLibrary(rows){
     if(!rows.length)return;
     if(!window.confirm('Permanently delete '+rows.length+' file(s) from the shared library for everyone?'))return;
@@ -2294,6 +2449,30 @@ function App(){
           </div>
           <input ref={fileRef} type="file" accept=".txt,.csv,.gpx,.kml,.kmz,.zip" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files);e.target.value='';}}/>
           <input ref={wpRef} type="file" accept=".csv,.txt,.gpx,.tsv,.kml,.kmz" multiple style={{display:'none'}} onChange={function(e){loadFiles(e.target.files,true);e.target.value='';}}/>
+          {library.length>0 && (function(){
+            var lines=library.filter(function(r){return r.file_kind==='field'&&r.purpose==='survey_line';});
+            function day(r){return (r.first_ts||'').slice(0,10).replace(/\//g,'-');}
+            var opts=[];
+            surveys.forEach(function(sv){var rs=lines.filter(function(r){return r.survey_id===sv.id;});if(!rs.length)return;
+              opts.push({v:'s:'+sv.id,l:sv.name+' — all '+rs.length+' lines',rows:rs});
+              var ds={};rs.forEach(function(r){var d=day(r);(ds[d]=ds[d]||[]).push(r);});
+              Object.keys(ds).sort().forEach(function(d){opts.push({v:'d:'+sv.id+':'+d,l:'   '+d+' ('+ds[d].length+')',rows:ds[d]});});});
+            var other=lines.filter(function(r){return !r.survey_id||!surveys.some(function(sv){return sv.id===r.survey_id;});});
+            if(other.length)opts.push({v:'other',l:'No survey — '+other.length+' lines',rows:other});
+            var cur=opts.find(function(o){return o.v===pickSurvey;})||null;
+            return (
+              <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:4}}>
+                <div className="section-label" style={{fontSize:10,color:'var(--dim)',letterSpacing:1}}>OPEN SURVEY LINES FROM THE DATABASE</div>
+                <div style={{display:'flex',gap:4}}>
+                  <select value={pickSurvey} onChange={function(e){setPickSurvey(e.target.value);}} style={{flex:1,minWidth:0,fontSize:11,padding:'3px 4px',background:'var(--panel2)',color:'var(--text)',border:'1px solid var(--border2)',borderRadius:2}}>
+                    <option value="">Choose a survey or day…</option>
+                    {opts.map(function(o){return <option key={o.v} value={o.v}>{o.l}</option>;})}
+                  </select>
+                  <button className="btn btn-primary btn-sm" disabled={!cur||!!libBusy} onClick={function(){loadFromLibrary(cur.rows);}}>Open</button>
+                </div>
+                {(libBusy||libStatus) && <div style={{fontSize:10,color:libBusy?'#b07800':'var(--dim2)'}}>{libBusy||libStatus}</div>}
+              </div>);
+          })()}
 
           {(function(){
             function shareBadge(f){var st=f.hash&&shareState[f.hash];
@@ -2313,7 +2492,7 @@ function App(){
                   <div className="file-dot" style={{background:g?g.color:'#607a90'}}/>
                   <div style={{flex:1,overflow:'hidden'}}>
                     <div className="file-name" title={f.name}>{f.run}</div>
-                    <div className="file-info">{f.packets.length}pkt · {f.xmt}Hz{fa?' · '+fa.events.length+' ev':''} · {shareBadge(f)}</div>
+                    <div className="file-info" title={f.lite?'Opened from saved results; the full data opens when you view it in Analysis':''}>{f.nPkts||f.packets.length}pkt · {f.xmt}Hz{fa?' · '+fa.events.length+' ev':''}{f.lite?' · quick':''} · {shareBadge(f)}</div>
                   </div>
                   {f.type==='field' && g && <select title="Move to group" value={g.id} onClick={function(e){e.stopPropagation();}}
                     onChange={function(e){moveFiles(selFiles[i]?selList:[i],e.target.value);}}
@@ -2475,7 +2654,10 @@ function App(){
             <div>
               {!af && <div className="empty"><div className="icon">◎</div><p>Load <code>_p.txt</code> files to begin</p></div>}
               {af && af.isLab && <div className="empty"><div className="icon">🔬</div><p>Lab file selected — tag it as a reference in the <strong>Lab Stats</strong> tab</p></div>}
-              {af && !af.isLab && (
+              {af && af.isLite && <div className="empty"><div className="icon">◎</div><p>Opening the full data for <strong>{af.run}</strong> ({af.nPkts} packets, {af.events.length} detections)…</p>
+                <p style={{fontSize:11}}>Lines opened for the map and corroboration use their saved results. The charts need the full file, which opens automatically here.</p>
+                <button className="btn btn-ghost btn-sm" onClick={function(){loadFull(activeIdx);}}>Open full data</button></div>}
+              {af && !af.isLab && !af.isLite && (
                 <div>
                   <div className="statsbar">
                     <Tile label="Run" small value={af.pkts[0]?af.pkts[0].run.substring(0,16):''} sub={af.pkts.length+'pkt · '+af.xmt+'Hz'}/>

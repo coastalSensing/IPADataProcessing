@@ -663,6 +663,49 @@
     return Object.assign({}, fa, { events: events, track: track });
   }
 
+  // ── Saved per-line results ("summaries") ─────────────────────────────────
+  // A summary is everything the map, corroboration, coverage and layback need from one line:
+  // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
+  // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
+  // Lab matching is redone on open, so new lab references apply without reprocessing.
+  var SUMMARY_VER = 1;
+  function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
+  function summarizeField(fa, packets) {
+    var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });
+    var perHz = {};
+    Object.keys(fa.bg.perHz).forEach(function (f) { var p = fa.bg.perHz[f]; perHz[f] = { mean: p.mean, std: p.std }; });
+    var events = fa.events.map(function (ev) {
+      var o = {};
+      Object.keys(ev).forEach(function (k) { if (k === 'labMatches' || k === 'labBest' || k === 'labConflict' || k.indexOf('fused') === 0) return; o[k] = ev[k]; });
+      return o;
+    });
+    var p0 = packets[0], pN = packets[packets.length - 1];
+    return { sv: SUMMARY_VER, run: p0.run, type: p0.type, xmt: fa.xmt, harms: fa.harms, ts0: p0.ts, tsN: pN.ts,
+      bg: { mode: fa.bg.mode, mean: fa.bg.mean, std: fa.bg.std, magMean: fa.bg.magMean, perHz: perHz },
+      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events };
+  }
+  // Rebuild a light file from a summary: packets carry position/time only (no harmonics).
+  function expandSummary(s) {
+    var n = s.pk.length;
+    var packets = s.pk.map(function (a, i) {
+      return { lat: a[0], lon: a[1], t: a[2], idx: a[3], ts: i === 0 ? s.ts0 : i === n - 1 ? s.tsN : '', run: s.run, xmt: s.xmt, type: s.type || 'field', freqs: {} };
+    });
+    return { packets: packets, kin: computeKinematics(packets) };
+  }
+  // Analysis object for a light file, with lab matching / fusion redone against the current references.
+  function liteAnalysis(s, kin, opts, labSigs) {
+    opts = Object.assign({}, DEFAULT_PROC, opts || {});
+    var events = s.events.map(function (e) {
+      var ev = Object.assign({}, e);
+      ev.labMatches = labMatch(ev, s.harms, s.bg, labSigs);
+      ev.labBest = ev.labMatches[0] || null;
+      var fu = fuseClass(ev, ev.labBest, opts);
+      ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
+      return ev;
+    });
+    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true };
+  }
+
   // ── Known targets: waypoints → physical target sites ───────────────────────
   // Waypoints within linkM of each other are one target. A target is a segment between
   // its two most distant members, so a long/linear target is judged along its length.
@@ -996,6 +1039,7 @@
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,
+    SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
     collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,

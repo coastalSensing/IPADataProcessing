@@ -716,8 +716,14 @@
     var n = waypoints.length; if (!n) return [];
     var parent = waypoints.map(function (_, i) { return i; });
     function fnd(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
-    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++)
+    // Waypoints tied to a logged site (siteId) form exactly that site (so 1B/1C and the two 3C
+    // halves stay separate); waypoints without a site are linked by distance as before.
+    var siteFirst = {};
+    waypoints.forEach(function (w, i) { if (!w.siteId) return; if (siteFirst[w.siteId] === undefined) siteFirst[w.siteId] = i; else { var ra = fnd(siteFirst[w.siteId]), rb = fnd(i); if (ra !== rb) parent[rb] = ra; } });
+    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
+      if (waypoints[i].siteId || waypoints[j].siteId) continue;
       if (haversine(waypoints[i].lat, waypoints[i].lon, waypoints[j].lat, waypoints[j].lon) <= linkM) { var ra = fnd(i), rb = fnd(j); if (ra !== rb) parent[rb] = ra; }
+    }
     var groups = {};
     waypoints.forEach(function (w, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(w); });
     var targets = Object.keys(groups).map(function (key, ti) {
@@ -726,16 +732,28 @@
       var names = g.map(function (w) { return String(w.name); });
       var alpha = names.filter(function (s) { return /^[0-9]+[A-Za-z]/.test(s); });
       var label = alpha.length ? alpha[0].match(/^[0-9]+[A-Za-z]/)[0] : (g.length > 1 ? names[0] + '…' + names[g.length - 1] : names[0]);
+      if (g[0].siteName && g.every(function (w) { return w.siteName === g[0].siteName; })) label = g[0].siteName;
+      var dates = {};
+      g.forEach(function (w) { if (w.date) dates[w.date] = (dates[w.date] || 0) + 1; });
+      var date = Object.keys(dates).sort(function (x, y) { return dates[y] - dates[x]; })[0] || null;
       var votes = {}, mats = {};
       names.forEach(function (nm) { var d = waypointDayCode(nm); if (d) votes[d] = (votes[d] || 0) + 1; });
       g.forEach(function (w) { if (w.material) mats[w.material] = (mats[w.material] || 0) + 1; });
       var day = +Object.keys(votes).sort(function (x, y) { return votes[y] - votes[x]; })[0] || 0;
       var mat = Object.keys(mats).sort(function (x, y) { return mats[y] - mats[x]; })[0] || null;
-      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, material: mat,
+      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, date: date, material: mat,
         lat: mean(g.map(function (w) { return w.lat; })), lon: mean(g.map(function (w) { return w.lon; })),
         aLat: A.lat, aLon: A.lon, bLat: B.lat, bLon: B.lon, lenM: best };
     });
     return targets.sort(function (a, b) { return b.lat - a.lat; }).map(function (t, i) { t.id = 'T' + i; return t; });
+  }
+  // A seeded target only counts for lines recorded on its logged drop date. Targets with no
+  // date (bathymetry features) count for every line. Without a date, fall back to the day code
+  // in the name vs the line's day number within its own survey.
+  function dayMismatch(T, F) {
+    if (T.date && F.date) return T.date !== F.date;
+    if (T.date) return false;
+    return !!(T.day && F.dayRank && T.day !== F.dayRank);
   }
   function distToTarget(lat, lon, T) {
     var p = enu(T.aLat, T.aLon, lat, lon), b = enu(T.aLat, T.aLon, T.bLat, T.bLon), L2 = b[0] * b[0] + b[1] * b[1];
@@ -760,30 +778,65 @@
     if (!targets || !targets.length) return true;
     return pts.some(function (p) { return targets.some(function (T) { return haversine(p[0], p[1], T.lat, T.lon) <= (maxM || 2000); }); });
   }
-  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, dayRank, near}
-  // dayRank = 1-based rank of the file's date among dates of files near the targets
-  // (files from another survey area don't shift the ranking; their rank is 0).
-  function surveyDays(fileInfos, targets) {
-    var info = {}, dates = [];
-    fileInfos.forEach(function (f) {
-      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), near = nearTargets(pts, targets, 2000);
-      info[f.fi] = { date: d, near: near, pts: pts };
-      if (near && d && dates.indexOf(d) < 0) dates.push(d);
-    });
-    dates.sort();
-    Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
-    return { byFile: info, dates: dates };
+  // Named survey areas (centre, radius). A line belongs to the nearest one within its radius.
+  var PLACES = [
+    { name: 'North Beach', lat: 47.708, lon: -122.387, r: 3000 },
+    { name: 'Eagle Harbor', lat: 47.615, lon: -122.497, r: 4000 },
+    { name: 'Point Wells', lat: 47.775, lon: -122.399, r: 3000 }
+  ];
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function placeOf(pts) {
+    if (!pts.length) return null;
+    var la = pts.map(function (p) { return p[0]; }).sort(function (a, b) { return a - b; })[pts.length >> 1];
+    var lo = pts.map(function (p) { return p[1]; }).sort(function (a, b) { return a - b; })[pts.length >> 1];
+    var best = null, bd = Infinity;
+    PLACES.forEach(function (P) { var d = haversine(la, lo, P.lat, P.lon); if (d <= P.r && d < bd) { bd = d; best = P.name; } });
+    return best || (la.toFixed(3) + ', ' + lo.toFixed(3));
   }
-  // One group per survey date (the date in the packet timestamps) — this is how lines
-  // are captured and stored in the field. No spatial splitting.
+  function dayDiff(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 864e5); }
+  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, place, survey, dayRank}.
+  // A survey = consecutive dates (gaps ≤ 7 days) at the same place; dayRank = day number within it.
+  // knownDays (optional): [{date, lat, lon}] for every line in the library, so day numbers don't
+  // depend on which lines happen to be open.
+  function surveyDays(fileInfos, targets, knownDays) {
+    var info = {}, byPlace = {};
+    (knownDays || []).forEach(function (k) {
+      var place = finite(k.lat) && finite(k.lon) ? placeOf([[k.lat, k.lon]]) : null;
+      if (k.date && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(k.date) < 0) byPlace[place].push(k.date); }
+    });
+    fileInfos.forEach(function (f) {
+      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), place = placeOf(pts);
+      info[f.fi] = { date: d, place: place, pts: pts, near: nearTargets(pts, targets, 2000) };
+      if (d && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(d) < 0) byPlace[place].push(d); }
+    });
+    var dayOf = {};
+    Object.keys(byPlace).forEach(function (place) {
+      var ds = byPlace[place].sort(), start = null, n = 0, prev = null;
+      ds.forEach(function (d) {
+        if (!prev || dayDiff(prev, d) > 7) { start = d; n = 0; }
+        n++; prev = d;
+        var m = start.split('-');
+        dayOf[place + '|' + d] = { rank: n, survey: place + ' ' + MONTHS[+m[1] - 1] + ' ' + m[0] };
+      });
+    });
+    Object.keys(info).forEach(function (fi) {
+      var r = info[fi], k = dayOf[r.place + '|' + r.date];
+      r.dayRank = k ? k.rank : 0; r.survey = k ? k.survey : null;
+    });
+    return { byFile: info };
+  }
+  // One group per survey day and place, named e.g. "North Beach Apr 2026 · Day 1".
   function autoGroups(fileInfos, days) {
-    var byDate = {};
-    fileInfos.forEach(function (f) { var d = days.byFile[f.fi], k = (d && d.date) || 'undated'; (byDate[k] = byDate[k] || []).push(f.fi); });
-    return Object.keys(byDate).sort().map(function (date) {
-      var ids = byDate[date].sort(function (x, y) { return x - y; });
-      var rank = date === 'undated' ? 0 : Math.max.apply(null, ids.map(function (fi) { return days.byFile[fi].dayRank || 0; }));
-      return { id: 'day-' + date, name: date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date,
-        auto: true, date: date, dayRank: rank, fileIds: ids };
+    var byKey = {};
+    fileInfos.forEach(function (f) {
+      var d = days.byFile[f.fi] || {}, k = d.date ? d.date + '|' + (d.place || '') : 'undated';
+      (byKey[k] = byKey[k] || []).push(f.fi);
+    });
+    return Object.keys(byKey).sort().map(function (key) {
+      var ids = byKey[key].sort(function (x, y) { return x - y; }), d = days.byFile[ids[0]] || {};
+      if (key === 'undated') return { id: 'day-undated', name: 'Undated', auto: true, date: null, dayRank: 0, fileIds: ids };
+      return { id: 'day-' + key.replace(/[^A-Za-z0-9-]+/g, '_'), name: (d.survey ? d.survey + ' · Day ' + d.dayRank : d.place || 'Lines') + ' (' + d.date + ')',
+        auto: true, date: d.date, place: d.place, dayRank: d.dayRank, fileIds: ids };
     });
   }
 
@@ -799,7 +852,7 @@
     files.forEach(function (F) {
       var pk = F.packets, kin = F.fa.kin;
       targets.forEach(function (T, ti) {
-        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        if (opts.dayFilter && dayMismatch(T, F)) return;
         var dmin = Infinity, imin = -1;
         for (var i = 0; i < pk.length; i++) { if (kin[i].slat === null) continue; var d = distToTarget(kin[i].slat, kin[i].slon, T); if (d < dmin) { dmin = d; imin = i; } }
         if (imin < 0 || dmin > opts.anchorPassM) return;
@@ -887,7 +940,7 @@
       var evs = F.events.filter(function (e) { return !e.isArtifact && e.cls !== 'Artifact' && e.latC !== null && e.latC !== undefined; });
       var used = {};
       targets.forEach(function (T) {
-        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        if (opts.dayFilter && dayMismatch(T, F)) return;
         var dmin = Infinity;
         F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
         if (dmin > R) return;
@@ -1040,7 +1093,7 @@
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
-    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
+    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
     collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,
     evaluateCoverage: evaluateCoverage, buildSites: buildSites, wilson: wilson,

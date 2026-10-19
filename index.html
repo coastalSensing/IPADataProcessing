@@ -325,7 +325,7 @@ canvas{display:block;width:100%;}
     gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
     cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
     targetLinkM: 10,       // waypoints within this distance form one target
-    dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
+    dayFilter: true,       // only score a line against targets dropped on the line's date (logged drop dates)
     autoGroup: true,       // group field lines automatically by survey date
     anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
     minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
@@ -972,8 +972,14 @@ canvas{display:block;width:100%;}
     var n = waypoints.length; if (!n) return [];
     var parent = waypoints.map(function (_, i) { return i; });
     function fnd(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
-    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++)
+    // Waypoints tied to a logged site (siteId) form exactly that site (so 1B/1C and the two 3C
+    // halves stay separate); waypoints without a site are linked by distance as before.
+    var siteFirst = {};
+    waypoints.forEach(function (w, i) { if (!w.siteId) return; if (siteFirst[w.siteId] === undefined) siteFirst[w.siteId] = i; else { var ra = fnd(siteFirst[w.siteId]), rb = fnd(i); if (ra !== rb) parent[rb] = ra; } });
+    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
+      if (waypoints[i].siteId || waypoints[j].siteId) continue;
       if (haversine(waypoints[i].lat, waypoints[i].lon, waypoints[j].lat, waypoints[j].lon) <= linkM) { var ra = fnd(i), rb = fnd(j); if (ra !== rb) parent[rb] = ra; }
+    }
     var groups = {};
     waypoints.forEach(function (w, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(w); });
     var targets = Object.keys(groups).map(function (key, ti) {
@@ -982,16 +988,28 @@ canvas{display:block;width:100%;}
       var names = g.map(function (w) { return String(w.name); });
       var alpha = names.filter(function (s) { return /^[0-9]+[A-Za-z]/.test(s); });
       var label = alpha.length ? alpha[0].match(/^[0-9]+[A-Za-z]/)[0] : (g.length > 1 ? names[0] + '…' + names[g.length - 1] : names[0]);
+      if (g[0].siteName && g.every(function (w) { return w.siteName === g[0].siteName; })) label = g[0].siteName;
+      var dates = {};
+      g.forEach(function (w) { if (w.date) dates[w.date] = (dates[w.date] || 0) + 1; });
+      var date = Object.keys(dates).sort(function (x, y) { return dates[y] - dates[x]; })[0] || null;
       var votes = {}, mats = {};
       names.forEach(function (nm) { var d = waypointDayCode(nm); if (d) votes[d] = (votes[d] || 0) + 1; });
       g.forEach(function (w) { if (w.material) mats[w.material] = (mats[w.material] || 0) + 1; });
       var day = +Object.keys(votes).sort(function (x, y) { return votes[y] - votes[x]; })[0] || 0;
       var mat = Object.keys(mats).sort(function (x, y) { return mats[y] - mats[x]; })[0] || null;
-      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, material: mat,
+      return { id: 'T' + ti, label: label, members: names, n: g.length, day: day, date: date, material: mat,
         lat: mean(g.map(function (w) { return w.lat; })), lon: mean(g.map(function (w) { return w.lon; })),
         aLat: A.lat, aLon: A.lon, bLat: B.lat, bLon: B.lon, lenM: best };
     });
     return targets.sort(function (a, b) { return b.lat - a.lat; }).map(function (t, i) { t.id = 'T' + i; return t; });
+  }
+  // A seeded target only counts for lines recorded on its logged drop date. Targets with no
+  // date (bathymetry features) count for every line. Without a date, fall back to the day code
+  // in the name vs the line's day number within its own survey.
+  function dayMismatch(T, F) {
+    if (T.date && F.date) return T.date !== F.date;
+    if (T.date) return false;
+    return !!(T.day && F.dayRank && T.day !== F.dayRank);
   }
   function distToTarget(lat, lon, T) {
     var p = enu(T.aLat, T.aLon, lat, lon), b = enu(T.aLat, T.aLon, T.bLat, T.bLon), L2 = b[0] * b[0] + b[1] * b[1];
@@ -1016,30 +1034,65 @@ canvas{display:block;width:100%;}
     if (!targets || !targets.length) return true;
     return pts.some(function (p) { return targets.some(function (T) { return haversine(p[0], p[1], T.lat, T.lon) <= (maxM || 2000); }); });
   }
-  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, dayRank, near}
-  // dayRank = 1-based rank of the file's date among dates of files near the targets
-  // (files from another survey area don't shift the ranking; their rank is 0).
-  function surveyDays(fileInfos, targets) {
-    var info = {}, dates = [];
-    fileInfos.forEach(function (f) {
-      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), near = nearTargets(pts, targets, 2000);
-      info[f.fi] = { date: d, near: near, pts: pts };
-      if (near && d && dates.indexOf(d) < 0) dates.push(d);
-    });
-    dates.sort();
-    Object.keys(info).forEach(function (fi) { var r = info[fi]; r.dayRank = r.near && r.date ? dates.indexOf(r.date) + 1 : 0; });
-    return { byFile: info, dates: dates };
+  // Named survey areas (centre, radius). A line belongs to the nearest one within its radius.
+  var PLACES = [
+    { name: 'North Beach', lat: 47.708, lon: -122.387, r: 3000 },
+    { name: 'Eagle Harbor', lat: 47.615, lon: -122.497, r: 4000 },
+    { name: 'Point Wells', lat: 47.775, lon: -122.399, r: 3000 }
+  ];
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function placeOf(pts) {
+    if (!pts.length) return null;
+    var la = pts.map(function (p) { return p[0]; }).sort(function (a, b) { return a - b; })[pts.length >> 1];
+    var lo = pts.map(function (p) { return p[1]; }).sort(function (a, b) { return a - b; })[pts.length >> 1];
+    var best = null, bd = Infinity;
+    PLACES.forEach(function (P) { var d = haversine(la, lo, P.lat, P.lon); if (d <= P.r && d < bd) { bd = d; best = P.name; } });
+    return best || (la.toFixed(3) + ', ' + lo.toFixed(3));
   }
-  // One group per survey date (the date in the packet timestamps) — this is how lines
-  // are captured and stored in the field. No spatial splitting.
+  function dayDiff(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 864e5); }
+  // fileInfos: [{fi, run, packets}] (field files). Returns per-file {date, place, survey, dayRank}.
+  // A survey = consecutive dates (gaps ≤ 7 days) at the same place; dayRank = day number within it.
+  // knownDays (optional): [{date, lat, lon}] for every line in the library, so day numbers don't
+  // depend on which lines happen to be open.
+  function surveyDays(fileInfos, targets, knownDays) {
+    var info = {}, byPlace = {};
+    (knownDays || []).forEach(function (k) {
+      var place = finite(k.lat) && finite(k.lon) ? placeOf([[k.lat, k.lon]]) : null;
+      if (k.date && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(k.date) < 0) byPlace[place].push(k.date); }
+    });
+    fileInfos.forEach(function (f) {
+      var pts = samplePts(f.packets), d = dateOf(f.packets[0]), place = placeOf(pts);
+      info[f.fi] = { date: d, place: place, pts: pts, near: nearTargets(pts, targets, 2000) };
+      if (d && place) { byPlace[place] = byPlace[place] || []; if (byPlace[place].indexOf(d) < 0) byPlace[place].push(d); }
+    });
+    var dayOf = {};
+    Object.keys(byPlace).forEach(function (place) {
+      var ds = byPlace[place].sort(), start = null, n = 0, prev = null;
+      ds.forEach(function (d) {
+        if (!prev || dayDiff(prev, d) > 7) { start = d; n = 0; }
+        n++; prev = d;
+        var m = start.split('-');
+        dayOf[place + '|' + d] = { rank: n, survey: place + ' ' + MONTHS[+m[1] - 1] + ' ' + m[0] };
+      });
+    });
+    Object.keys(info).forEach(function (fi) {
+      var r = info[fi], k = dayOf[r.place + '|' + r.date];
+      r.dayRank = k ? k.rank : 0; r.survey = k ? k.survey : null;
+    });
+    return { byFile: info };
+  }
+  // One group per survey day and place, named e.g. "North Beach Apr 2026 · Day 1".
   function autoGroups(fileInfos, days) {
-    var byDate = {};
-    fileInfos.forEach(function (f) { var d = days.byFile[f.fi], k = (d && d.date) || 'undated'; (byDate[k] = byDate[k] || []).push(f.fi); });
-    return Object.keys(byDate).sort().map(function (date) {
-      var ids = byDate[date].sort(function (x, y) { return x - y; });
-      var rank = date === 'undated' ? 0 : Math.max.apply(null, ids.map(function (fi) { return days.byFile[fi].dayRank || 0; }));
-      return { id: 'day-' + date, name: date === 'undated' ? 'Undated' : (rank ? 'Day ' + rank + ' · ' : '') + date,
-        auto: true, date: date, dayRank: rank, fileIds: ids };
+    var byKey = {};
+    fileInfos.forEach(function (f) {
+      var d = days.byFile[f.fi] || {}, k = d.date ? d.date + '|' + (d.place || '') : 'undated';
+      (byKey[k] = byKey[k] || []).push(f.fi);
+    });
+    return Object.keys(byKey).sort().map(function (key) {
+      var ids = byKey[key].sort(function (x, y) { return x - y; }), d = days.byFile[ids[0]] || {};
+      if (key === 'undated') return { id: 'day-undated', name: 'Undated', auto: true, date: null, dayRank: 0, fileIds: ids };
+      return { id: 'day-' + key.replace(/[^A-Za-z0-9-]+/g, '_'), name: (d.survey ? d.survey + ' · Day ' + d.dayRank : d.place || 'Lines') + ' (' + d.date + ')',
+        auto: true, date: d.date, place: d.place, dayRank: d.dayRank, fileIds: ids };
     });
   }
 
@@ -1055,7 +1108,7 @@ canvas{display:block;width:100%;}
     files.forEach(function (F) {
       var pk = F.packets, kin = F.fa.kin;
       targets.forEach(function (T, ti) {
-        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        if (opts.dayFilter && dayMismatch(T, F)) return;
         var dmin = Infinity, imin = -1;
         for (var i = 0; i < pk.length; i++) { if (kin[i].slat === null) continue; var d = distToTarget(kin[i].slat, kin[i].slon, T); if (d < dmin) { dmin = d; imin = i; } }
         if (imin < 0 || dmin > opts.anchorPassM) return;
@@ -1143,7 +1196,7 @@ canvas{display:block;width:100%;}
       var evs = F.events.filter(function (e) { return !e.isArtifact && e.cls !== 'Artifact' && e.latC !== null && e.latC !== undefined; });
       var used = {};
       targets.forEach(function (T) {
-        if (opts.dayFilter && T.day && F.dayRank && T.day !== F.dayRank) return;
+        if (opts.dayFilter && dayMismatch(T, F)) return;
         var dmin = Infinity;
         F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
         if (dmin > R) return;
@@ -1166,7 +1219,7 @@ canvas{display:block;width:100%;}
       var r = rows.filter(function (x) { return x.targetId === T.id && x.status !== 'UNATTRIB'; });
       var h = r.filter(function (x) { return x.status === 'HIT'; }), cls = {}, famOk = 0, famN = 0;
       h.forEach(function (x) { cls[x.cls] = (cls[x.cls] || 0) + 1; if (T.material && T.material !== 'Seawater blank' && T.material !== 'No anomaly') { famN++; if (family(x.cls) === family(T.material)) famOk++; } });
-      return { id: T.id, label: T.label, material: T.material, day: T.day, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
+      return { id: T.id, label: T.label, material: T.material, day: T.day, date: T.date || null, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
         classes: cls, famOk: famOk, famN: famN, meanErrM: h.length ? mean(h.map(function (x) { return x.evDist; })) : null };
     });
     var P = perT.reduce(function (s, t) { return s + t.passes; }, 0), H = perT.reduce(function (s, t) { return s + t.hits; }, 0);
@@ -1296,7 +1349,7 @@ canvas{display:block;width:100%;}
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
     analyzeField: analyzeField, correctFile: correctFile,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
-    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget,
+    waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
     collectAnchors: collectAnchors, fitLayback: fitLayback, axialMean: axialMean,
     evaluateCoverage: evaluateCoverage, buildSites: buildSites, wilson: wilson,
@@ -1314,7 +1367,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v41';
+const APP_VERSION='v42';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1390,9 +1443,12 @@ function deleteLabSigDB(id){return q(supabase.from('lab_signatures').delete().eq
 // v35: only independent positions are targets. Earlier IP detections ('detection') and seabed
 // context features ('context') stay in the database but never anchor layback or score coverage.
 var TARGET_ROLES={known_site:1,bathy_target:1};
-function loadWaypointsDB(){return q(supabase.from('waypoints').select('*').order('created_at',{ascending:true})).then(function(rows){
-  return rows.filter(function(r){return !r.role||TARGET_ROLES[r.role];})
-    .map(function(r){return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db',role:r.role||null,siteId:r.site_id||null};});});}
+function loadWaypointsDB(){return q(supabase.from('waypoints').select('*, sites(name,placed_on)').order('created_at',{ascending:true})).then(function(rows){
+  var names={};rows.forEach(function(r){names[r.name]=r.role||'known_site';});
+  var targets=rows.filter(function(r){return !r.role||TARGET_ROLES[r.role];})
+    .map(function(r){var st=r.sites||null;return{id:r.id,name:r.name,lat:r.lat,lon:r.lon,material:r.material,source:r.source||'db',role:r.role||null,siteId:r.site_id||null,
+      siteName:st&&st.name||null,date:st&&st.placed_on||null};});
+  return{targets:targets,dbNames:names};});}
 function saveWaypointsDB(wps){return q(supabase.from('waypoints').insert(wps.map(function(w){return{name:w.name,lat:w.lat,lon:w.lon,material:w.material,source:w.source};})).select());}
 function deleteWaypointsDB(ids){return q(supabase.from('waypoints').delete().in('id',ids));}
 // ── Shared data library (raw files in a private Storage bucket + data_files table) ──
@@ -1640,6 +1696,7 @@ function App(){
   var [libBusy,setLibBusy]=useState('');
   var [labSigs,setLabSigs]=useState([]);
   var [surveys,setSurveys]=useState([]);
+  var [wpDbNames,setWpDbNames]=useState({});   // every waypoint name in the database → its role
   var [pickSurvey,setPickSurvey]=useState('');
   var [labBuild,setLabBuild]=useState('');
   var [labShowAll,setLabShowAll]=useState(false);
@@ -1731,7 +1788,7 @@ function App(){
       loadTrainingFromDB().then(function(r){setTraining(r);}),
       loadLabSigsDB().then(function(r){setLabSigs(function(prev){return r.concat(prev.filter(function(s){return s.src!=='db';}));});})
         .catch(function(e){notes.push('lab_signatures: '+e.message);}),
-      loadWaypointsDB().then(function(r){if(r.length)setWaypoints(function(prev){return r.concat(prev.filter(function(w){return !w.id;}));});})
+      loadWaypointsDB().then(function(r){setWpDbNames(r.dbNames);if(r.targets.length)setWaypoints(function(prev){return r.targets.concat(prev.filter(function(w){return !w.id;}));});})
         .catch(function(e){notes.push('waypoints: '+e.message);}),
       listLibraryDB().then(function(r){setLibrary(r);}).catch(function(e){notes.push('data_files: '+e.message);}),
       q(supabase.from('surveys').select('id,name,start_date').order('start_date',{ascending:false})).then(function(r){setSurveys(r||[]);}).catch(function(){})
@@ -1765,13 +1822,15 @@ function App(){
   function finalConf(fi,ei,ev){var ar=aiResults[fi+'-'+ei];return ar&&ar.classification!=='Error'?ar.confidence_pct:ev.fusedConf;}
 
   var refLon=useMemo(function(){for(var i=0;i<files.length;i++){var p=files[i].packets.find(function(pk){return pk.lon!==null;});if(p)return p.lon;}return NaN;},[files]);
-  var wps=useMemo(function(){return IPA.alignWaypointHemisphere(waypoints,refLon);},[waypoints,refLon]);
+  var wps=useMemo(function(){return IPA.alignWaypointHemisphere(waypoints.filter(function(w){return w.id||!wpDbNames[w.name];}),refLon);},[waypoints,refLon,wpDbNames]);
   // Known targets: waypoints within targetLinkM merged into one physical target (segment)
   var targets=useMemo(function(){return IPA.buildTargets(wps,proc.targetLinkM);},[wps,proc.targetLinkM]);
 
   var fieldIdx=useMemo(function(){return fileAnalyses.map(function(fa,fi){return fa?fi:-1;}).filter(function(fi){return fi>=0;});},[fileAnalyses]);
   // Survey day of each line (rank among dates of lines near the targets) + auto groups
-  var days=useMemo(function(){return IPA.surveyDays(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,packets:files[fi].packets};}),targets);},[fieldIdx,targets]);
+  var knownDays=useMemo(function(){return library.filter(function(r){return r.file_kind==='field'&&r.first_ts;}).map(function(r){
+    return{date:r.first_ts.slice(0,10).replace(/\//g,'-'),lat:(r.lat_min+r.lat_max)/2,lon:(r.lon_min+r.lon_max)/2};});},[library]);
+  var days=useMemo(function(){return IPA.surveyDays(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,packets:files[fi].packets};}),targets,knownDays);},[fieldIdx,targets,knownDays]);
   // Groups: one automatic group per survey day + any custom groups. Every field line is in
   // exactly one group: its day group, unless it has been moved (groupAssign, saved per file).
   function fileKey(fi){var f=files[fi];return f?(f.hash||(f.run+'|'+f.name)):'';}
@@ -1822,7 +1881,7 @@ function App(){
   // Layback calibration: automatic line/target anchors in the RAW path frame, user can exclude any
   var anchors=useMemo(function(){
     if(!targets.length)return [];
-    return IPA.collectAnchors(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,key:files[fi].hash||files[fi].run,packets:files[fi].packets,fa:baseAnalyses[fi],dayRank:dayRankOf(fi)};}),targets,proc);
+    return IPA.collectAnchors(fieldIdx.map(function(fi){return{fi:fi,run:files[fi].run,key:files[fi].hash||files[fi].run,packets:files[fi].packets,fa:baseAnalyses[fi],dayRank:dayRankOf(fi),date:(days.byFile[fi]||{}).date};}),targets,proc);
   },[targets,fieldIdx,baseAnalyses,days,proc.anchorPassM,proc.minLeadM,proc.maxLeadM,proc.minSNRcal,proc.dayFilter]);
   var calib=useMemo(function(){
     if(!targets.length)return null;
@@ -1835,7 +1894,7 @@ function App(){
   var coverage=useMemo(function(){
     if(!targets.length||!fieldIdx.length)return null;
     return IPA.evaluateCoverage(fieldIdx.map(function(fi){var fa=fileAnalyses[fi];
-      return{fi:fi,run:files[fi].run,dayRank:dayRankOf(fi),track:fa.track,trackLenM:fa.trackLenM,
+      return{fi:fi,run:files[fi].run,dayRank:dayRankOf(fi),date:(days.byFile[fi]||{}).date,track:fa.track,trackLenM:fa.trackLenM,
         events:fa.events.map(function(ev,ei){return Object.assign({},ev,{finalCls:finalCls(fi,ei,ev)});})};}),targets,proc);
   },[targets,fieldIdx,fileAnalyses,days,aiResults,proc.detRadiusM,proc.dayFilter]);
 
@@ -1948,7 +2007,7 @@ function App(){
         bounds.push([T.lat,T.lon]);
         if(T.lenM>0.5)L.polyline([[T.aLat,T.aLon],[T.bLat,T.bLon]],{color:col,weight:5,opacity:.85}).addTo(LL.wps);
         L.circle([T.lat,T.lon],{radius:proc.detRadiusM,color:col,weight:1.5,dashArray:'4,4',fill:false}).addTo(LL.wps)
-          .bindTooltip('<div style="font-family:monospace;font-size:11px"><b>Target '+T.label+'</b>'+(T.day?' · day '+T.day:'')+(T.material?'<br>'+T.material:'')+
+          .bindTooltip('<div style="font-family:monospace;font-size:11px"><b>Target '+T.label+'</b>'+(T.date?' · dropped '+T.date:T.day?' · day '+T.day:'')+(T.material?'<br>'+T.material:'')+
             '<br>'+T.n+' waypoint'+(T.n>1?'s':'')+(T.lenM>0.5?' · '+fmt(T.lenM)+' m long':'')+
             (cv?'<br>'+cv.hits+'/'+cv.passes+' passes detected':'')+'</div>',{sticky:true});
         if(showLabels)L.marker([T.lat,T.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[80,14],iconAnchor:[40,24],
@@ -3134,7 +3193,7 @@ function App(){
                 <h3>Known-target coverage
                   <div style={{flex:1}}/>
                   <label style={{fontSize:10,textTransform:'none',letterSpacing:0,display:'flex',gap:4,alignItems:'center',color:'var(--dim3)'}}>
-                    <input type="checkbox" checked={!!proc.dayFilter} onChange={function(e){setProc({dayFilter:e.target.checked});}}/> match deploy-day codes</label>
+                    <input type="checkbox" checked={!!proc.dayFilter} onChange={function(e){setProc({dayFilter:e.target.checked});}}/> only count targets on their drop date</label>
                   {coverage && <button className="btn btn-ghost btn-sm" onClick={function(){downloadCSV('ipa_coverage.csv',coverage.rows.map(function(r){return{line:r.run,day:r.dayRank,target:r.target,status:r.status,
                     closest_track_m:r.closest!==null?r.closest.toFixed(1):'',detection_dist_m:r.evDist!==null?fmt(r.evDist,1):'',class:r.cls,snr:r.snr!==null?fmt(r.snr,1):''};}));}}>Export CSV</button>}
                 </h3>
@@ -3150,9 +3209,9 @@ function App(){
                       <Tile label="Material family acc." value={pct(coverage.famAcc)} sub={coverage.famN+' hits w/ known material'}/>
                       <Tile label="Mean position error" value={fmt(coverage.meanPosErrM)+' m'} sub={proc.applyLayback?'after layback':'raw GPS'}/>
                     </div>
-                    <table className="mt"><thead><tr><th>Target</th><th className="num">Day</th><th>Material</th><th className="num">Passes</th><th className="num">Hits</th><th className="num">Pd</th><th className="num">Family OK</th><th className="num">Mean err m</th><th>Classes seen</th></tr></thead>
+                    <table className="mt"><thead><tr><th>Target</th><th className="num">Dropped</th><th>Material</th><th className="num">Passes</th><th className="num">Hits</th><th className="num">Pd</th><th className="num">Family OK</th><th className="num">Mean err m</th><th>Classes seen</th></tr></thead>
                       <tbody>{coverage.perTarget.map(function(t){return (
-                        <tr key={t.id}><td><b>{t.label}</b></td><td className="num">{t.day||'—'}</td><td>{t.material||'—'}</td><td className="num">{t.passes}</td><td className="num">{t.hits}</td>
+                        <tr key={t.id}><td><b>{t.label}</b></td><td className="num">{t.date||t.day||'—'}</td><td>{t.material||'—'}</td><td className="num">{t.passes}</td><td className="num">{t.hits}</td>
                           <td className="num" style={{color:t.passes?(t.hits===t.passes?'var(--pos)':t.hits?'#b07800':'var(--neg)'):'var(--dim)'}}>{pct(t.pd)}</td>
                           <td className="num">{t.famN?t.famOk+'/'+t.famN:'—'}</td><td className="num">{fmt(t.meanErrM)}</td>
                           <td>{Object.keys(t.classes).map(function(c){return c+' ×'+t.classes[c];}).join(', ')||'—'}</td></tr>);})}</tbody></table>

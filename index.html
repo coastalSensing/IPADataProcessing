@@ -1314,7 +1314,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v40';
+const APP_VERSION='v41';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1665,6 +1665,19 @@ function App(){
   var [mapLayer,setMapLayer]=useState('satellite');
   var [visibleFiles,setVisibleFiles]=useState(null);
   var [hiddenHotspots,setHiddenHotspots]=useState({});
+  // Map selection: which corroboration tiers to draw, hidden known targets, text filter, labels
+  var [siteTiers,setSiteTiers]=useState(lsGet('ipa_site_tiers',{'Confirmed':true,'Corroborated':true,'Conflicting':true,'Weak repeat':true,'Single run':false}));
+  var [hiddenTargets,setHiddenTargets]=useState(lsGet('ipa_hidden_targets',{}));
+  var [mapFilter,setMapFilter]=useState('');
+  var [showLabels,setShowLabels]=useState(lsGet('ipa_map_labels',true));
+  useEffect(function(){lsSet('ipa_site_tiers',siteTiers);},[siteTiers]);
+  useEffect(function(){lsSet('ipa_hidden_targets',hiddenTargets);},[hiddenTargets]);
+  useEffect(function(){lsSet('ipa_map_labels',showLabels);},[showLabels]);
+  function siteKey(s){return s.lat.toFixed(5)+','+s.lon.toFixed(5);}
+  function targetKey(T){return T.label+'|'+T.lat.toFixed(5)+','+T.lon.toFixed(5);}
+  function mapMatch(txt){var q=mapFilter.trim().toLowerCase();return !q||txt.toLowerCase().indexOf(q)>=0;}
+  function siteListed(s){return siteTiers[s.tier]!==false&&mapMatch([s.cls,s.tier,s.nearestWp||''].join(' '));}
+  function targetListed(T){return mapMatch([T.label,T.material||'',(T.members||[]).join(' ')].join(' '));}
 
   function setProc(patch){setProcState(function(p){var n=Object.assign({},p,patch);lsSet('ipa_proc',n);return n;});}
   useEffect(function(){lsSet('ipa_ai_model',aiModel);},[aiModel]);
@@ -1912,7 +1925,7 @@ function App(){
     }
     if(showHotspots){
       sites.forEach(function(s){
-        var key=s.lat.toFixed(5)+','+s.lon.toFixed(5);if(hiddenHotspots[key])return;
+        if(hiddenHotspots[siteKey(s)]||!siteListed(s))return;
         if(visibleFiles&&!Object.keys(s.runs).some(function(fi){return visibleFiles.indexOf(+fi)>=0;}))return;
         var col=MAT_COLORS[s.cls]||'#808080',multi=s.nRuns>1;
         bounds.push([s.lat,s.lon]);
@@ -1922,7 +1935,7 @@ function App(){
           s.nDet+' det · '+s.nRuns+'/'+s.nPass+' runs ('+pct(s.repeatability)+')'+(s.reciprocal?' · reciprocal':'')+'<br>'+
           'consensus '+pct(s.consensus)+' · scatter '+fmt(s.scatterM)+' m'+(s.nearestWp?'<br>'+s.nearestWp+' @ '+fmt(s.nearestWpM)+' m':'')+'</div>',{sticky:true});
         c.addTo(LL.hotspots);
-        L.marker([s.lat,s.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[120,16],iconAnchor:[60,-12],
+        if(showLabels)L.marker([s.lat,s.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[120,16],iconAnchor:[60,-12],
           html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
           (multi?s.nRuns+'× ':'')+s.cls.substring(0,12)+'</div>'})}).addTo(LL.hotspots);
       });
@@ -1930,6 +1943,7 @@ function App(){
     if(showWps){
       var covBy={};if(coverage)coverage.perTarget.forEach(function(t){covBy[t.id]=t;});
       targets.forEach(function(T){
+        if(hiddenTargets[targetKey(T)]||!targetListed(T))return;
         var cv=covBy[T.id],col=!cv||!cv.passes?'#8a94a6':cv.hits===cv.passes?'#1a8c4e':cv.hits?'#c77d0a':'#cc2233';
         bounds.push([T.lat,T.lon]);
         if(T.lenM>0.5)L.polyline([[T.aLat,T.aLon],[T.bLat,T.bLon]],{color:col,weight:5,opacity:.85}).addTo(LL.wps);
@@ -1937,7 +1951,7 @@ function App(){
           .bindTooltip('<div style="font-family:monospace;font-size:11px"><b>Target '+T.label+'</b>'+(T.day?' · day '+T.day:'')+(T.material?'<br>'+T.material:'')+
             '<br>'+T.n+' waypoint'+(T.n>1?'s':'')+(T.lenM>0.5?' · '+fmt(T.lenM)+' m long':'')+
             (cv?'<br>'+cv.hits+'/'+cv.passes+' passes detected':'')+'</div>',{sticky:true});
-        L.marker([T.lat,T.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[80,14],iconAnchor:[40,24],
+        if(showLabels)L.marker([T.lat,T.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[80,14],iconAnchor:[40,24],
           html:'<div style="font-family:monospace;font-size:10px;font-weight:bold;color:'+col+';text-align:center;text-shadow:0 0 3px #fff,0 0 3px #fff">▲ '+T.label+'</div>'})}).addTo(LL.wps);
       });
       if(false)wps.forEach(function(w){
@@ -1949,7 +1963,7 @@ function App(){
     }
     if(mapFocus){map.setView(mapFocus,18);}
     else if(bounds.length>=2){try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}}
-  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus]);
+  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus,siteTiers,hiddenTargets,mapFilter,showLabels]);
 
   // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
   useEffect(function(){lsSet('ipa_auto_share',autoShare);},[autoShare]);
@@ -2749,6 +2763,9 @@ function App(){
                   <button className={showWps?'layer-btn active':'layer-btn'} onClick={function(){setShowWps(!showWps);}}>Known targets ▲ ({targets.length})</button>
                   <button className={proc.applyLayback?'layer-btn active':'layer-btn'} onClick={function(){setProc({applyLayback:!proc.applyLayback});}}>
                     Layback corr. ({fmt(proc.laybackM)} m)</button>
+                  <button className={showLabels?'layer-btn active':'layer-btn'} onClick={function(){setShowLabels(!showLabels);}}>Map labels</button>
+                  <input className="api-key-input" placeholder="Filter sites / targets…" value={mapFilter} onChange={function(e){setMapFilter(e.target.value);}}
+                    title="Matches site class, tier or nearest target, and target name, material or waypoint names" style={{fontSize:10,padding:'3px 6px'}}/>
                   {mapFocus && <button className="layer-btn" onClick={function(){setMapFocus(null);}}>Fit all</button>}
                 </div>
                 {nField>0 && (function(){
@@ -2790,21 +2807,59 @@ function App(){
                           </div>);})}
                     </div>
                   </div>)}
-                {showHotspots && sites.length>0 && (
+                {showHotspots && sites.length>0 && (function(){
+                  var TIERS=['Confirmed','Corroborated','Conflicting','Weak repeat','Single run'],cnt={};
+                  sites.forEach(function(x){cnt[x.tier]=(cnt[x.tier]||0)+1;});
+                  var listed=sites.filter(siteListed),shown=listed.filter(function(x){return !hiddenHotspots[siteKey(x)];}).length;
+                  function setAll(hide){setHiddenHotspots(function(p){var n=Object.assign({},p);listed.forEach(function(x){if(hide)n[siteKey(x)]=true;else delete n[siteKey(x)];});return n;});}
+                  return (
                   <div className="map-controls-panel">
-                    <div className="sidebar-label">Sites ({sites.length})
-                      <button onClick={function(){setHiddenHotspots({});}} style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9}}>show all</button></div>
-                    <div className="file-sel-list">
-                      {sites.map(function(s){
-                        var key=s.lat.toFixed(5)+','+s.lon.toFixed(5),col=MAT_COLORS[s.cls]||'#808080';
+                    <div className="sidebar-label">Target sites ({shown}/{sites.length})
+                      <button onClick={function(){setAll(false);}} style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9}}>all</button>
+                      <button onClick={function(){setAll(true);}} style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9}}>none</button></div>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                      {TIERS.map(function(t){var on=siteTiers[t]!==false;return (
+                        <button key={t} className={on?'layer-btn active':'layer-btn'} style={{padding:'1px 5px',fontSize:9}} title={on?'Hide '+t+' sites':'Show '+t+' sites'}
+                          onClick={function(){setSiteTiers(function(p){var n=Object.assign({},p);n[t]=!on;return n;});}}>{t} {cnt[t]||0}</button>);})}
+                    </div>
+                    <div className="file-sel-list" style={{maxHeight:180}}>
+                      {listed.slice(0,300).map(function(x){
+                        var key=siteKey(x),col=MAT_COLORS[x.cls]||'#808080';
                         return (
-                          <div key={key} className="file-sel-row" onClick={function(){setHiddenHotspots(function(p){var n=Object.assign({},p);n[key]=!n[key];return n;});}}>
+                          <div key={key} className="file-sel-row" title={x.tier+' · '+x.nDet+' detections · '+x.nRuns+'/'+x.nPass+' runs'+(x.nearestWp?' · '+x.nearestWp+' @ '+fmt(x.nearestWpM)+' m':'')}
+                            onClick={function(){setHiddenHotspots(function(p){var n=Object.assign({},p);n[key]=!n[key];return n;});}}>
                             <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenHotspots[key]} style={{accentColor:col}}/>
                             <div style={{width:10,height:10,borderRadius:'50%',background:col,flexShrink:0}}/>
-                            <span style={{fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.cls.substring(0,12)} ×{s.nRuns}</span>
+                            <span style={{flex:1,fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{x.cls.substring(0,12)} ×{x.nRuns}{x.nearestWp&&x.knownTarget?' · '+x.nearestWp:''}</span>
+                            <button title="Zoom to this site" onClick={function(e){e.stopPropagation();setMapFocus([x.lat,x.lon]);}} style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:10,padding:0}}>⌖</button>
                           </div>);})}
+                      {listed.length>300 && <div style={{fontSize:9,color:'var(--dim)'}}>First 300 of {listed.length} listed; narrow with the tier buttons or the filter.</div>}
+                      {!listed.length && <div style={{fontSize:9,color:'var(--dim)'}}>No sites match the tier buttons / filter.</div>}
                     </div>
-                  </div>)}
+                  </div>);})()}
+                {showWps && targets.length>0 && (function(){
+                  var covBy={};if(coverage)coverage.perTarget.forEach(function(t){covBy[t.id]=t;});
+                  var listed=targets.filter(targetListed),shown=listed.filter(function(T){return !hiddenTargets[targetKey(T)];}).length;
+                  function setAll(hide){setHiddenTargets(function(p){var n=Object.assign({},p);listed.forEach(function(T){if(hide)n[targetKey(T)]=true;else delete n[targetKey(T)];});return n;});}
+                  return (
+                  <div className="map-controls-panel">
+                    <div className="sidebar-label">Known targets ({shown}/{targets.length})
+                      <button onClick={function(){setAll(false);}} style={{marginLeft:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:9}}>all</button>
+                      <button onClick={function(){setAll(true);}} style={{marginLeft:4,background:'none',border:'none',color:'var(--dim)',cursor:'pointer',fontSize:9}}>none</button></div>
+                    <div className="file-sel-list" style={{maxHeight:180}}>
+                      {listed.map(function(T){
+                        var key=targetKey(T),cv=covBy[T.id],col=!cv||!cv.passes?'#8a94a6':cv.hits===cv.passes?'#1a8c4e':cv.hits?'#c77d0a':'#cc2233';
+                        return (
+                          <div key={key} className="file-sel-row" title={T.members.join(', ')+(cv?' · '+cv.hits+'/'+cv.passes+' passes detected':'')}
+                            onClick={function(){setHiddenTargets(function(p){var n=Object.assign({},p);if(n[key])delete n[key];else n[key]=true;return n;});}}>
+                            <input type="checkbox" className="file-sel-check" readOnly checked={!hiddenTargets[key]} style={{accentColor:col}}/>
+                            <span style={{color:col,fontSize:9}}>▲</span>
+                            <span style={{flex:1,fontFamily:'var(--font-mono)',fontSize:9,color:'var(--dim3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{T.label}{T.material?' · '+T.material:''}{cv&&cv.passes?' · '+cv.hits+'/'+cv.passes:''}</span>
+                            <button title="Zoom to this target" onClick={function(e){e.stopPropagation();setMapFocus([T.lat,T.lon]);}} style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:10,padding:0}}>⌖</button>
+                          </div>);})}
+                      {!listed.length && <div style={{fontSize:9,color:'var(--dim)'}}>No targets match the filter.</div>}
+                    </div>
+                  </div>);})()}
               </div>
               <div ref={mapRef} style={{flex:1,borderRadius:3,border:'1px solid var(--border)',height:540,zIndex:0}}/>
             </div>)}

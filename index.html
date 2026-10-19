@@ -1957,7 +1957,7 @@ function App(){
   },[analysis,selEv,aiResults,mainTab,labSigs]);
 
   // ── Projects: shared working sets (survey lines + known targets) with notes and pass verdicts ──
-  var VERDICTS=[['good','Good steel detection'],['weak','Weak / marginal'],['missed','Missed'],['invalid','Not a valid pass'],['unsure','Unsure']];
+  var VERDICTS=[['good','Good detection (matches target)'],['weak','Weak / marginal'],['missed','Missed'],['invalid','Not a valid pass'],['unsure','Unsure']];
   var VERDICT_COL={good:'#1a8c4e',weak:'#c77d0a',missed:'#cc2233',invalid:'#607a90',unsure:'#7a5cc2'};
   var [projects,setProjects]=useState([]);
   var [projErr,setProjErr]=useState('');

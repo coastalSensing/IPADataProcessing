@@ -1213,7 +1213,8 @@ canvas{display:block;width:100%;}
         evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
         if (hit) used[F.events.indexOf(hit)] = 1;
         rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
-          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null });
+          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
+          ei: hit ? F.events.indexOf(hit) : null, magPct: hit ? hit.magPct : null, evTs: hit ? hit.ts : null, evCum: hit ? hit.cum : null });
       });
       evs.forEach(function (e) {
         if (used[F.events.indexOf(e)]) return;
@@ -1376,7 +1377,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v42';
+const APP_VERSION='v43';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1955,6 +1956,75 @@ function App(){
     }
   },[analysis,selEv,aiResults,mainTab,labSigs]);
 
+  // ── Projects: shared working sets (survey lines + known targets) with notes and pass verdicts ──
+  var VERDICTS=[['good','Good steel detection'],['weak','Weak / marginal'],['missed','Missed'],['invalid','Not a valid pass'],['unsure','Unsure']];
+  var VERDICT_COL={good:'#1a8c4e',weak:'#c77d0a',missed:'#cc2233',invalid:'#607a90',unsure:'#7a5cc2'};
+  var [projects,setProjects]=useState([]);
+  var [projErr,setProjErr]=useState('');
+  var [activeProj,setActiveProj]=useState(lsGet('ipa_active_project',null));
+  var [projNotes,setProjNotes]=useState([]);
+  var [projFocus,setProjFocus]=useState(lsGet('ipa_project_focus',true));
+  var [noteDraft,setNoteDraft]=useState({body:'',dfId:'',target:'',verdict:''});
+  var [newProjName,setNewProjName]=useState('');
+  var [projEdit,setProjEdit]=useState(null);
+  var [projBusy,setProjBusy]=useState('');
+  useEffect(function(){lsSet('ipa_active_project',activeProj);},[activeProj]);
+  useEffect(function(){lsSet('ipa_project_focus',projFocus);},[projFocus]);
+  function reloadProjects(){return q(supabase.from('projects').select('*').order('created_at',{ascending:false}))
+    .then(function(r){setProjects(r||[]);setProjErr('');})
+    .catch(function(e){setProjErr(/projects/.test(e.message)&&/exist|schema cache/i.test(e.message)?'The projects tables are not in the database yet: run the v43 section of supabase_schema.sql in the Supabase SQL Editor.':e.message);});}
+  useEffect(function(){if(authUser&&isTeam===true)reloadProjects();},[authUser,isTeam]);
+  var proj=projects.find(function(p){return p.id===activeProj;})||null;
+  useEffect(function(){
+    if(!proj){setProjNotes([]);return;}
+    q(supabase.from('project_notes').select('*').eq('project_id',proj.id).order('created_at',{ascending:true}))
+      .then(function(r){setProjNotes(r||[]);}).catch(function(e){setProjErr(e.message);});
+  },[proj&&proj.id]);
+  var libById=useMemo(function(){var m={};library.forEach(function(r){m[r.id]=r;});return m;},[library]);
+  var libBySha=useMemo(function(){var m={};library.forEach(function(r){m[r.sha256]=r;});return m;},[library]);
+  function fileRowId(fi){var f=files[fi],r=f&&f.hash&&libBySha[f.hash];return r?r.id:null;}
+  var projFiSet=useMemo(function(){
+    var m={};if(!proj)return m;var want={};(proj.data_file_ids||[]).forEach(function(id){var r=libById[id];if(r)want[r.sha256]=1;});
+    files.forEach(function(f,i){if(f.type==='field'&&f.hash&&want[f.hash])m[i]=1;});return m;
+  },[proj,files,libById]);
+  var projTargetSet=useMemo(function(){var m={};if(proj)(proj.targets||[]).forEach(function(t){m[t]=1;});return m;},[proj]);
+  var projOn=!!(proj&&projFocus);
+  // One row per pass of a project line over a project target (from Known-target coverage)
+  var projReview=useMemo(function(){
+    if(!proj||!coverage)return [];
+    return coverage.rows.filter(function(r){return projFiSet[r.fi]&&projTargetSet[r.target]&&r.status!=='UNATTRIB';})
+      .map(function(r){return Object.assign({},r,{dfId:fileRowId(r.fi)});})
+      .sort(function(a,b){return a.target<b.target?-1:a.target>b.target?1:(a.run<b.run?-1:1);});
+  },[proj,coverage,projFiSet,projTargetSet,libBySha]);
+  var latestVerdict=useMemo(function(){var m={};projNotes.forEach(function(n){if(n.verdict)m[(n.data_file_id||'')+'|'+(n.target||'')]=n;});return m;},[projNotes]);
+  function openProject(p){
+    setActiveProj(p.id);
+    var rows=(p.data_file_ids||[]).map(function(id){return libById[id];}).filter(Boolean);
+    if(rows.length)loadFromLibrary(rows);
+  }
+  function createProject(){
+    var name=newProjName.trim();if(!name)return;
+    var ids=fieldIdx.map(fileRowId).filter(Boolean);
+    var tg=targets.filter(function(T){return !hiddenTargets[targetKey(T)]&&targetListed(T);}).map(function(T){return T.label;});
+    setProjBusy('Creating…');
+    q(supabase.from('projects').insert({name:name,data_file_ids:ids,targets:tg,created_by_email:authUser&&authUser.email}).select())
+      .then(function(r){setProjects(function(p){return r.concat(p);});setActiveProj(r[0].id);setNewProjName('');setProjBusy('');})
+      .catch(function(e){setProjBusy('');setProjErr(e.message);});
+  }
+  function updateProject(patch){
+    if(!proj)return Promise.resolve();
+    return q(supabase.from('projects').update(Object.assign({},patch,{updated_at:new Date().toISOString()})).eq('id',proj.id).select())
+      .then(function(r){if(r&&r[0])setProjects(function(ps){return ps.map(function(x){return x.id===r[0].id?r[0]:x;});});})
+      .catch(function(e){setProjErr(e.message);});
+  }
+  function addNote(n){
+    if(!proj)return Promise.resolve();
+    return q(supabase.from('project_notes').insert({project_id:proj.id,data_file_id:n.dfId||null,target:n.target||null,event_ts:n.eventTs||null,
+      event_cum:(n.eventCum===null||n.eventCum===undefined)?null:n.eventCum,verdict:n.verdict||null,body:n.body||null,author_email:authUser&&authUser.email}).select())
+      .then(function(r){setProjNotes(function(p){return p.concat(r||[]);});}).catch(function(e){setProjErr(e.message);});
+  }
+  function deleteNote(id){q(supabase.from('project_notes').delete().eq('id',id)).then(function(){setProjNotes(function(p){return p.filter(function(x){return x.id!==id;});});}).catch(function(e){setProjErr(e.message);});}
+
   // ── Leaflet map ───────────────────────────────────────────────────────────
   useEffect(function(){
     if(mainTab!=='map'||!mapRef.current)return;
@@ -1977,7 +2047,7 @@ function App(){
     var bounds=[];
     if(showLines){
       files.forEach(function(f,fi){
-        if(f.type!=='field'||(visibleFiles&&visibleFiles.indexOf(fi)<0))return;
+        if(f.type!=='field'||(visibleFiles&&visibleFiles.indexOf(fi)<0)||(projOn&&!projFiSet[fi]))return;
         var fa=fileAnalyses[fi];if(!fa||!fa.track.length)return;
         var lls=fa.track.map(function(tp){return[tp.lat,tp.lon];});
         lls.forEach(function(ll){bounds.push(ll);});
@@ -1994,6 +2064,7 @@ function App(){
     if(showHotspots){
       sites.forEach(function(s){
         if(hiddenHotspots[siteKey(s)]||!siteListed(s))return;
+        if(projOn&&!Object.keys(s.runs).some(function(fi){return projFiSet[fi];}))return;
         if(visibleFiles&&!Object.keys(s.runs).some(function(fi){return visibleFiles.indexOf(+fi)>=0;}))return;
         var col=MAT_COLORS[s.cls]||'#808080',multi=s.nRuns>1;
         bounds.push([s.lat,s.lon]);
@@ -2011,7 +2082,7 @@ function App(){
     if(showWps){
       var covBy={};if(coverage)coverage.perTarget.forEach(function(t){covBy[t.id]=t;});
       targets.forEach(function(T){
-        if(hiddenTargets[targetKey(T)]||!targetListed(T))return;
+        if(hiddenTargets[targetKey(T)]||!targetListed(T)||(projOn&&!projTargetSet[T.label]))return;
         var cv=covBy[T.id],col=!cv||!cv.passes?'#8a94a6':cv.hits===cv.passes?'#1a8c4e':cv.hits?'#c77d0a':'#cc2233';
         bounds.push([T.lat,T.lon]);
         if(T.lenM>0.5)L.polyline([[T.aLat,T.aLon],[T.bLat,T.bLon]],{color:col,weight:5,opacity:.85}).addTo(LL.wps);
@@ -2031,7 +2102,7 @@ function App(){
     }
     if(mapFocus){map.setView(mapFocus,18);}
     else if(bounds.length>=2){try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}}
-  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus,siteTiers,hiddenTargets,mapFilter,showLabels]);
+  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus,siteTiers,hiddenTargets,mapFilter,showLabels,projOn,projFiSet,projTargetSet]);
 
   // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
   useEffect(function(){lsSet('ipa_auto_share',autoShare);},[autoShare]);
@@ -2728,7 +2799,7 @@ function App(){
 
         <div className="content">
           <div className="tab-row" style={{margin:'-14px -14px 0',padding:'0 14px'}}>
-            {[['analysis','Analysis'],['map','Map'],['lab','Lab Stats'],['layback','Layback'],['metrics','Metrics'],['library','Data Library ('+library.length+')']].map(function(t){
+            {[['analysis','Analysis'],['map','Map'],['lab','Lab Stats'],['layback','Layback'],['metrics','Metrics'],['projects','Projects'+(proj?' · '+proj.name.slice(0,18):'')],['library','Data Library ('+library.length+')']].map(function(t){
               return <div key={t[0]} className={mainTab===t[0]?'tab active':'tab'} onClick={function(){setMainTab(t[0]);if(t[0]!=='map')setMapFocus(null);}}>{t[1]}</div>;})}
           </div>
 
@@ -3158,6 +3229,142 @@ function App(){
               </div>
             </div>);
           })()}
+
+          {mainTab==='projects' && (function(){
+            var nOpen=Object.keys(projFiSet).length,nAll=proj?(proj.data_file_ids||[]).length:0;
+            var openNotIn=fieldIdx.filter(function(fi){var id=fileRowId(fi);return id&&proj&&(proj.data_file_ids||[]).indexOf(id)<0;});
+            var lineRows=proj?(proj.data_file_ids||[]).map(function(id){return libById[id]||{id:id,run_name:'(not in library)'};}):[];
+            var allLabels=targets.map(function(T){return T.label;});
+            function scopeText(n){var r=n.data_file_id&&libById[n.data_file_id];return [r?r.run_name:null,n.target||null].filter(Boolean).join(' × ')||'Project';}
+            var summary=proj?(proj.targets||[]).map(function(t){
+              var rs=projReview.filter(function(r){return r.target===t;}),c={};
+              rs.forEach(function(r){var v=latestVerdict[(r.dfId||'')+'|'+t];c[v?v.verdict:'none']=(c[v?v.verdict:'none']||0)+1;});
+              return {t:t,passes:rs.length,hits:rs.filter(function(r){return r.status==='HIT';}).length,c:c};}):[];
+            return (
+            <div>
+              <div className="section">
+                <h3>Projects</h3>
+                <div className="note">A project is a shared set of survey lines and known targets, with notes and a verdict for each pass, so the team can judge
+                  together whether a drop produced good detections. Everyone signed in sees the same projects and notes.</div>
+                {projErr && <div className="warnbox" role="alert">{projErr}</div>}
+                <div style={{display:'flex',flexWrap:'wrap',gap:8,margin:'8px 0'}}>
+                  {projects.map(function(p){var on=proj&&p.id===proj.id;return (
+                    <div key={p.id} style={{border:'1px solid '+(on?'var(--accent)':'var(--border2)'),borderRadius:4,padding:'6px 10px',minWidth:220,background:on?'var(--panel2)':'transparent'}}>
+                      <div style={{fontWeight:600,fontSize:12}}>{p.name}</div>
+                      <div style={{fontSize:10,color:'var(--dim2)'}}>{(p.data_file_ids||[]).length} lines · targets {(p.targets||[]).join(', ')||'none'}</div>
+                      <div style={{display:'flex',gap:4,marginTop:4}}>
+                        <button className={on?'btn btn-ghost btn-sm':'btn btn-primary btn-sm'} onClick={function(){openProject(p);}}>{on?'Re-open lines':'Open'}</button>
+                        {on && <button className="btn btn-ghost btn-sm" onClick={function(){setActiveProj(null);}}>Close</button>}
+                      </div>
+                    </div>);})}
+                  {!projects.length && !projErr && <div style={{fontSize:11,color:'var(--dim)'}}>No projects yet.</div>}
+                </div>
+                <div className="row" style={{gap:6}}>
+                  <input className="api-key-input" style={{flex:'0 0 320px'}} placeholder="New project name" value={newProjName} onChange={function(e){setNewProjName(e.target.value);}}/>
+                  <button className="btn btn-ghost btn-sm" disabled={!newProjName.trim()||!!projBusy} onClick={createProject}
+                    title="Uses the field lines open now and the known targets shown on the map">Create from open lines ({fieldIdx.length}) and shown targets</button>
+                  {projBusy && <span style={{fontSize:10}}>{projBusy}</span>}
+                </div>
+              </div>
+
+              {proj && (
+              <div className="section">
+                <h3>{proj.name}
+                  <div style={{flex:1}}/>
+                  <label style={{fontSize:10,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={projFocus} onChange={function(e){setProjFocus(e.target.checked);}}/> map shows only this project</label>
+                  <button className="btn btn-ghost btn-sm" onClick={function(){setMainTab('map');}}>Map</button>
+                  <button className="btn btn-ghost btn-sm" onClick={function(){downloadCSV('project_passes.csv',projReview.map(function(r){var v=latestVerdict[(r.dfId||'')+'|'+r.target];
+                    return{line:r.run,target:r.target,closest_m:fmt(r.closest),status:r.status,crossing_class:r.cls,snr:fmt(r.snr),mag_pct:fmt(r.magPct),error_m:fmt(r.evDist),
+                      verdict:v?v.verdict:'',verdict_by:v?v.author_email:'',verdict_note:v?(v.body||''):''};}));}}>Export CSV</button>
+                </h3>
+                {projEdit ? (
+                  <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:8}}>
+                    <input className="api-key-input" value={projEdit.name} onChange={function(e){setProjEdit(Object.assign({},projEdit,{name:e.target.value}));}}/>
+                    <textarea className="api-key-input" rows={3} value={projEdit.description} onChange={function(e){setProjEdit(Object.assign({},projEdit,{description:e.target.value}));}}/>
+                    <div className="row" style={{gap:4}}>
+                      <button className="btn btn-primary btn-sm" onClick={function(){updateProject({name:projEdit.name.trim()||proj.name,description:projEdit.description});setProjEdit(null);}}>Save</button>
+                      <button className="btn btn-ghost btn-sm" onClick={function(){setProjEdit(null);}}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="note" style={{whiteSpace:'pre-wrap'}}>{proj.description||'No description.'} <a href="#" onClick={function(e){e.preventDefault();setProjEdit({name:proj.name,description:proj.description||''});}}>edit</a></div>
+                )}
+                <div className="statsbar">
+                  <Tile label="Lines" value={nAll} sub={nOpen+' open'+(nOpen<nAll?' · '+(nAll-nOpen)+' not open':'')}/>
+                  {summary.map(function(x){return <Tile key={x.t} label={'Target '+x.t} value={x.hits+'/'+x.passes} sub={'detected / passes · reviewed '+(x.passes-(x.c.none||0))+(x.c.good?' · good '+x.c.good:'')}/>;})}
+                </div>
+                {nOpen<nAll && <div className="warnbox">{nAll-nOpen} of this project's lines are not open. <button className="btn btn-primary btn-sm" disabled={!!libBusy} onClick={function(){openProject(proj);}}>Open them</button> {libBusy}</div>}
+
+                <details style={{margin:'6px 0'}}>
+                  <summary style={{cursor:'pointer',fontSize:11}}>Lines ({nAll}) and targets ({(proj.targets||[]).length}) — edit</summary>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:4,margin:'6px 0'}}>
+                    {lineRows.map(function(r){return (
+                      <span key={r.id} style={{fontSize:10,border:'1px solid var(--border2)',borderRadius:3,padding:'1px 5px'}}>{r.run_name}
+                        <a href="#" title="Remove from project" style={{marginLeft:4,color:'var(--neg)'}} onClick={function(e){e.preventDefault();updateProject({data_file_ids:(proj.data_file_ids||[]).filter(function(x){return x!==r.id;})});}}>×</a></span>);})}
+                  </div>
+                  {openNotIn.length>0 && <button className="btn btn-ghost btn-sm" onClick={function(){updateProject({data_file_ids:(proj.data_file_ids||[]).concat(openNotIn.map(fileRowId))});}}>Add the {openNotIn.length} open line(s) not in the project</button>}
+                  <div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:6,fontSize:10}}>
+                    {allLabels.map(function(l){var on=!!projTargetSet[l];return (
+                      <label key={l} style={{display:'flex',alignItems:'center',gap:3}}><input type="checkbox" checked={on} onChange={function(){
+                        updateProject({targets:on?(proj.targets||[]).filter(function(x){return x!==l;}):(proj.targets||[]).concat([l])});}}/>{l}</label>);})}
+                  </div>
+                </details>
+
+                <h4 style={{margin:'10px 0 4px'}}>Passes over the project targets ({projReview.length})</h4>
+                <div className="note">A pass = a line's sensor track came within {proc.detRadiusM} m of the target on its drop date. Pick a verdict for each pass;
+                  every change is kept in the notes below with who made it. Positions use the current layback setting ({proc.applyLayback?fmt(proc.laybackM)+' m':'off'}).</div>
+                <table className="mt"><thead><tr><th>Target</th><th>Line</th><th className="num">Closest m</th><th>Auto</th><th>Crossing</th><th className="num">SNR</th><th className="num">Mag %</th><th className="num">Err m</th><th>Verdict</th><th></th></tr></thead>
+                  <tbody>{projReview.map(function(r,k){var key=(r.dfId||'')+'|'+r.target,v=latestVerdict[key],nN=projNotes.filter(function(n){return n.data_file_id===r.dfId&&n.target===r.target&&n.body;}).length;
+                    return (
+                    <tr key={k}>
+                      <td><b>{r.target}</b></td><td>{r.run}</td><td className="num">{fmt(r.closest)}</td>
+                      <td style={{color:r.status==='HIT'?'var(--pos)':'var(--neg)'}}>{r.status==='HIT'?'detected':'nothing'}</td>
+                      <td>{r.status==='HIT'?<a href="#" onClick={function(e){e.preventDefault();setActiveIdx(r.fi);setSelEv(r.ei);setMainTab('analysis');}}>{r.cls}</a>:'—'}</td>
+                      <td className="num">{fmt(r.snr)}</td><td className="num">{fmt(r.magPct)}</td><td className="num">{fmt(r.evDist)}</td>
+                      <td><select className="confirm-sel" value={v?v.verdict:''} style={{borderColor:v?VERDICT_COL[v.verdict]:undefined}} disabled={!r.dfId}
+                        title={v?'Set by '+(v.author_email||'?')+' '+new Date(v.created_at).toLocaleString():'Not reviewed'}
+                        onChange={function(e){if(e.target.value)addNote({dfId:r.dfId,target:r.target,verdict:e.target.value,eventTs:r.evTs,eventCum:r.evCum});}}>
+                        <option value="">— not reviewed —</option>
+                        {VERDICTS.map(function(x){return <option key={x[0]} value={x[0]}>{x[1]}</option>;})}
+                      </select></td>
+                      <td><button className="btn btn-ghost btn-sm" style={{padding:'1px 6px'}} onClick={function(){setNoteDraft({body:'',dfId:r.dfId||'',target:r.target,verdict:''});
+                        var el=document.getElementById('proj-note-box');if(el)el.scrollIntoView({behavior:'smooth'});}}>note{nN?' ('+nN+')':''}</button></td>
+                    </tr>);})}
+                    {!projReview.length && <tr><td colSpan={10} style={{color:'var(--dim)'}}>{nOpen?'No passes found: check the target selection, the drop-date filter in Metrics, or the layback setting.':'Open the project lines to see passes.'}</td></tr>}
+                  </tbody></table>
+
+                <h4 id="proj-note-box" style={{margin:'12px 0 4px'}}>Notes ({projNotes.length})</h4>
+                <div style={{display:'flex',flexDirection:'column',gap:4,maxWidth:760}}>
+                  <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+                    <select className="confirm-sel" value={noteDraft.dfId} onChange={function(e){setNoteDraft(Object.assign({},noteDraft,{dfId:e.target.value}));}}>
+                      <option value="">Whole project / any line</option>
+                      {lineRows.map(function(r){return <option key={r.id} value={r.id}>{r.run_name}</option>;})}
+                    </select>
+                    <select className="confirm-sel" value={noteDraft.target} onChange={function(e){setNoteDraft(Object.assign({},noteDraft,{target:e.target.value}));}}>
+                      <option value="">Any target</option>
+                      {(proj.targets||[]).map(function(t){return <option key={t} value={t}>{t}</option>;})}
+                    </select>
+                    <select className="confirm-sel" value={noteDraft.verdict} onChange={function(e){setNoteDraft(Object.assign({},noteDraft,{verdict:e.target.value}));}}>
+                      <option value="">No verdict</option>
+                      {VERDICTS.map(function(x){return <option key={x[0]} value={x[0]}>{x[1]}</option>;})}
+                    </select>
+                  </div>
+                  <textarea className="api-key-input" rows={3} placeholder="Observation, field condition, reason for a verdict…" value={noteDraft.body} onChange={function(e){setNoteDraft(Object.assign({},noteDraft,{body:e.target.value}));}}/>
+                  <div><button className="btn btn-primary btn-sm" disabled={!noteDraft.body.trim()&&!noteDraft.verdict} onClick={function(){
+                    var d=noteDraft;addNote({dfId:d.dfId,target:d.target,verdict:d.verdict,body:d.body.trim()}).then(function(){setNoteDraft({body:'',dfId:d.dfId,target:d.target,verdict:''});});}}>Add note</button></div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8,maxWidth:760}}>
+                  {projNotes.slice().reverse().map(function(n){var mine=authUser&&n.author===authUser.id;return (
+                    <div key={n.id} style={{borderLeft:'3px solid '+(n.verdict?VERDICT_COL[n.verdict]:'var(--border2)'),padding:'3px 8px',fontSize:11}}>
+                      <div style={{fontSize:10,color:'var(--dim2)'}}><b>{scopeText(n)}</b> · {n.author_email||'?'} · {new Date(n.created_at).toLocaleString()}
+                        {n.event_ts?' · crossing '+String(n.event_ts).slice(11,19):''}
+                        {mine && <a href="#" style={{marginLeft:6,color:'var(--neg)'}} onClick={function(e){e.preventDefault();deleteNote(n.id);}}>delete</a>}</div>
+                      {n.verdict && <div style={{color:VERDICT_COL[n.verdict],fontWeight:600}}>{(VERDICTS.find(function(x){return x[0]===n.verdict;})||[0,n.verdict])[1]}</div>}
+                      {n.body && <div style={{whiteSpace:'pre-wrap'}}>{n.body}</div>}
+                    </div>);})}
+                </div>
+              </div>)}
+            </div>);})()}
 
           {mainTab==='metrics' && (
             <div>

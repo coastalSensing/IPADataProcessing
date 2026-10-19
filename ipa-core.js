@@ -69,7 +69,7 @@
     gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
     cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
     targetLinkM: 10,       // waypoints within this distance form one target
-    dayFilter: true,       // only score a line against targets whose deploy-day code matches its survey day
+    dayFilter: true,       // only score a line against targets dropped on the line's date (logged drop dates)
     autoGroup: true,       // group field lines automatically by survey date
     anchorPassM: 15,       // calibration: boat must pass within this of a target (raw GPS)
     minLeadM: -5,          // calibration: detection may lead the boat's closest approach by at most this
@@ -957,7 +957,8 @@
         evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
         if (hit) used[F.events.indexOf(hit)] = 1;
         rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
-          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null });
+          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
+          ei: hit ? F.events.indexOf(hit) : null, magPct: hit ? hit.magPct : null, evTs: hit ? hit.ts : null, evCum: hit ? hit.cum : null });
       });
       evs.forEach(function (e) {
         if (used[F.events.indexOf(e)]) return;
@@ -972,7 +973,7 @@
       var r = rows.filter(function (x) { return x.targetId === T.id && x.status !== 'UNATTRIB'; });
       var h = r.filter(function (x) { return x.status === 'HIT'; }), cls = {}, famOk = 0, famN = 0;
       h.forEach(function (x) { cls[x.cls] = (cls[x.cls] || 0) + 1; if (T.material && T.material !== 'Seawater blank' && T.material !== 'No anomaly') { famN++; if (family(x.cls) === family(T.material)) famOk++; } });
-      return { id: T.id, label: T.label, material: T.material, day: T.day, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
+      return { id: T.id, label: T.label, material: T.material, day: T.day, date: T.date || null, passes: r.length, hits: h.length, pd: r.length ? h.length / r.length : null,
         classes: cls, famOk: famOk, famN: famN, meanErrM: h.length ? mean(h.map(function (x) { return x.evDist; })) : null };
     });
     var P = perT.reduce(function (s, t) { return s + t.passes; }, 0), H = perT.reduce(function (s, t) { return s + t.hits; }, 0);

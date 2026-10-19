@@ -725,3 +725,81 @@ update public.data_files d
   from y where d.id = y.id;
 
 notify pgrst, 'reload schema';
+
+-- =====================================================================================
+-- v43: PROJECTS — shared working sets of survey lines + known targets, with notes and
+-- per-pass verdicts (e.g. "did we get a good steel detection on this pass?"). Additive.
+-- =====================================================================================
+create table if not exists public.projects (
+  id               uuid primary key default gen_random_uuid(),
+  name             text not null unique,
+  description      text,
+  survey_id        uuid references public.surveys(id) on delete set null,
+  data_file_ids    uuid[] not null default '{}',   -- the project's survey lines (data_files.id)
+  targets          text[] not null default '{}',   -- known-target labels (site names, e.g. 2B)
+  settings         jsonb  not null default '{}'::jsonb,
+  archived         boolean not null default false,
+  created_by       uuid default auth.uid(),
+  created_by_email text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create table if not exists public.project_notes (
+  id           uuid primary key default gen_random_uuid(),
+  project_id   uuid not null references public.projects(id) on delete cascade,
+  data_file_id uuid references public.data_files(id) on delete set null,   -- a line (optional)
+  target       text,                                                       -- a known target (optional)
+  event_ts     text,                                                       -- a crossing (optional)
+  event_cum    real,
+  verdict      text,                                                       -- pass verdict (optional)
+  body         text,
+  author       uuid default auth.uid(),
+  author_email text,
+  created_at   timestamptz not null default now()
+);
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'project_notes_verdict_chk') then
+    alter table public.project_notes add constraint project_notes_verdict_chk
+      check (verdict is null or verdict in ('good','weak','missed','invalid','unsure'));
+  end if;
+end $$;
+create index if not exists project_notes_project_idx on public.project_notes (project_id, created_at);
+
+-- Team-only access. Notes can only be edited or deleted by their author.
+do $$
+declare t text; p record;
+begin
+  foreach t in array array['projects','project_notes'] loop
+    execute format('alter table public.%I enable row level security', t);
+    for p in select policyname from pg_policies where schemaname='public' and tablename=t loop
+      execute format('drop policy %I on public.%I', p.policyname, t);
+    end loop;
+  end loop;
+  create policy projects_team_select on public.projects for select to authenticated using (public.is_team());
+  create policy projects_team_insert on public.projects for insert to authenticated with check (public.is_team());
+  create policy projects_team_update on public.projects for update to authenticated using (public.is_team()) with check (public.is_team());
+  create policy projects_team_delete on public.projects for delete to authenticated using (public.is_team());
+  create policy project_notes_team_select on public.project_notes for select to authenticated using (public.is_team());
+  create policy project_notes_team_insert on public.project_notes for insert to authenticated with check (public.is_team());
+  create policy project_notes_own_update on public.project_notes for update to authenticated using (public.is_team() and author = auth.uid()) with check (public.is_team() and author = auth.uid());
+  create policy project_notes_own_delete on public.project_notes for delete to authenticated using (public.is_team() and author = auth.uid());
+end $$;
+
+-- First project: the day-2 steel pipe drop at North Beach (waypoint_logs.xlsx / waypoint_target_assignment.csv)
+insert into public.projects (name, description, survey_id, data_file_ids, targets, settings, created_by_email)
+select 'Steel pipe drop · North Beach Day 2 (2A, 2B, 2C)',
+       'Steel pipes dropped 22 Apr 2026 at North Beach: 2A northernmost, 2B middle (laid north–south), 2C southernmost '
+       || '(waypoint_logs.xlsx, waypoint_target_assignment.csv). Lines: the 23 layback_drop runs recorded that day (17–39). '
+       || 'Goal: decide for each pass over a target whether we got a good steel detection.',
+       s.id,
+       coalesce((select array_agg(f.id order by f.first_ts) from public.data_files f
+                  where f.file_kind = 'field' and f.purpose = 'survey_line'
+                    and f.first_ts like '2026/04/22%' and f.run_name like 'layback\_drop\_%'), '{}'),
+       array['2A','2B','2C'],
+       '{"date":"2026-04-22","material":"Steel"}'::jsonb,
+       'abby@coastalsensing.com'
+  from public.surveys s where s.name = 'North Beach April 2026'
+on conflict (name) do nothing;
+
+notify pgrst, 'reload schema';

@@ -318,6 +318,9 @@ canvas{display:block;width:100%;}
     gapPkts: 2,            // contiguous-packet gap inside a sub-cluster
     mergeGapM: 25,         // sub-clusters closer than this along the path = one crossing
     minPkts: 1,            // min packets per crossing
+    detChannels: 'ch1',    // receiver channels used for DETECTION: 'ch1' | 'all' (every active channel). Features always use all.
+    nHarm: 6,              // odd harmonics used for detection: 6 (r7) … 'all' (every odd harmonic in the file, up to 31)
+    magRef: 'ch0',         // magnitude reference: 'ch0' = channel mag ÷ ch0 mag (removes TX-current drift) | 'raw'
     labCosMin: 0.90,       // spectral-angle cosine required to accept a lab match
     applyLayback: true,
     laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
@@ -358,12 +361,17 @@ canvas{display:block;width:100%;}
     var m = mean(a); return Math.sqrt(a.reduce(function (s, v) { return s + (v - m) * (v - m); }, 0) / (a.length - 1));
   }
   function runningMedian(arr, win) {
+    // Sliding window kept sorted (binary-search insert/remove): same result as re-sorting each window, ~10× faster.
     var n = arr.length, half = Math.max(1, Math.floor(win / 2)), out = new Array(n);
     if (win >= n) { var m = median(arr); for (var k = 0; k < n; k++) out[k] = m; return out; }
+    var w = [], lo = 0, hi = -1;
+    function pos(v) { var a = 0, b = w.length; while (a < b) { var c = (a + b) >> 1; if (w[c] < v) a = c + 1; else b = c; } return a; }
     for (var i = 0; i < n; i++) {
-      var lo = Math.max(0, i - half), hi = Math.min(n - 1, i + half), w = [];
-      for (var j = lo; j <= hi; j++) if (finite(arr[j])) w.push(arr[j]);
-      out[i] = w.length ? median(w) : NaN;
+      var nlo = Math.max(0, i - half), nhi = Math.min(n - 1, i + half);
+      while (hi < nhi) { hi++; if (finite(arr[hi])) w.splice(pos(arr[hi]), 0, arr[hi]); }
+      while (lo < nlo) { if (finite(arr[lo])) w.splice(pos(arr[lo]), 1); lo++; }
+      var L = w.length;
+      out[i] = L ? (L % 2 ? w[(L - 1) >> 1] : (w[L / 2 - 1] + w[L / 2]) / 2) : NaN;
     }
     return out;
   }
@@ -445,7 +453,7 @@ canvas{display:block;width:100%;}
       var lat = lab ? null : nmeaDD((p[6] || '').trim(), false);
       var lon = lab ? null : nmeaDD((p[7] || '').trim(), true);
       if (!isNaN(idx) && !isNaN(xmt)) {
-        var freqs = {};
+        var freqs = {}, chan = {};
         for (var r = i + 2; r < i + 33 && r < lines.length; r++) {
           var dl = lines[r].trim();
           if (!dl || dl.startsWith('#')) break;
@@ -453,9 +461,16 @@ canvas{display:block;width:100%;}
           if (c.length < 10) continue;
           var freq = parseFloat(c[0]), dp = parseFloat(c[1]), mg = parseFloat(c[9]);
           if (!isNaN(freq) && !isNaN(dp) && !isNaN(mg)) freqs[freq] = [dp, mg];
+          // every receiver channel: ch1-0 … ch7-0 phase deltas (rad) and ch0 … ch7 magnitudes
+          if (!isNaN(freq) && c.length >= 16) {
+            var cd = [], cm = [];
+            for (var k = 1; k <= 7; k++) cd.push(parseFloat(c[k]));
+            for (var k2 = 8; k2 <= 15; k2++) cm.push(parseFloat(c[k2]));
+            chan[freq] = { d: cd, m: cm };
+          }
         }
         if (Object.keys(freqs).length) {
-          pkts.push({ idx: idx, ts: ts, t: parseTime(ts), run: run, xmt: xmt, lat: lat, lon: lon, freqs: freqs, type: lab ? 'lab' : 'field' });
+          pkts.push({ idx: idx, ts: ts, t: parseTime(ts), run: run, xmt: xmt, lat: lat, lon: lon, freqs: freqs, chan: Object.keys(chan).length ? chan : null, type: lab ? 'lab' : 'field', gpsT: (p[5] || '').trim() });
         }
       }
       i += 33;
@@ -885,22 +900,91 @@ canvas{display:block;width:100%;}
     return { cls: ev.cls, conf: Math.max(10, ev.confPct - 20), src: 'rules', conflict: true, labCls: best.material };
   }
 
+  // ── Receiver channels ─────────────────────────────────────────────────────
+  // A channel is active when its fundamental phase is stable; unconnected inputs read ±π noise.
+  function activeChannels(packets) {
+    if (!packets.length || !packets[0].chan) return [1];
+    var f0 = getHarms(packets[0].xmt)[0], out = [];
+    for (var c = 1; c <= 7; c++) {
+      var d = [], m = [];
+      for (var i = 0; i < packets.length; i++) { var v = packets[i].chan && packets[i].chan[f0]; if (v && finite(v.d[c - 1])) { d.push(v.d[c - 1]); m.push(v.m[c]); } }
+      if (d.length < 5) continue;
+      var med = median(d), sc = 1.4826 * mad(d, med), mm = median(m.filter(finite));
+      if (Math.abs(med) < 0.6 && sc < 0.05 && mm > 0) out.push(c);
+    }
+    return out.length ? out : [1];
+  }
+  // Every odd harmonic of the transmit frequency present in the file (4, 12, 20 … at 4 Hz)
+  function oddHarmonics(packets, xmt) {
+    var s = {}; packets.slice(0, 5).forEach(function (pk) { Object.keys(pk.freqs).forEach(function (f) { s[f] = 1; }); });
+    return Object.keys(s).map(Number).filter(function (f) { var k = f / xmt; return Math.abs(k - Math.round(k)) < 1e-6 && Math.round(k) % 2 === 1; }).sort(function (a, b) { return a - b; });
+  }
+  // Packets as seen by channel c (phase delta + magnitude, optionally ÷ ch0 magnitude)
+  function channelPackets(packets, c, magRef) {
+    if (c === 1 && magRef !== 'ch0') return packets;
+    return packets.map(function (pk) {
+      if (!pk.chan) return pk;
+      var fr = {};
+      Object.keys(pk.chan).forEach(function (f) { var v = pk.chan[f], mg = v.m[c]; if (magRef === 'ch0') mg = v.m[0] ? mg / v.m[0] : NaN; fr[f] = [v.d[c - 1], mg]; });
+      return Object.assign({}, pk, { freqs: fr });
+    });
+  }
+  // Deviation from background (mrad), robust z and Mag% at packet i, for every channel and odd harmonic
+  function channelSpectra(per, chans, freqs, i) {
+    var out = {};
+    chans.forEach(function (c) {
+      var P = per[c]; if (!P || !P.vp[i]) return;
+      var pk = P.vp[i], dev = [], z = [], mag = [], zMax = 0, n = P.vp.length;
+      freqs.forEach(function (f) {
+        var v = pk.freqs[f], pz = P.bg.perHz[f];
+        if (!v || !pz) { dev.push(null); z.push(null); mag.push(null); return; }
+        var d = wrapMrad(v[0] * 1000 - bgAt(P.bg, f, i)), zz = Math.abs(d) / pz.std;
+        dev.push(Math.round(d * 100) / 100); z.push(Math.round(zz * 10) / 10); if (zz > zMax) zMax = zz;
+        var w = []; for (var j = Math.max(0, i - 30); j <= Math.min(n - 1, i + 30); j++) { var q = P.vp[j].freqs[f]; if (q && finite(q[1])) w.push(q[1]); }
+        var ref = w.length ? median(w) : NaN; mag.push(ref && finite(v[1]) ? Math.round((v[1] - ref) / ref * 1000) / 10 : null);
+      });
+      out[c] = { dev: dev, z: z, mag: mag, zMax: Math.round(zMax * 10) / 10, magPct: mag[0] };
+    });
+    return out;
+  }
+
   // ── Per-file analysis (raw frame; layback applied separately) ──────────────
   function analyzeField(packets, opts, labSigs) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var xmt = packets[0].xmt, harms = getHarms(xmt), bg = computeBG(packets, harms, opts);
-    var kin = computeKinematics(packets);
-    var clusters = detectAnomalies(packets, harms, bg, opts, kin);
+    var xmt = packets[0].xmt, harms = getHarms(xmt), kin = computeKinematics(packets);
+    var chans = activeChannels(packets), odd = oddHarmonics(packets, xmt);
+    if (odd.length < harms.length) odd = harms.slice();
+    var nH = opts.nHarm === 'all' ? odd.length : Math.max(harms.length, +opts.nHarm || harms.length);
+    var detH = odd.slice(0, nH); harms.forEach(function (f) { if (detH.indexOf(f) < 0) detH.push(f); });
+    var per = {};
+    [1].concat(chans).forEach(function (c) { if (!per[c]) { var vp = channelPackets(packets, c, opts.magRef); per[c] = { vp: vp, bg: computeBG(vp, odd, opts) }; } });
+    var bg = per[1].bg;
+    var clusters = detectAnomalies(per[1].vp, detH, bg, opts, kin);
+    clusters.forEach(function (cl) { cl.detCh = 1; });
+    if (opts.detChannels === 'all') chans.forEach(function (c) {
+      if (c === 1) return;
+      detectAnomalies(per[c].vp, detH, per[c].bg, opts, kin).forEach(function (cl) {
+        var a = cl[0].pk.idx, b = cl[cl.length - 1].pk.idx, g = opts.gapPkts + 2;
+        if (!clusters.some(function (k) { return k[0].pk.idx - g <= b && a <= k[k.length - 1].pk.idx + g; })) { cl.detCh = c; clusters.push(cl); }
+      });
+    });
+    clusters.sort(function (x, y) { return x[0].pk.idx - y[0].pk.idx; });
+    var T = opts.mode === 'legacy' ? 3 : opts.zThresh;
     var events = clusters.map(function (cl) {
-      var ev = classifyRules(cl, harms, bg, kin, opts);
-      ev.labMatches = labMatch(ev, harms, bg, labSigs);
+      var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts);
+      ev.detCh = c;
+      ev.spec = channelSpectra(per, chans, odd, ev.i);
+      ev.seenOn = chans.filter(function (ch) { return ev.spec[ch] && ev.spec[ch].zMax >= T; });
+      ev.labMatches = c === 1 ? labMatch(ev, harms, bg, labSigs) : [];
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
       return ev;
     });
-    var lenM = kin.length ? kin[kin.length - 1].cum : 0;
-    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM };
+    var lenM = kin.length ? kin[kin.length - 1].cum : 0, chBg = {};
+    chans.forEach(function (c) { chBg[c] = per[c].bg; });
+    return { xmt: xmt, harms: harms, bg: bg, kin: kin, clusters: clusters, events: events, trackLenM: lenM,
+      chans: chans, freqsAll: odd, detH: detH, chBg: chBg };
   }
   // Apply the linear layback model: every event and packet is moved BACK along the
   // recorded path by L + τ·v. L=τ=0 returns raw positions.
@@ -924,7 +1008,7 @@ canvas{display:block;width:100%;}
   // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
   // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
   // Lab matching is redone on open, so new lab references apply without reprocessing.
-  var SUMMARY_VER = 1;
+  var SUMMARY_VER = 2;
   function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
   function summarizeField(fa, packets) {
     var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });
@@ -938,7 +1022,7 @@ canvas{display:block;width:100%;}
     var p0 = packets[0], pN = packets[packets.length - 1];
     return { sv: SUMMARY_VER, run: p0.run, type: p0.type, xmt: fa.xmt, harms: fa.harms, ts0: p0.ts, tsN: pN.ts,
       bg: { mode: fa.bg.mode, mean: fa.bg.mean, std: fa.bg.std, magMean: fa.bg.magMean, perHz: perHz },
-      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events };
+      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events, chans: fa.chans || [1], freqsAll: fa.freqsAll || fa.harms };
   }
   // Rebuild a light file from a summary: packets carry position/time only (no harmonics).
   function expandSummary(s) {
@@ -953,13 +1037,13 @@ canvas{display:block;width:100%;}
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var events = s.events.map(function (e) {
       var ev = Object.assign({}, e);
-      ev.labMatches = labMatch(ev, s.harms, s.bg, labSigs);
+      ev.labMatches = (ev.detCh || 1) === 1 ? labMatch(ev, s.harms, s.bg, labSigs) : [];
       ev.labBest = ev.labMatches[0] || null;
       var fu = fuseClass(ev, ev.labBest, opts);
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
       return ev;
     });
-    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true };
+    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true, chans: s.chans || [1], freqsAll: s.freqsAll || s.harms };
   }
 
   // ── Known targets: waypoints → physical target sites ───────────────────────
@@ -1357,7 +1441,7 @@ canvas{display:block;width:100%;}
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
-    analyzeField: analyzeField, correctFile: correctFile,
+    analyzeField: analyzeField, correctFile: correctFile, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,
@@ -1377,14 +1461,14 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v44';
+const APP_VERSION='v45';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
 const CONFIRM_OPTIONS=MAT_OPTIONS.concat(['No anomaly']);
 const RUN_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#a04010'];
 const SWATCH_COLORS=['#0071b8','#b02040','#1a8c4e','#7b2d8b','#c05000','#2d6a4f','#c77d0a','#5a50c8','#6a4c93','#0080b0'];
-const DET_KEYS=['mode','detrendWin','zThresh','minHarmHits','gapPkts','mergeGapM','minPkts','labCosMin','rules','artifactDevMrad','reviewDevMrad','artifactMagPct','magDetectPct','minSNRmaterial'];
+const DET_KEYS=['detChannels','nHarm','magRef','mode','detrendWin','zThresh','minHarmHits','gapPkts','mergeGapM','minPkts','labCosMin','rules','artifactDevMrad','reviewDevMrad','artifactMagPct','magDetectPct','minSNRmaterial'];
 const GROUP_COLORS=['#0071b8','#1d9e75','#d8641e','#7f77dd','#b03a5b','#846b00','#2d6a4f','#c77d0a'];
 
 // ── Supabase client (handles auth + data) ─────────────────────────────────────
@@ -1568,6 +1652,7 @@ async function classifyWithClaude(ev,harms,bg,run,xmt,model){
     event:{ts:ev.ts,harmonics:harmonics,magPct:ev.magPct,nPkts:ev.nPkts,fundSNR:ev.maxSNR,maxSNR:ev.maxSNRall,phaseSlope:ev.phaseSlope,
       rulesCls:ev.cls,rulesConf:ev.confPct,fusedCls:ev.fusedCls,rulesNote:ev.rulesNote||null,review:!!ev.review,altPol:!!ev.altPol,
       labMatches:(ev.labMatches||[]).slice(0,3).map(function(m){return{material:m.material,cos:m.cos,angleDeg:m.angleDeg,scale:m.scale,chi2red:m.chi2red};}),
+      channels:ev.spec?Object.keys(ev.spec).map(function(c){var sp=ev.spec[c];return{ch:+c,magPct:sp.magPct,zMax:sp.zMax,dev:sp.dev.slice(0,8)};}):null,detCh:ev.detCh||1,
       features:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,slope:ev.phaseSlope}}};
   var res=await supabase.functions.invoke('classify',{body:body});
   if(res.error){
@@ -1692,6 +1777,8 @@ function App(){
   var [confMat,setConfMat]=useState('');
   var [drag,setDrag]=useState(false);
   var [mainTab,setMainTab]=useState('analysis');
+  var [chartCh,setChartCh]=useState(1);
+  var [specAll,setSpecAll]=useState(false);
   var [dbStatus,setDbStatus]=useState('loading');
   var [dbNote,setDbNote]=useState('');
   var [authUser,setAuthUser]=useState(null);
@@ -1915,7 +2002,8 @@ function App(){
     if(f.type==='lab')return{isLab:true,run:f.run,labStats:f.labStats||IPA.computeLabStats(f.packets),nPkts:f.nPkts||f.packets.length};
     var fa=fileAnalyses[activeIdx];if(!fa)return null;
     if(f.lite)return{isLab:false,isLite:true,run:f.run,nPkts:f.packets.length,xmt:fa.xmt,harms:fa.harms,bg:fa.bg,events:fa.events};
-    var pkts=f.packets,harms=fa.harms,bg=fa.bg,T=proc.mode==='legacy'?3:proc.zThresh;
+    var chans=fa.chans||[1],ch=chans.indexOf(chartCh)>=0?chartCh:1;
+    var pkts=IPA.channelPackets(f.packets,ch,proc.magRef),harms=fa.harms,bg=(fa.chBg&&fa.chBg[ch])||fa.bg,T=proc.mode==='legacy'?3:proc.zThresh;
     var ser=function(h){return pkts.map(function(pk){var v=pk.freqs[h];return v?v[0]*1000:NaN;});};
     var d1=ser(harms[0]),dH=ser(harms[5]),d3=ser(harms[2]);
     var mag=pkts.map(function(pk){var v=pk.freqs[harms[0]];return v?v[1]:NaN;});
@@ -1924,9 +2012,9 @@ function App(){
     var im={};pkts.forEach(function(pk,i){im[pk.idx]=i;});
     var bgEv=fa.events.map(function(ev,ei){return{i0:im[ev.pktStart]!==undefined?im[ev.pktStart]:-1,i1:im[ev.pktEnd]!==undefined?im[ev.pktEnd]:-1,
       color:MAT_COLORS[finalCls(activeIdx,ei,ev)]||'#aaa',sel:ei===selEv};});
-    return{isLab:false,pkts:pkts,xmt:fa.xmt,harms:harms,bg:bg,clusters:fa.clusters,events:fa.events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,
+    return{isLab:false,ch:ch,chans:chans,pkts:pkts,xmt:fa.xmt,harms:harms,bg:bg,clusters:fa.clusters,events:fa.events,d1:d1,mag:mag,dH:dH,d3:d3,xL:xL,bgEv:bgEv,
       hiT:base0.map(function(b){return b+T*p0.std;}),loT:base0.map(function(b){return b-T*p0.std;}),base0:base0,T:T};
-  },[files,activeIdx,fileAnalyses,aiResults,selEv,proc.mode,proc.zThresh]);
+  },[files,activeIdx,fileAnalyses,aiResults,selEv,proc.mode,proc.zThresh,proc.magRef,chartCh]);
 
   useEffect(function(){
     if(!analysis||analysis.isLab||analysis.isLite||mainTab!=='analysis')return;
@@ -2816,6 +2904,23 @@ function App(){
                   <option value="r7">r7 field rules (WaTech-MatChar-r7 §17)</option>
                   <option value="v32">v32 phase-shape rules (previous)</option>
                 </select></div>
+              <div><label>Detection channels</label>
+                <select value={proc.detChannels} onChange={function(e){setProc({detChannels:e.target.value});}}>
+                  <option value="ch1">Ch1 only (as r7)</option>
+                  <option value="all">All active channels (ch1, ch2, ch3…)</option>
+                </select></div>
+              <div><label>Detection harmonics</label>
+                <select value={String(proc.nHarm)} onChange={function(e){setProc({nHarm:e.target.value==='all'?'all':+e.target.value});}}>
+                  <option value="6">First 6 odd harmonics (as r7)</option>
+                  <option value="10">First 10</option>
+                  <option value="15">First 15</option>
+                  <option value="all">Every odd harmonic in the file</option>
+                </select></div>
+              <div><label>Magnitude reference</label>
+                <select value={proc.magRef} onChange={function(e){setProc({magRef:e.target.value});}}>
+                  <option value="ch0">Channel ÷ ch0 (removes TX-current drift)</option>
+                  <option value="raw">Raw channel magnitude</option>
+                </select></div>
               <Num label="Review flag |Δφ| > (mrad)" value={proc.reviewDevMrad} onChange={function(v){setProc({reviewDevMrad:Math.max(10,v)});}}/>
               <Num label="Flag Mag drop ≥ (%)" value={proc.magDetectPct} onChange={function(v){setProc({magDetectPct:Math.max(0,v)});}}/>
               <Num label="Material call SNR ≥" value={proc.minSNRmaterial} onChange={function(v){setProc({minSNRmaterial:Math.max(0,v)});}}/>
@@ -2879,9 +2984,14 @@ function App(){
                       sub={af.bg.mode==='robust'?'around running median':(af.bg.mean+3*af.bg.std).toFixed(2)+' mrad'}/>
                     <Tile label="Events" value={af.events.length} color={af.events.length?'#b07800':'var(--pos)'} sub={af.clusters.reduce(function(a,c){return a+c.length;},0)+' anom pkts'}/>
                   </div>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginTop:8,fontSize:11}}>
+                    <span style={{color:'var(--dim2)'}}>Charts for channel</span>
+                    {af.chans.map(function(c){return <button key={c} className={af.ch===c?'btn btn-primary btn-sm':'btn btn-ghost btn-sm'} onClick={function(){setChartCh(c);}}>ch{c}</button>;})}
+                    <span style={{color:'var(--dim)',fontSize:10}}>{af.chans.length} active channel{af.chans.length>1?'s':''} in this file · magnitude {proc.magRef==='ch0'?'÷ ch0':'raw'}</span>
+                  </div>
                   <div className="charts-grid" style={{marginTop:8}}>
                     <div className="chart-panel full">
-                      <div className="chart-title">Δφ {af.xmt}Hz ch1-0 (mrad) — {af.bg.mode==='robust'?'running-median baseline ± '+af.T+'σ':'3σ threshold'}<span>shaded = events</span></div>
+                      <div className="chart-title">Δφ {af.xmt}Hz ch{af.ch}-0 (mrad) — {af.bg.mode==='robust'?'running-median baseline ± '+af.T+'σ':'3σ threshold'}<span>shaded = events</span></div>
                       <canvas ref={tsRef} style={{height:110}} height={110}/>
                     </div>
                     <div className="chart-panel">
@@ -2894,7 +3004,7 @@ function App(){
                       <canvas ref={specRef} style={{height:100}} height={100}/>
                     </div>
                     <div className="chart-panel full">
-                      <div className="chart-title">Ch1 magnitude at {af.xmt}Hz (counts)</div>
+                      <div className="chart-title">Ch{af.ch} magnitude at {af.xmt}Hz {proc.magRef==='ch0'?'(÷ ch0)':'(counts)'}</div>
                       <canvas ref={magRef} style={{height:75}} height={75}/>
                     </div>
                   </div>
@@ -3612,6 +3722,23 @@ function App(){
                   Mag {fmt(activeEv.magPct,1)}% · {activeEv.altPol?'alternating polarity':'no alternating polarity'} · {activeEv.nAnom} harmonic{activeEv.nAnom===1?'':'s'} above 3σ<br/>
                   Fused: <b style={{color:MAT_COLORS[activeEv.fusedCls]}}>{activeEv.fusedCls}</b> ({activeEv.fusedConf}%, {activeEv.fusedSrc}){activeEv.labConflict?<span style={{color:'var(--neg)'}}> ⚠ lab suggests {activeEv.labBest.material}</span>:null}
                 </div>
+                {activeEv.spec && Object.keys(activeEv.spec).length>0 && (function(){
+                  var chs=Object.keys(activeEv.spec).map(Number),fa=fileAnalyses[activeIdx],fr=(fa&&fa.freqsAll)||af.harms||[],nShow=specAll?fr.length:Math.min(8,fr.length);
+                  var Tz=proc.mode==='legacy'?3:proc.zThresh;
+                  function heat(z){return z===null||z===undefined?'transparent':z>=2*Tz?'rgba(204,34,51,.28)':z>=Tz?'rgba(199,125,10,.25)':'transparent';}
+                  return (
+                  <div style={{marginTop:6}}>
+                    <div style={{fontSize:10,color:'var(--dim2)',marginBottom:3}}>All channels at the peak packet{activeEv.detCh>1?' · detected on ch'+activeEv.detCh:''}
+                      {activeEv.seenOn?' · above '+Tz+'σ on '+(activeEv.seenOn.length?activeEv.seenOn.map(function(c){return 'ch'+c;}).join(', '):'no channel'):''}
+                      <a href="#" style={{marginLeft:6}} onClick={function(e){e.preventDefault();setSpecAll(!specAll);}}>{specAll?'first 8 harmonics':'all '+fr.length+' harmonics'}</a></div>
+                    <div style={{overflowX:'auto'}}>
+                      <table className="mt" style={{fontSize:10}}><thead><tr><th>Ch</th><th className="num">Mag%</th>{fr.slice(0,nShow).map(function(f){return <th key={f} className="num">{f}</th>;})}</tr></thead>
+                        <tbody>{chs.map(function(c){var sp=activeEv.spec[c];return (
+                          <tr key={c}><td>ch{c}</td><td className="num">{fmt(sp.magPct,1)}</td>
+                            {sp.dev.slice(0,nShow).map(function(d,k){return <td key={k} className="num" style={{background:heat(sp.z[k])}} title={'z '+sp.z[k]+' · Mag '+sp.mag[k]+'%'}>{d===null?'—':d.toFixed(1)}</td>;})}</tr>);})}
+                        </tbody></table></div>
+                    <div style={{fontSize:9,color:'var(--dim)'}}>Δφ deviation from background (mrad) per harmonic (Hz). Shading: ≥{Tz}σ amber, ≥{2*Tz}σ red. Hover a cell for z and Mag% at that harmonic.</div>
+                  </div>);})()}
                 {activeEv.labMatches.length>0 && (
                   <table className="mt" style={{marginTop:6}}><thead><tr><th>Lab ref</th><th className="num">cos</th><th className="num">angle</th><th className="num">χ²ᵣ</th></tr></thead>
                     <tbody>{activeEv.labMatches.slice(0,4).map(function(m,i){return <tr key={i}><td>{m.material}</td><td className="num">{m.cos.toFixed(3)}</td><td className="num">{m.angleDeg.toFixed(0)}°</td><td className="num">{fmt(m.chi2red,1)}</td></tr>;})}</tbody></table>)}

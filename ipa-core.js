@@ -105,12 +105,17 @@
     var m = mean(a); return Math.sqrt(a.reduce(function (s, v) { return s + (v - m) * (v - m); }, 0) / (a.length - 1));
   }
   function runningMedian(arr, win) {
+    // Sliding window kept sorted (binary-search insert/remove): same result as re-sorting each window, ~10× faster.
     var n = arr.length, half = Math.max(1, Math.floor(win / 2)), out = new Array(n);
     if (win >= n) { var m = median(arr); for (var k = 0; k < n; k++) out[k] = m; return out; }
+    var w = [], lo = 0, hi = -1;
+    function pos(v) { var a = 0, b = w.length; while (a < b) { var c = (a + b) >> 1; if (w[c] < v) a = c + 1; else b = c; } return a; }
     for (var i = 0; i < n; i++) {
-      var lo = Math.max(0, i - half), hi = Math.min(n - 1, i + half), w = [];
-      for (var j = lo; j <= hi; j++) if (finite(arr[j])) w.push(arr[j]);
-      out[i] = w.length ? median(w) : NaN;
+      var nlo = Math.max(0, i - half), nhi = Math.min(n - 1, i + half);
+      while (hi < nhi) { hi++; if (finite(arr[hi])) w.splice(pos(arr[hi]), 0, arr[hi]); }
+      while (lo < nlo) { if (finite(arr[lo])) w.splice(pos(arr[lo]), 1); lo++; }
+      var L = w.length;
+      out[i] = L ? (L % 2 ? w[(L - 1) >> 1] : (w[L / 2 - 1] + w[L / 2]) / 2) : NaN;
     }
     return out;
   }

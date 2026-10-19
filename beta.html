@@ -1446,6 +1446,9 @@ function uploadSummary(hash,key,sum){var txt=JSON.stringify(sum);return gzipBlob
     .then(function(res){if(res.error&&!/exist|duplicate/i.test(res.error.message))throw new Error(res.error.message);});});}
 function liteFile(row,sum,key){var ex=IPA.expandSummary(sum);
   return{name:row.file_name,run:sum.run||row.run_name||row.file_name,packets:ex.packets,kin:ex.kin,xmt:sum.xmt,type:'field',hash:row.sha256,lite:true,summary:sum,sumKey:key};}
+// Lab run kept as its per-frequency statistics only (that is all the Lab Stats view uses).
+function labLite(name,hash,info){return{name:name,run:info.run,packets:[],nPkts:info.nPkts,labStats:info.labStats,xmt:info.xmt,type:'lab',hash:hash,lite:true};}
+function labInfoFromFile(f){return{run:f.run,xmt:f.xmt,nPkts:f.packets.length,labStats:IPA.computeLabStats(f.packets)};}
 // Run fn over items with n parallel workers; onStep(done,total) after each item.
 function pool(items,n,fn,onStep){var i=0,done=0,out=new Array(items.length);function w(){if(i>=items.length)return Promise.resolve();var k=i++;
   return Promise.resolve().then(function(){return fn(items[k]);}).catch(function(e){console.warn(e);return {err:e};}).then(function(r){out[k]=r;done++;if(onStep)onStep(done,items.length);return w();});}
@@ -1827,7 +1830,7 @@ function App(){
   var analysis=useMemo(function(){
     if(activeIdx===null||!files[activeIdx])return null;
     var f=files[activeIdx];
-    if(f.type==='lab')return{isLab:true,run:f.run,labStats:IPA.computeLabStats(f.packets),nPkts:f.packets.length};
+    if(f.type==='lab')return{isLab:true,run:f.run,labStats:f.labStats||IPA.computeLabStats(f.packets),nPkts:f.nPkts||f.packets.length};
     var fa=fileAnalyses[activeIdx];if(!fa)return null;
     if(f.lite)return{isLab:false,isLite:true,run:f.run,nPkts:f.packets.length,xmt:fa.xmt,harms:fa.harms,bg:fa.bg,events:fa.events};
     var pkts=f.packets,harms=fa.harms,bg=fa.bg,T=proc.mode==='legacy'?3:proc.zThresh;
@@ -1980,14 +1983,18 @@ function App(){
     idbLoadFiles().then(function(recs){
       if(!recs||!recs.length)return;
       recs.sort(function(a,b){return (a.at||0)-(b.at||0);});
-      var key=procKey(proc),lite=[],full=[],migrate=[];
+      var key=procKey(proc),lite=[],full=[],migrate=[],labConv=[];
       recs.forEach(function(r){
         if(r.kind==='summary'){try{lite.push(liteFile({file_name:r.name,sha256:r.hash},JSON.parse(r.text),r.sumKey));}catch(e){}return;}
+        if(r.kind==='labsum'){try{lite.push(labLite(r.name,r.hash,JSON.parse(r.text)));}catch(e){}return;}
+        if(r.kind==='lab'&&r.hash&&libraryHashes[r.hash]){var res=parseText(r.name,r.text,r.hash,false);
+          if(res&&res.kind==='ipa'&&res.f.type==='lab'){var info=labInfoFromFile(res.f);labConv.push({hash:r.hash,name:r.name,kind:'labsum',text:JSON.stringify(info),at:r.at});lite.push(labLite(r.name,r.hash,info));return;}}
         if(r.kind==='field'&&r.hash&&libraryHashes[r.hash]){migrate.push(r);return;}
         full.push(r);
       });
       addParsed(full.map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
       addLite(lite,true);
+      if(labConv.length)idbSaveFiles(labConv);
       setLibStatus('Restored '+(full.length+lite.length)+' file(s) from this browser\'s last session.');
       if(!migrate.length)return;
       // One-time: raw field lines cached in this browser → saved results (built from the cached copy if missing)
@@ -2143,15 +2150,19 @@ function App(){
     var have={};files.forEach(function(f){if(f.hash)have[f.hash]=1;});
     var todo=rows.filter(function(r){return !have[r.sha256];});
     if(!todo.length){setLibStatus('Those files are already open.');return Promise.resolve();}
-    var key=procKey(proc),out=[],lites=[],errs=0,built=0;
+    var key=procKey(proc),out=[],lites=[],labs=[],errs=0,built=0;
     setLibBusy('Opening '+todo.length+' file(s)…');
     return pool(todo.slice(),6,function(r){
       if(!full&&r.file_kind==='field')return fetchLine(r,key).then(function(x){if(x.lite){lites.push(x.lite);if(x.built)built++;}else if(x.full)out.push(x.full);});
-      return downloadFromLibrary(r.storage_path).then(function(text){out.push(parseText(r.file_name,text,r.sha256,r.file_kind==='waypoints'));});
+      return downloadFromLibrary(r.storage_path).then(function(text){var res=parseText(r.file_name,text,r.sha256,r.file_kind==='waypoints');
+        if(!full&&res&&res.kind==='ipa'&&res.f.type==='lab'){var info=labInfoFromFile(res.f);labs.push({f:labLite(r.file_name,r.sha256,info),rec:{hash:r.sha256,name:r.file_name,kind:'labsum',text:JSON.stringify(info),at:Date.now()}});return;}
+        out.push(res);});
     },function(d,n){setLibBusy('Opening '+d+' / '+n+(built?' (building saved results: '+built+')':'')+'…');})
     .then(function(res){errs=res.filter(function(x){return x&&x.err;}).length;
-      addParsed(out);addLite(lites);setLibBusy('');setLibSel({});
-      setLibStatus('Opened '+(out.filter(Boolean).length+lites.length)+' file(s)'+(built?' · saved results built for '+built+' (faster next time)':'')+(errs?' · '+errs+' failed':'')+'.');});
+      addParsed(out);addLite(lites);
+      if(labs.length){idbSaveFiles(labs.map(function(x){return x.rec;}));addLite(labs.map(function(x){return x.f;}),true);}
+      setLibBusy('');setLibSel({});
+      setLibStatus('Opened '+(out.filter(Boolean).length+lites.length+labs.length)+' file(s)'+(built?' · saved results built for '+built+' (faster next time)':'')+(errs?' · '+errs+' failed':'')+'.');});
   }
   function addLite(lites,noCache){
     if(!lites.length)return;
@@ -2163,7 +2174,7 @@ function App(){
   // Swap a light line for its full data (charts in the Analysis tab need every packet's harmonics)
   var fullBusy=useRef({});
   function loadFull(fi){
-    var f=files[fi];if(!f||!f.lite||fullBusy.current[f.hash])return;
+    var f=files[fi];if(!f||!f.lite||f.type!=='field'||fullBusy.current[f.hash])return;
     var row=libraryHashes[f.hash];if(!row){setLibStatus('This line is not in the shared library.');return;}
     fullBusy.current[f.hash]=1;
     downloadFromLibrary(row.storage_path).then(function(text){
@@ -2173,13 +2184,13 @@ function App(){
   }
   useEffect(function(){
     var f=activeIdx!==null&&files[activeIdx];
-    if(mainTab==='analysis'&&f&&f.lite)loadFull(activeIdx);
+    if(mainTab==='analysis'&&f&&f.lite&&f.type==='field')loadFull(activeIdx);
   },[mainTab,activeIdx,files,library]);
   // Settings changed → fetch (or build) saved results for the new settings for every light line
   var refreshTried=useRef({});
   useEffect(function(){
     var key=procKey(proc);
-    var stale=files.filter(function(f){return f.lite&&f.sumKey!==key&&!refreshTried.current[f.hash+key]&&libraryHashes[f.hash];});
+    var stale=files.filter(function(f){return f.lite&&f.type==='field'&&f.sumKey!==key&&!refreshTried.current[f.hash+key]&&libraryHashes[f.hash];});
     if(!stale.length)return;
     var t=setTimeout(function(){
       stale.forEach(function(f){refreshTried.current[f.hash+key]=1;});
@@ -2481,7 +2492,7 @@ function App(){
                   <div className="file-dot" style={{background:g?g.color:'#607a90'}}/>
                   <div style={{flex:1,overflow:'hidden'}}>
                     <div className="file-name" title={f.name}>{f.run}</div>
-                    <div className="file-info" title={f.lite?'Opened from saved results; the full data opens when you view it in Analysis':''}>{f.packets.length}pkt · {f.xmt}Hz{fa?' · '+fa.events.length+' ev':''}{f.lite?' · quick':''} · {shareBadge(f)}</div>
+                    <div className="file-info" title={f.lite?'Opened from saved results; the full data opens when you view it in Analysis':''}>{f.nPkts||f.packets.length}pkt · {f.xmt}Hz{fa?' · '+fa.events.length+' ev':''}{f.lite?' · quick':''} · {shareBadge(f)}</div>
                   </div>
                   {f.type==='field' && g && <select title="Move to group" value={g.id} onClick={function(e){e.stopPropagation();}}
                     onChange={function(e){moveFiles(selFiles[i]?selList:[i],e.target.value);}}

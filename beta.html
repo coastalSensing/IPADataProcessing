@@ -1973,17 +1973,36 @@ function App(){
   }
   // Restore this browser's last session once signed in
   var restoredRef=useRef(false);
+  function summaryRec(f){return{hash:f.hash,name:f.name,kind:'summary',text:JSON.stringify(f.summary),sumKey:f.sumKey,at:Date.now()};}
   useEffect(function(){
-    if(!authUser||restoredRef.current)return;restoredRef.current=true;
+    // Wait for the library list (dbStatus) so cached raw field lines can be switched to quick mode.
+    if(!authUser||restoredRef.current||dbStatus==='loading')return;restoredRef.current=true;
     idbLoadFiles().then(function(recs){
       if(!recs||!recs.length)return;
       recs.sort(function(a,b){return (a.at||0)-(b.at||0);});
-      var lite=[];recs.forEach(function(r){if(r.kind==='summary'){try{lite.push(liteFile({file_name:r.name,sha256:r.hash},JSON.parse(r.text),r.sumKey));}catch(e){}}});
-      addParsed(recs.filter(function(r){return r.kind!=='summary';}).map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
+      var key=procKey(proc),lite=[],full=[],migrate=[];
+      recs.forEach(function(r){
+        if(r.kind==='summary'){try{lite.push(liteFile({file_name:r.name,sha256:r.hash},JSON.parse(r.text),r.sumKey));}catch(e){}return;}
+        if(r.kind==='field'&&r.hash&&libraryHashes[r.hash]){migrate.push(r);return;}
+        full.push(r);
+      });
+      addParsed(full.map(function(r){return parseText(r.name,r.text,r.hash,r.kind==='waypoints');}),true);
       addLite(lite,true);
-      setLibStatus('Restored '+recs.length+' file(s) from this browser\'s last session.');
+      setLibStatus('Restored '+(full.length+lite.length)+' file(s) from this browser\'s last session.');
+      if(!migrate.length)return;
+      // One-time: raw field lines cached in this browser → saved results (built from the cached copy if missing)
+      pool(migrate,4,function(r){var row=libraryHashes[r.hash];
+        return downloadSummary(r.hash,key).then(function(sum){return liteFile(row,sum,key);},function(){
+          var res=parseText(r.name,r.text,r.hash,false);if(!res||res.kind!=='ipa'||res.f.type!=='field')return null;
+          var sum=JSON.parse(JSON.stringify(IPA.summarizeField(IPA.analyzeField(res.f.packets,proc,labSigs),res.f.packets)));
+          return uploadSummary(r.hash,key,sum).catch(function(e){console.warn('summary upload: '+e.message);}).then(function(){return liteFile(row,sum,key);});
+        });
+      },function(d,n){setLibBusy('Restoring '+d+' / '+n+' cached line(s) in quick mode…');})
+      .then(function(res){var l=res.filter(function(x){return x&&!x.err;});
+        idbSaveFiles(l.map(summaryRec));addLite(l,true);setLibBusy('');
+        setLibStatus('Restored '+(full.length+lite.length+l.length)+' file(s); '+l.length+' cached line(s) switched to quick mode.');});
     });
-  },[authUser]);
+  },[authUser,dbStatus]);
   function shareRecords(recs){
     var todo=recs.filter(function(r){return r&&r.hash&&!libraryHashes[r.hash]&&shareState[r.hash]!=='uploading';});
     if(!todo.length)return Promise.resolve(0);

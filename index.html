@@ -972,7 +972,7 @@ canvas{display:block;width:100%;}
     var T = opts.mode === 'legacy' ? 3 : opts.zThresh;
     var events = clusters.map(function (cl) {
       var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts);
-      ev.detCh = c;
+      ev.detCh = c; ev.magRef = opts.magRef;
       ev.spec = channelSpectra(per, chans, odd, ev.i);
       ev.seenOn = chans.filter(function (ch) { return ev.spec[ch] && ev.spec[ch].zMax >= T; });
       ev.labMatches = c === 1 ? labMatch(ev, harms, bg, labSigs) : [];
@@ -1461,7 +1461,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v45';
+const APP_VERSION='v46';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1652,7 +1652,7 @@ async function classifyWithClaude(ev,harms,bg,run,xmt,model){
     event:{ts:ev.ts,harmonics:harmonics,magPct:ev.magPct,nPkts:ev.nPkts,fundSNR:ev.maxSNR,maxSNR:ev.maxSNRall,phaseSlope:ev.phaseSlope,
       rulesCls:ev.cls,rulesConf:ev.confPct,fusedCls:ev.fusedCls,rulesNote:ev.rulesNote||null,review:!!ev.review,altPol:!!ev.altPol,
       labMatches:(ev.labMatches||[]).slice(0,3).map(function(m){return{material:m.material,cos:m.cos,angleDeg:m.angleDeg,scale:m.scale,chi2red:m.chi2red};}),
-      channels:ev.spec?Object.keys(ev.spec).map(function(c){var sp=ev.spec[c];return{ch:+c,magPct:sp.magPct,zMax:sp.zMax,dev:sp.dev.slice(0,8)};}):null,detCh:ev.detCh||1,
+      magRef:ev.magRef||'ch0',channels:ev.spec?Object.keys(ev.spec).map(function(c){var sp=ev.spec[c];return{ch:+c,magPct:sp.magPct,zMax:sp.zMax,dev:sp.dev.slice(0,8)};}):null,detCh:ev.detCh||1,
       features:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,slope:ev.phaseSlope}}};
   var res=await supabase.functions.invoke('classify',{body:body});
   if(res.error){

@@ -716,7 +716,7 @@
     var T = opts.mode === 'legacy' ? 3 : opts.zThresh;
     var events = clusters.map(function (cl) {
       var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts);
-      ev.detCh = c;
+      ev.detCh = c; ev.magRef = opts.magRef;
       ev.spec = channelSpectra(per, chans, odd, ev.i);
       ev.seenOn = chans.filter(function (ch) { return ev.spec[ch] && ev.spec[ch].zMax >= T; });
       ev.labMatches = c === 1 ? labMatch(ev, harms, bg, labSigs) : [];

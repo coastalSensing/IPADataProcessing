@@ -1461,7 +1461,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v46';
+const APP_VERSION='v47';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1824,6 +1824,8 @@ function App(){
   var [hiddenTargets,setHiddenTargets]=useState(lsGet('ipa_hidden_targets',{}));
   var [mapFilter,setMapFilter]=useState('');
   var [showLabels,setShowLabels]=useState(lsGet('ipa_map_labels',true));
+  var [showLineEv,setShowLineEv]=useState(lsGet('ipa_map_line_ev',true));
+  useEffect(function(){lsSet('ipa_map_line_ev',showLineEv);},[showLineEv]);
   useEffect(function(){lsSet('ipa_site_tiers',siteTiers);},[siteTiers]);
   useEffect(function(){lsSet('ipa_hidden_targets',hiddenTargets);},[hiddenTargets]);
   useEffect(function(){lsSet('ipa_map_labels',showLabels);},[showLabels]);
@@ -2207,22 +2209,40 @@ function App(){
         pl.addTo(LL.tracks);
       });
     }
+    // Each shown line's own detections (when ≤ 12 lines are drawn): colour = that detection's class
+    var drawnFi=files.map(function(f,fi){return fi;}).filter(function(fi){var f=files[fi];return f.type==='field'&&fileAnalyses[fi]&&!(visibleFiles&&visibleFiles.indexOf(fi)<0)&&!(projOn&&!projFiSet[fi]);});
+    if(showLineEv&&drawnFi.length<=12){
+      drawnFi.forEach(function(fi){var fa=fileAnalyses[fi];
+        fa.events.forEach(function(ev,ei){
+          if(ev.isArtifact||ev.latC===null||ev.latC===undefined)return;
+          var cl=finalCls(fi,ei,ev),fam=IPA.family(cl),weak=fam==='weak'||fam==='none',col=weak?'#8a94a6':(MAT_COLORS[cl]||'#808080');
+          var m=L.circleMarker([ev.latC,ev.lonC],{radius:weak?3.5:Math.min(10,5+ev.maxSNRall/15),color:weak?'#8a94a6':'#fff',weight:weak?1:1.5,fillColor:col,fillOpacity:weak?0.15:0.95});
+          m.bindTooltip('<div style="font-family:monospace;font-size:11px"><b style="color:'+col+'">'+cl+'</b><br>'+files[fi].run+' · '+String(ev.ts||'').slice(11,19)+'<br>SNR '+fmt(ev.maxSNRall)+' · Mag '+fmt(ev.magPct)+'%'+
+            (ev.seenOn&&ev.seenOn.length?'<br>above threshold on ch'+ev.seenOn.join(', ch'):'')+'<br><i>click for the Analysis view</i></div>',{sticky:true});
+          m.on('click',function(){setActiveIdx(fi);setSelEv(ei);setMainTab('analysis');});
+          m.addTo(LL.hotspots);
+        });
+      });
+    }
     if(showHotspots){
       sites.forEach(function(s){
         if(hiddenHotspots[siteKey(s)]||!siteListed(s))return;
         if(projOn&&!Object.keys(s.runs).some(function(fi){return projFiSet[fi];}))return;
         if(visibleFiles&&!Object.keys(s.runs).some(function(fi){return visibleFiles.indexOf(+fi)>=0;}))return;
-        var col=MAT_COLORS[s.cls]||'#808080',multi=s.nRuns>1;
+        var strong={},nStrong=0;s.members.forEach(function(p){var fm=IPA.family(p.cls);if(fm!=='weak'&&fm!=='none'&&fm!=='artifact'){strong[p.cls]=(strong[p.cls]||0)+1;nStrong++;}});
+        var topStrong=Object.keys(strong).sort(function(a,b){return strong[b]-strong[a];})[0]||null;
+        var shownCls=topStrong||s.cls,col=MAT_COLORS[shownCls]||'#808080',multi=s.nRuns>1;
+        var mix=Object.keys(s.members.reduce(function(m,p){m[p.cls]=(m[p.cls]||0)+1;return m;},{})).map(function(k){return k+' '+s.members.filter(function(p){return p.cls===k;}).length;}).join(', ');
         bounds.push([s.lat,s.lon]);
         var c=L.circle([s.lat,s.lon],{radius:Math.max(proc.mergeRadiusM/2,s.scatterM*2,4),color:col,weight:s.tier==='Confirmed'?3:multi?2:1.2,
           opacity:multi?.95:.6,fillColor:col,fillOpacity:.18,dashArray:multi?null:'6,4'});
-        c.bindTooltip('<div style="font-family:monospace;font-size:11px"><b style="color:'+col+'">'+s.cls+'</b> · '+s.tier+'<br>'+
+        c.bindTooltip('<div style="font-family:monospace;font-size:11px"><b style="color:'+col+'">'+shownCls+'</b> · '+s.tier+'<br>'+mix+'<br>'+
           s.nDet+' det · '+s.nRuns+'/'+s.nPass+' runs ('+pct(s.repeatability)+')'+(s.reciprocal?' · reciprocal':'')+'<br>'+
           'consensus '+pct(s.consensus)+' · scatter '+fmt(s.scatterM)+' m'+(s.nearestWp?'<br>'+s.nearestWp+' @ '+fmt(s.nearestWpM)+' m':'')+'</div>',{sticky:true});
         c.addTo(LL.hotspots);
         if(showLabels)L.marker([s.lat,s.lon],{interactive:false,icon:L.divIcon({className:'',iconSize:[120,16],iconAnchor:[60,-12],
           html:'<div style="font-family:monospace;font-size:9px;font-weight:bold;color:'+col+';white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff">'+
-          (multi?s.nRuns+'× ':'')+s.cls.substring(0,12)+'</div>'})}).addTo(LL.hotspots);
+          (multi?s.nRuns+'× ':'')+shownCls.substring(0,12)+(topStrong&&nStrong<s.nDet?' ('+nStrong+'/'+s.nDet+')':'')+'</div>'})}).addTo(LL.hotspots);
       });
     }
     if(showWps){
@@ -2248,7 +2268,7 @@ function App(){
     }
     if(mapFocus){map.setView(mapFocus,18);}
     else if(bounds.length>=2){try{map.fitBounds(L.latLngBounds(bounds),{padding:[30,30],maxZoom:17});}catch(e){}}
-  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus,siteTiers,hiddenTargets,mapFilter,showLabels,projOn,projFiSet,projTargetSet]);
+  },[mainTab,files,fileAnalyses,activeIdx,allGroups,showLines,showHotspots,showWps,visibleFiles,hiddenHotspots,sites,wps,targets,coverage,mapLayer,mapFocus,siteTiers,hiddenTargets,mapFilter,showLabels,projOn,projFiSet,projTargetSet,showLineEv,aiResults]);
 
   // ── File loading (IPA packets, or waypoint CSV/GPX) ───────────────────────
   useEffect(function(){lsSet('ipa_auto_share',autoShare);},[autoShare]);
@@ -3072,6 +3092,7 @@ function App(){
                   <button className={proc.applyLayback?'layer-btn active':'layer-btn'} onClick={function(){setProc({applyLayback:!proc.applyLayback});}}>
                     Layback corr. ({fmt(proc.laybackM)} m)</button>
                   <button className={showLabels?'layer-btn active':'layer-btn'} onClick={function(){setShowLabels(!showLabels);}}>Map labels</button>
+                  <button className={showLineEv?'layer-btn active':'layer-btn'} title="Each shown line's own detections, coloured by class (when 12 or fewer lines are shown)" onClick={function(){setShowLineEv(!showLineEv);}}>Line detections</button>
                   <input className="api-key-input" placeholder="Filter sites / targets…" value={mapFilter} onChange={function(e){setMapFilter(e.target.value);}}
                     title="Matches site class, tier or nearest target, and target name, material or waypoint names" style={{fontSize:10,padding:'3px 6px'}}/>
                   {mapFocus && <button className="layer-btn" onClick={function(){setMapFocus(null);}}>Fit all</button>}

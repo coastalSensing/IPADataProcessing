@@ -32,12 +32,13 @@ Data: phase difference (Δφ, mrad) between each receiver channel and ch0, at th
 Receiver channels: the EVENT block is the detection channel (usually ch1). The CHANNELS block gives the same packet on every active channel (normally ch1, ch2, ch3; ch3 behaves like the combined ch1+ch2 dipole; ch2 is about twice as noisy as ch1). A response seen on two or three channels is more credible than one seen on a single channel; a moderate anomaly on ch2 alone is often noise.
 Noise: field noise is heavy-tailed. In North Beach background (no target) one-minute windows the largest single-packet z on ch1 is typically 3–6, so z below ~6 on one packet is weak evidence on its own. Real steel crossings in the same data reach z 15–130.
 
-Team reference: IPA Material Characterization Reference r7 (WaTech-MatChar-r7), field-validated on 72 confirmed detections at North Beach (4 Hz, 500 mA, dipole-dipole tow): Steel N=53, Ilmenite N=7, Asphalt N=8–10.
-Field rules, in priority order:
-- Magnitude first. Mag% < −2% at the fundamental is the most reliable field indicator of a metallic/resistive target (89% of r7's steel detections).
-- Steel: magnitude decrease (mean −10.2%, 89% below −2%); phase shape is NOT reliable (mean Δφ4 −25 ± 28 mrad; 34% alternate ± across harmonics). Do not rule out steel from phase shape alone.
-- Ilmenite and asphalt: r7's FIELD signatures for these are NOT reliable. A re-analysis with time-corrected GPS found that r7's ilmenite feature packets (and several asphalt ones) were the neighbouring steel targets 3C/3E, which pass within r7's ±1-minute windows; at GPS-confirmed ilmenite crossings no channel rose above background noise. Do NOT treat a positive 20 Hz phase as an ilmenite indicator, and do not call Ilmenite or Asphalt from field phase shape alone. Use them only when close confirmed examples support it, otherwise prefer Steel (metallic, with magnitude drop), Strong Anomaly or Weak/Inconclusive and explain in "caution".
-- The RULE ENGINE line below comes from the app's rules, which still include r7's ilmenite and asphalt rules; give its Ilmenite or Asphalt calls little weight.
+Ground truth (North Beach, Apr 2026; re-analysed Oct 2026 after GPS positions were re-timed to each fix's own UTC time and layback was calibrated on steel crossings at 22–31 m):
+- Steel pipes (1A–1C, 2A–2C, 3A, 3C, 3E): a strong multi-packet response on 54 of 71 passes. At the strongest packet, the median ch1 deviation at 4/12/20/28/36/44 Hz was −9.5, −7.1, −12.2, −4.4, −4.8, −2.4 mrad; the fundamental phase was negative on 71% of passes; magnitude (channel ÷ ch0) fell below −2% on 60% (median −3.6%). Phase shape still varies with geometry, so do not rule out steel from shape alone. ch1 and ch3 respond alike; ch2 is noisier.
+- Asphalt (3B): a strong response on only 3 of 7 passes, not separable from steel by any channel, harmonic or magnitude feature. Do not call Asphalt from field data.
+- Ilmenite (3D): a strong response on 3 of 10 passes, with no consistent signature on any channel or harmonic. Treat ilmenite as not field-detectable with this setup; do not call Ilmenite.
+- The older r7 reference (WaTech-MatChar-r7) built its ilmenite and asphalt signatures from the neighbouring steel targets because its GPS positions were stale; ignore r7's ilmenite (positive 20 Hz) and asphalt rules. Its steel statistics overstate the magnitude drop (r7: mean −10.2%, 89% below −2%).
+- "mf" is the matched-filter strength: the 3-packet mean of the 6-harmonic robust chi. Target-free North Beach windows reach about 2–4; the app's rules need mf ≥ 3 for a material call.
+- The RULE ENGINE line comes from the app's ground-truth rules (gt1): Steel = strong response with negative fundamental phase or a magnitude drop; Strong Anomaly = strong but not that pattern.
 - |Δφ| > 100 mrad at any harmonic: possible cable snag / physical contact; say so in "caution" and keep confidence low.
 Lab (not yet field-validated; lab currents 50–1250 mA may not transfer to 500 mA field):
 - Hydrocarbons (Class 3 Gas Oil, ITB Rebel, Alaska crude at ≥250 mA, Group 5): positive phase growing with harmonic, Mag ≈ 0. At low current (≤125 mA) crude shows a flat +7 to +31% magnitude with no phase.
@@ -120,7 +121,7 @@ EVENT:
 ${evLines}
   mag%=${num(ev.magPct)} nPkts=${ev.nPkts ?? "?"} fundSNR=${num(ev.fundSNR, 1)} maxSNR=${num(ev.maxSNR, 1)} phaseSlope=${num(ev.phaseSlope)} mrad/decade
   summary features: devFund=${num(f.dp1)} devMid=${num(f.dp3)} devHigh=${num(f.dp_last)}
-  detected on ch${ev.detCh ?? 1}; magnitude reference: ${ev.magRef === "raw" ? "raw channel magnitude" : "channel ÷ ch0"}
+  matched-filter strength mf=${num(ev.mf, 2)}; detected on ch${ev.detCh ?? 1}; magnitude reference: ${ev.magRef === "raw" ? "raw channel magnitude" : "channel ÷ ch0"}
 ${chLines ? "CHANNELS (same packet, every active channel; dev in mrad for the first harmonics):\n" + chLines : "CHANNELS: not provided (older app version)."}
 RULE ENGINE: ${ev.rulesCls ?? "?"} (${ev.rulesConf ?? "?"}%)   FUSED (rules+lab): ${ev.fusedCls ?? "?"}\nRULE NOTE: ${ev.rulesNote ?? "none"}${ev.review ? " [REVIEW: |Δφ| > 100 mrad, possible cable snag]" : ""}  alternating polarity: ${ev.altPol ? "yes" : "no"}
 ${labLines ? "LAB REFERENCE SPECTRAL-ANGLE MATCHES (blank-subtracted, amplitude-invariant):\n" + labLines : "No lab reference signatures for this frequency."}

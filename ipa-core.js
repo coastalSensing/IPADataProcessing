@@ -1074,14 +1074,22 @@
   // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}] (corrected positions)
   function buildSites(points, fileTracks, targets, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var n = points.length, parent = points.map(function (_, i) { return i; });
-    function fnd(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
-    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
-      if (Math.abs(points[i].lat - points[j].lat) > 0.001) continue;
-      if (haversine(points[i].lat, points[i].lon, points[j].lat, points[j].lon) <= opts.mergeRadiusM) parent[fnd(i)] = fnd(j);
-    }
-    var groups = {};
-    points.forEach(function (p, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(p); });
+    // Centroid clustering, strongest detections first: a detection joins a site only if it lies within
+    // mergeRadiusM of the site's (SNR-weighted) centre, so sites cannot chain across a whole area.
+    // Weak/no-anomaly detections may join an existing site but never start one.
+    var order = points.map(function (_, i) { return i; }).sort(function (a, b) { return (points[b].snr || 0) - (points[a].snr || 0); });
+    var cs = [], groups = {};
+    order.forEach(function (i) {
+      var p = points[i], fm = family(p.cls), weak = fm === 'weak' || fm === 'none', best = -1, bd = Infinity;
+      for (var k = 0; k < cs.length; k++) {
+        if (Math.abs(cs[k].lat - p.lat) > 0.001) continue;
+        var d = haversine(cs[k].lat, cs[k].lon, p.lat, p.lon); if (d <= opts.mergeRadiusM && d < bd) { bd = d; best = k; }
+      }
+      if (best < 0) { if (weak) return; best = cs.length; cs.push({ lat: p.lat, lon: p.lon, w: 0 }); groups[best] = []; }
+      var c = cs[best], w = Math.max(1, p.snr || 1);
+      c.lat = (c.lat * c.w + p.lat * w) / (c.w + w); c.lon = (c.lon * c.w + p.lon * w) / (c.w + w); c.w += w;
+      groups[best].push(p);
+    });
     var sites = Object.keys(groups).map(function (k) {
       var g = groups[k], wsum = 0, la = 0, lo = 0;
       g.forEach(function (p) { var w = Math.max(1, p.snr || 1); wsum += w; la += w * p.lat; lo += w * p.lon; });

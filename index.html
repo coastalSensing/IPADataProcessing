@@ -1330,14 +1330,22 @@ canvas{display:block;width:100%;}
   // points: [{lat,lon,cls,conf,fi,run,cog,snr,ei}] (corrected positions)
   function buildSites(points, fileTracks, targets, opts) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
-    var n = points.length, parent = points.map(function (_, i) { return i; });
-    function fnd(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
-    for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
-      if (Math.abs(points[i].lat - points[j].lat) > 0.001) continue;
-      if (haversine(points[i].lat, points[i].lon, points[j].lat, points[j].lon) <= opts.mergeRadiusM) parent[fnd(i)] = fnd(j);
-    }
-    var groups = {};
-    points.forEach(function (p, i) { (groups[fnd(i)] = groups[fnd(i)] || []).push(p); });
+    // Centroid clustering, strongest detections first: a detection joins a site only if it lies within
+    // mergeRadiusM of the site's (SNR-weighted) centre, so sites cannot chain across a whole area.
+    // Weak/no-anomaly detections may join an existing site but never start one.
+    var order = points.map(function (_, i) { return i; }).sort(function (a, b) { return (points[b].snr || 0) - (points[a].snr || 0); });
+    var cs = [], groups = {};
+    order.forEach(function (i) {
+      var p = points[i], fm = family(p.cls), weak = fm === 'weak' || fm === 'none', best = -1, bd = Infinity;
+      for (var k = 0; k < cs.length; k++) {
+        if (Math.abs(cs[k].lat - p.lat) > 0.001) continue;
+        var d = haversine(cs[k].lat, cs[k].lon, p.lat, p.lon); if (d <= opts.mergeRadiusM && d < bd) { bd = d; best = k; }
+      }
+      if (best < 0) { if (weak) return; best = cs.length; cs.push({ lat: p.lat, lon: p.lon, w: 0 }); groups[best] = []; }
+      var c = cs[best], w = Math.max(1, p.snr || 1);
+      c.lat = (c.lat * c.w + p.lat * w) / (c.w + w); c.lon = (c.lon * c.w + p.lon * w) / (c.w + w); c.w += w;
+      groups[best].push(p);
+    });
     var sites = Object.keys(groups).map(function (k) {
       var g = groups[k], wsum = 0, la = 0, lo = 0;
       g.forEach(function (p) { var w = Math.max(1, p.snr || 1); wsum += w; la += w * p.lat; lo += w * p.lon; });
@@ -1461,7 +1469,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v47';
+const APP_VERSION='v48';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -2234,7 +2242,7 @@ function App(){
         var shownCls=topStrong||s.cls,col=MAT_COLORS[shownCls]||'#808080',multi=s.nRuns>1;
         var mix=Object.keys(s.members.reduce(function(m,p){m[p.cls]=(m[p.cls]||0)+1;return m;},{})).map(function(k){return k+' '+s.members.filter(function(p){return p.cls===k;}).length;}).join(', ');
         bounds.push([s.lat,s.lon]);
-        var c=L.circle([s.lat,s.lon],{radius:Math.max(proc.mergeRadiusM/2,s.scatterM*2,4),color:col,weight:s.tier==='Confirmed'?3:multi?2:1.2,
+        var c=L.circle([s.lat,s.lon],{radius:Math.min(proc.mergeRadiusM,Math.max(proc.mergeRadiusM/2,s.scatterM*2,4)),color:col,weight:s.tier==='Confirmed'?3:multi?2:1.2,
           opacity:multi?.95:.6,fillColor:col,fillOpacity:.18,dashArray:multi?null:'6,4'});
         c.bindTooltip('<div style="font-family:monospace;font-size:11px"><b style="color:'+col+'">'+shownCls+'</b> · '+s.tier+'<br>'+mix+'<br>'+
           s.nDet+' det · '+s.nRuns+'/'+s.nPass+' runs ('+pct(s.repeatability)+')'+(s.reciprocal?' · reciprocal':'')+'<br>'+

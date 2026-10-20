@@ -1375,11 +1375,14 @@ canvas{display:block;width:100%;}
         var dmin = Infinity;
         F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
         if (dmin > R) return;
-        var hit = null, hd = Infinity;
-        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
+        // HIT = a non-weak crossing within R; WEAK = only weak/no-anomaly crossings there (the detector also fires on noise)
+        var hit = null, hd = Infinity, weakHit = false;
+        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d > R) return; var fm = family(e.finalCls || e.fusedCls || e.cls);
+          if (fm === 'weak' || fm === 'none') { weakHit = true; return; }
+          if (!hit || e.maxSNRall > hit.maxSNRall) { hit = e; hd = d; } });
         if (hit) used[F.events.indexOf(hit)] = 1;
         rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
-          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
+          status: hit ? 'HIT' : weakHit ? 'WEAK' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
           ei: hit ? F.events.indexOf(hit) : null, magPct: hit ? hit.magPct : null, evTs: hit ? hit.ts : null, evCum: hit ? hit.cum : null });
       });
       evs.forEach(function (e) {
@@ -1551,7 +1554,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v50';
+const APP_VERSION='v51';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -2271,7 +2274,7 @@ function App(){
             <b>{r.target}</b>
             {r.status==='HIT'
               ? <a href="#" title={'SNR '+fmt(r.snr)+' · Mag '+fmt(r.magPct)+'% · '+fmt(r.evDist)+' m from target'} onClick={function(e){e.preventDefault();setActiveIdx(r.fi);setSelEv(r.ei);setMainTab('analysis');}}>{r.cls}</a>
-              : <span style={{color:'var(--neg)'}}>nothing ({fmt(r.closest)} m)</span>}
+              : <span style={{color:r.status==='WEAK'?'#b07800':'var(--neg)'}}>{r.status==='WEAK'?'weak only':'nothing'} ({fmt(r.closest)} m)</span>}
             <select className="confirm-sel" style={{fontSize:10,padding:'0 2px'}} value={v?v.verdict:''} disabled={!r.dfId}
               onChange={function(e){if(e.target.value)addNote({dfId:r.dfId,target:r.target,verdict:e.target.value,eventTs:r.evTs,eventCum:r.evCum});}}>
               <option value="">verdict…</option>
@@ -3633,7 +3636,7 @@ function App(){
                     return (
                     <tr key={k}>
                       <td><b>{r.target}</b></td><td>{r.run}</td><td className="num">{fmt(r.closest)}</td>
-                      <td style={{color:r.status==='HIT'?'var(--pos)':'var(--neg)'}}>{r.status==='HIT'?'detected':'nothing'}</td>
+                      <td style={{color:r.status==='HIT'?'var(--pos)':r.status==='WEAK'?'#b07800':'var(--neg)'}}>{r.status==='HIT'?'detected':r.status==='WEAK'?'weak only':'nothing'}</td>
                       <td>{r.status==='HIT'?<a href="#" onClick={function(e){e.preventDefault();setActiveIdx(r.fi);setSelEv(r.ei);setMainTab('analysis');}}>{r.cls}</a>:'—'}</td>
                       <td className="num">{fmt(r.snr)}</td><td className="num">{fmt(r.magPct)}</td><td className="num">{fmt(r.evDist)}</td>
                       <td><select className="confirm-sel" value={v?v.verdict:''} style={{borderColor:v?VERDICT_COL[v.verdict]:undefined}} disabled={!r.dfId}

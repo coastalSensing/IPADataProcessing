@@ -1119,11 +1119,14 @@
         var dmin = Infinity;
         F.track.forEach(function (p) { var d = distToTarget(p.lat, p.lon, T); if (d < dmin) dmin = d; });
         if (dmin > R) return;
-        var hit = null, hd = Infinity;
-        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d <= R && (!hit || e.maxSNRall > hit.maxSNRall)) { hit = e; hd = d; } });
+        // HIT = a non-weak crossing within R; WEAK = only weak/no-anomaly crossings there (the detector also fires on noise)
+        var hit = null, hd = Infinity, weakHit = false;
+        evs.forEach(function (e) { var d = distToTarget(e.latC, e.lonC, T); if (d > R) return; var fm = family(e.finalCls || e.fusedCls || e.cls);
+          if (fm === 'weak' || fm === 'none') { weakHit = true; return; }
+          if (!hit || e.maxSNRall > hit.maxSNRall) { hit = e; hd = d; } });
         if (hit) used[F.events.indexOf(hit)] = 1;
         rows.push({ fi: F.fi, run: F.run, dayRank: F.dayRank, target: T.label, targetId: T.id, material: T.material, closest: dmin,
-          status: hit ? 'HIT' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
+          status: hit ? 'HIT' : weakHit ? 'WEAK' : 'FAIL', cls: hit ? (hit.finalCls || hit.fusedCls || hit.cls) : '', evDist: hit ? hd : null, snr: hit ? hit.maxSNRall : null,
           ei: hit ? F.events.indexOf(hit) : null, magPct: hit ? hit.magPct : null, evTs: hit ? hit.ts : null, evCum: hit ? hit.cum : null });
       });
       evs.forEach(function (e) {

@@ -52,7 +52,8 @@
     detrendWin: 61,        // packets in running-median background window
     zThresh: 3.0,          // robust z threshold for anomalous packet
     minHarmHits: 1,        // harmonics (excl. fundamental) that must exceed zThresh (r7 §18 step 2: any single harmonic)
-    rules: 'r7',           // crossing classifier: 'r7' (WaTech-MatChar-r7 §17 field rules) | 'v32' (previous phase-shape rules)
+    rules: 'gt1',          // crossing classifier: 'gt1' (North Beach 2026 ground truth, corrected GPS) | 'r7' (WaTech-MatChar-r7 §17) | 'v32'
+    mfMin: 3.0,            // gt1: matched-filter strength (3-packet mean of the 6-harmonic robust chi) needed for a material call
     artifactDevMrad: 150,  // |Δφ deviation| above this = phase wrap / dropout artifact
     reviewDevMrad: 100,    // r7: |Δφ| > 100 mrad at any harmonic = possible cable snag/contact → manual review flag
     magDetectPct: 5,       // r7 §18 step 3: a packet whose fundamental magnitude DROPS by ≥ this % is also flagged (0 = off).
@@ -67,7 +68,8 @@
     magRef: 'ch0',         // magnitude reference: 'ch0' = channel mag ÷ ch0 mag (removes TX-current drift) | 'raw'
     labCosMin: 0.90,       // spectral-angle cosine required to accept a lab match
     applyLayback: true,
-    laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
+    laybackM: 28.7,        // L: along-path sensor offset behind the (re-timed) GPS (m). North Beach 2026 steel crossings, all days
+    laybackByDate: { '2026-04-21': 30.1, '2026-04-22': 30.9, '2026-04-23': 22.7 },  // per-day calibration from known targets
     latencyS: 0,           // τ: extra offset per m/s of speed (s) — timing latency, half-packet, cable lift
     gpsFix: 'retime',      // 'retime' = put every packet on the GPS fix with its own UTC time (see retimePositions) | 'off'
     gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
@@ -636,9 +638,10 @@
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
     var base = { cls: ev.cls, conf: ev.confPct, src: 'rules', conflict: false };
     if (!best || best.cos < opts.labCosMin || best.scale <= 0 || ev.cls === 'Artifact') return base;
-    // r7: field-validated material calls are not overridden by lab spectral shape (r7 §19: lab currents differ from field).
-    if (opts.rules === 'r7' && ['Steel', 'Ilmenite', 'Asphalt', 'Resistive (non-IP)'].indexOf(ev.cls) >= 0)
-      return { cls: ev.cls, conf: ev.confPct, src: 'rules (r7)', conflict: family(best.material) !== family(ev.cls), labCls: best.material };
+    // Field-rule calls are not overridden by lab spectral shape (lab currents and geometry differ from the field):
+    // gt1 never; r7 for its field-validated classes.
+    if (opts.rules === 'gt1' || (opts.rules === 'r7' && ['Steel', 'Ilmenite', 'Asphalt', 'Resistive (non-IP)'].indexOf(ev.cls) >= 0))
+      return { cls: ev.cls, conf: ev.confPct, src: 'rules (' + opts.rules + ')', conflict: family(best.material) !== family(ev.cls), labCls: best.material };
     var rf = family(ev.cls), lf = family(best.material);
     if (rf === lf) return { cls: best.material, conf: Math.round(Math.min(97, Math.max(ev.confPct, 50 + 45 * best.cos * Math.min(1, ev.maxSNRall / 10)))), src: 'rules+lab', conflict: false };
     if ((rf === 'weak' || rf === 'strong') && ev.maxSNRall >= opts.zThresh) return { cls: best.material, conf: Math.round(Math.min(rf === 'strong' ? 80 : 70, 40 + 30 * best.cos)), src: 'lab', conflict: false };
@@ -737,6 +740,38 @@
     return out;
   }
 
+  // Matched filter: 3-packet mean of the multi-harmonic robust chi. Targets span several packets; noise spikes do not.
+  function chi6At(P, i, harms) {
+    var s = 0, k = 0; harms.forEach(function (h) { var v = P.vp[i] && P.vp[i].freqs[h], p = P.bg.perHz[h]; if (!v || !p) return; var z = wrapMrad(v[0] * 1000 - bgAt(P.bg, h, i)) / p.std; s += z * z; k++; });
+    return k ? Math.sqrt(s / k) : 0;
+  }
+  function matchedChi(P, cl, harms) {
+    var n = P.vp.length, best = 0;
+    cl.forEach(function (a) { var s = 0, k = 0; for (var d = -1; d <= 1; d++) { var j = a.i + d; if (j < 0 || j >= n) continue; s += chi6At(P, j, harms); k++; } var m = k ? s / k : 0; if (m > best) best = m; });
+    return best;
+  }
+  // gt1: rules from the North Beach Apr 2026 ground truth (re-timed GPS, per-day layback).
+  // Steel is the only material with a repeatable field response; asphalt (3B) was weak and inconsistent
+  // and ilmenite (3D) was not distinguishable from background on any channel or harmonic, so neither is called.
+  function groundTruthRules(ev, harms, opts) {
+    if (ev.cls === 'Artifact' || ev.cls === 'Resistive (non-IP)') return;
+    var d1 = ev.dpDev ? ev.dpDev[harms[0]] : 0;
+    if (!(ev.mf >= opts.mfMin)) {
+      ev.cls = 'Weak/Inconclusive'; ev.confPct = Math.min(ev.confPct, 35);
+      ev.rulesNote = (ev.review ? ev.rulesNote + '; ' : '') + 'matched-filter strength ' + (ev.mf || 0).toFixed(1) + ' below ' + opts.mfMin + ' (target-free North Beach windows reach ~2–4)';
+      return;
+    }
+    if (ev.cls === 'Hydrocarbon IP') { ev.rulesNote = 'growing positive phase, Mag ≈ 0 (lab-derived rule, not field-validated)'; ev.confPct = Math.min(ev.confPct, 50); return; }
+    if (d1 < 0 || ev.magPct < -2) {
+      ev.cls = 'Steel'; ev.confPct = Math.round(Math.min(90, 45 + 8 * ev.mf));
+      ev.rulesNote = (ev.review ? ev.rulesNote + '; ' : '') + 'strong multi-packet response (' + ev.mf.toFixed(1) + ') with ' + (d1 < 0 ? 'negative fundamental phase' : '') + (d1 < 0 && ev.magPct < -2 ? ' and ' : '') + (ev.magPct < -2 ? 'magnitude drop ' + ev.magPct.toFixed(1) + '%' : '') + ' — matches North Beach steel';
+    } else {
+      ev.cls = 'Strong Anomaly'; ev.confPct = Math.round(Math.min(70, 35 + 6 * ev.mf));
+      ev.rulesNote = 'strong response (' + ev.mf.toFixed(1) + ') but positive fundamental phase and no magnitude drop: not the North Beach steel pattern';
+    }
+    if (ev.review) ev.confPct = Math.min(ev.confPct, 50);
+  }
+
   // ── Per-file analysis (raw frame; layback applied separately) ──────────────
   function analyzeField(packets, opts, labSigs) {
     opts = Object.assign({}, DEFAULT_PROC, opts || {});
@@ -760,8 +795,9 @@
     clusters.sort(function (x, y) { return x[0].pk.idx - y[0].pk.idx; });
     var T = opts.mode === 'legacy' ? 3 : opts.zThresh;
     var events = clusters.map(function (cl) {
-      var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts);
-      ev.detCh = c; ev.magRef = opts.magRef;
+      var c = cl.detCh || 1, ev = classifyRules(cl, harms, per[c].bg, kin, opts.rules === 'gt1' ? Object.assign({}, opts, { rules: 'r7' }) : opts);
+      ev.detCh = c; ev.magRef = opts.magRef; ev.mf = Math.round(matchedChi(per[c], cl, harms) * 100) / 100;
+      if (opts.rules === 'gt1') { groundTruthRules(ev, harms, opts); ev.rulesVersion = 'gt1'; }
       ev.spec = channelSpectra(per, chans, odd, ev.i);
       ev.seenOn = chans.filter(function (ch) { return ev.spec[ch] && ev.spec[ch].zMax >= T; });
       ev.labMatches = c === 1 ? labMatch(ev, harms, bg, labSigs) : [];

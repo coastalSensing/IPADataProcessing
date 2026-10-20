@@ -69,6 +69,7 @@
     applyLayback: true,
     laybackM: 32.2,        // L: along-path sensor offset behind GPS at v=0 (m); prior = 4.12 + 31·cos25°
     latencyS: 0,           // τ: extra offset per m/s of speed (s) — timing latency, half-packet, cable lift
+    gpsFix: 'retime',      // 'retime' = put every packet on the GPS fix with its own UTC time (see retimePositions) | 'off'
     gpsOffsetM: 4.12,      // GPS antenna forward of the cable tie-down (survey drawing)
     cableM: 31,            // deployed cable length (m) — physical upper bound on L is gpsOffset + cable
     targetLinkM: 10,       // waypoints within this distance form one target
@@ -644,6 +645,50 @@
     return { cls: ev.cls, conf: Math.max(10, ev.confPct - 20), src: 'rules', conflict: true, labCls: best.material };
   }
 
+  // ── GPS re-timing ─────────────────────────────────────────────────────────
+  // The acquisition software attaches one queued GPS sentence to each data packet. The receiver
+  // sends sentences faster than packets are made, so the queue grows and each packet carries an
+  // ever older fix (minutes to hours by the end of a day). Each sentence still has its own UTC time,
+  // so a day's fixes (pooled from every file of that day) can be put back on the right time:
+  // a packet recorded at local time t gets the fix whose UTC time = t + offset.
+  function localSecOf(ts) { var m = /(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(String(ts || '')); return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : null; }
+  function fixAt(fx, s, maxGapS) {
+    var lo = 0, hi = fx.length - 1; if (!fx.length || s < fx[0][0] - 0.6 || s > fx[hi][0] + 0.6) return null;
+    while (hi - lo > 1) { var m = (lo + hi) >> 1; if (fx[m][0] <= s) lo = m; else hi = m; }
+    var a = fx[lo], b = fx[hi];
+    if (s <= a[0]) return Math.abs(a[0] - s) <= 0.6 ? [a[1], a[2]] : null;
+    if (s >= b[0]) return Math.abs(b[0] - s) <= 0.6 ? [b[1], b[2]] : null;
+    if (b[0] - a[0] > maxGapS) return null;
+    var f = (s - a[0]) / (b[0] - a[0]); return [a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+  }
+  // table: { offsetS, fixes: [[localSec, lat, lon], …] }. Packets with no fix within maxGapS lose their
+  // position (lat/lon null) rather than keep a wrong one. Original positions stay in rawLat/rawLon.
+  function retimePositions(packets, table, maxGapS) {
+    maxGapS = maxGapS || 3; var n = 0, fx = (table && table.fixes) || [];
+    packets.forEach(function (pk) {
+      if (pk.type === 'lab') return;
+      if (pk.rawLat === undefined) { pk.rawLat = pk.lat; pk.rawLon = pk.lon; }
+      var sec = localSecOf(pk.ts), q = sec === null ? null : fixAt(fx, sec, maxGapS);
+      if (q) { pk.lat = q[0]; pk.lon = q[1]; n++; } else { pk.lat = null; pk.lon = null; }
+      pk.gpsFixed = !!q;
+    });
+    return packets.length ? n / packets.length : 0;
+  }
+  function restoreRawPositions(packets) { packets.forEach(function (pk) { if (pk.rawLat !== undefined) { pk.lat = pk.rawLat; pk.lon = pk.rawLon; pk.gpsFixed = undefined; } }); }
+  // Build a day's fix table from parsed packet arrays (all files of that day)
+  function buildFixTable(packetSets, offsetS) {
+    offsetS = offsetS === undefined ? 7 * 3600 : offsetS;
+    var fx = [];
+    packetSets.forEach(function (pks) { pks.forEach(function (pk) {
+      var g = /^(\d{2})(\d{2})(\d{2}(?:\.\d+)?)/.exec(pk.gpsT || ''); if (!g) return;
+      var la = pk.rawLat !== undefined ? pk.rawLat : pk.lat, lo = pk.rawLon !== undefined ? pk.rawLon : pk.lon; if (la === null || lo === null) return;
+      var t = (+g[1]) * 3600 + (+g[2]) * 60 + (+g[3]) - offsetS; if (t < 0) t += 86400; fx.push([t, la, lo]);
+    }); });
+    fx.sort(function (a, b) { return a[0] - b[0]; });
+    var u = []; fx.forEach(function (f) { if (!u.length || f[0] - u[u.length - 1][0] > 0.05) u.push(f); });
+    return { offsetS: offsetS, fixes: u };
+  }
+
   // ── Receiver channels ─────────────────────────────────────────────────────
   // A channel is active when its fundamental phase is stable; unconnected inputs read ±π noise.
   function activeChannels(packets) {
@@ -752,7 +797,7 @@
   // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
   // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
   // Lab matching is redone on open, so new lab references apply without reprocessing.
-  var SUMMARY_VER = 2;
+  var SUMMARY_VER = 3;
   function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
   function summarizeField(fa, packets) {
     var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });
@@ -766,7 +811,8 @@
     var p0 = packets[0], pN = packets[packets.length - 1];
     return { sv: SUMMARY_VER, run: p0.run, type: p0.type, xmt: fa.xmt, harms: fa.harms, ts0: p0.ts, tsN: pN.ts,
       bg: { mode: fa.bg.mode, mean: fa.bg.mean, std: fa.bg.std, magMean: fa.bg.magMean, perHz: perHz },
-      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events, chans: fa.chans || [1], freqsAll: fa.freqsAll || fa.harms };
+      nClusters: fa.clusters.length, trackLenM: fa.trackLenM, pk: pk, events: events, chans: fa.chans || [1], freqsAll: fa.freqsAll || fa.harms,
+      gpsCover: packets.length ? packets.filter(function (q) { return q.lat !== null; }).length / packets.length : 0, gpsFixed: packets.some(function (q) { return q.gpsFixed !== undefined; }) };
   }
   // Rebuild a light file from a summary: packets carry position/time only (no harmonics).
   function expandSummary(s) {
@@ -787,7 +833,7 @@
       ev.fusedCls = fu.cls; ev.fusedConf = fu.conf; ev.fusedSrc = fu.src; ev.labConflict = fu.conflict;
       return ev;
     });
-    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true, chans: s.chans || [1], freqsAll: s.freqsAll || s.harms };
+    return { xmt: s.xmt, harms: s.harms, bg: s.bg, kin: kin, clusters: [], nClusters: s.nClusters, events: events, trackLenM: s.trackLenM, lite: true, chans: s.chans || [1], freqsAll: s.freqsAll || s.harms, gpsCover: s.gpsFixed ? s.gpsCover : null };
   }
 
   // ── Known targets: waypoints → physical target sites ───────────────────────
@@ -1193,7 +1239,7 @@
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
-    analyzeField: analyzeField, correctFile: correctFile, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
+    analyzeField: analyzeField, correctFile: correctFile, retimePositions: retimePositions, restoreRawPositions: restoreRawPositions, buildFixTable: buildFixTable, localSecOf: localSecOf, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
     dateOf: dateOf, surveyDays: surveyDays, autoGroups: autoGroups,

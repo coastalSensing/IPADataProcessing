@@ -667,7 +667,7 @@
   // table: { offsetS, fixes: [[localSec, lat, lon], …] }. Packets with no fix within maxGapS lose their
   // position (lat/lon null) rather than keep a wrong one. Original positions stay in rawLat/rawLon.
   function retimePositions(packets, table, maxGapS) {
-    maxGapS = maxGapS || 3; var n = 0, fx = (table && table.fixes) || [];
+    maxGapS = maxGapS || 8; var n = 0, fx = (table && table.fixes) || [];
     packets.forEach(function (pk) {
       if (pk.type === 'lab') return;
       if (pk.rawLat === undefined) { pk.rawLat = pk.lat; pk.rawLon = pk.lon; }
@@ -814,16 +814,35 @@
   // Apply the linear layback model: every event and packet is moved BACK along the
   // recorded path by L + τ·v. L=τ=0 returns raw positions.
   function correctFile(fa, packets, L, tau) {
-    var kin = fa.kin, on = (L || 0) !== 0 || (tau || 0) !== 0;
+    // Positions are only trusted inside a continuous stretch of GPS fixes: a detection (or track point) whose
+    // sensor position would have to be taken from across a gap in the fixes gets no corrected position,
+    // instead of being pinned to the edge of the last valid fix.
+    var kin = fa.kin, on = (L || 0) !== 0 || (tau || 0) !== 0, n = packets.length, seg = new Array(n), sid = 0;
+    for (var i = 0; i < n; i++) { if (packets[i].lat === null) { seg[i] = -1; sid++; } else seg[i] = sid; }
+    function backAlong(i, d) {
+      if (i < 0 || i >= n || seg[i] < 0) return null;
+      if (!on) return [packets[i].lat, packets[i].lon];
+      var target = kin[i].cum - d, j = i;
+      while (j > 0 && seg[j - 1] === seg[i] && kin[j].cum > target) j--;
+      if (kin[j].cum > target) return null;                 // ran out of continuous fixes before reaching the sensor
+      if (j === i) return [kin[i].slat, kin[i].slon];
+      var a = j, b = j + 1, span = kin[b].cum - kin[a].cum, f = span > 0 ? (target - kin[a].cum) / span : 0;
+      f = Math.max(0, Math.min(1, f));
+      return [kin[a].slat + f * (kin[b].slat - kin[a].slat), kin[a].slon + f * (kin[b].slon - kin[a].slon)];
+    }
     var events = fa.events.map(function (ev) {
-      var p = on && finite(ev.cum) ? pointAtCum(packets, kin, ev.cum - laybackDist(ev.sog, L, tau)) : [ev.lat, ev.lon];
-      return Object.assign({}, ev, { latC: p[0], lonC: p[1] });
+      var i = ev.i, p = null;
+      if (finite(i) && seg[i] >= 0) {
+        var d = laybackDist(ev.sog, L, tau) + (finite(ev.cum) ? kin[i].cum - ev.cum : 0);
+        p = backAlong(i, d);
+      }
+      return Object.assign({}, ev, { latC: p ? p[0] : null, lonC: p ? p[1] : null });
     });
     var track = [];
     packets.forEach(function (pk, i) {
       if (pk.lat === null) return;
-      var p = on ? pointAtCum(packets, kin, kin[i].cum - laybackDist(kin[i].sog, L, tau)) : [pk.lat, pk.lon];
-      track.push({ lat: p[0], lon: p[1], cog: kin[i].cog, i: i });
+      var p = backAlong(i, laybackDist(kin[i].sog, L, tau));
+      if (p) track.push({ lat: p[0], lon: p[1], cog: kin[i].cog, i: i });
     });
     return Object.assign({}, fa, { events: events, track: track });
   }
@@ -833,7 +852,7 @@
   // the GPS path (lat, lon, t, idx per packet), the background noise per harmonic and the
   // detected events. It is ~1% of the raw file, so a whole survey opens in seconds.
   // Lab matching is redone on open, so new lab references apply without reprocessing.
-  var SUMMARY_VER = 3;
+  var SUMMARY_VER = 4;
   function rnd(x, d) { return finite(x) ? +x.toFixed(d) : x; }
   function summarizeField(fa, packets) {
     var pk = packets.map(function (p) { return [p.lat === null ? null : rnd(p.lat, 7), p.lon === null ? null : rnd(p.lon, 7), rnd(p.t, 2), p.idx]; });

@@ -803,3 +803,102 @@ select 'Steel pipe drop · North Beach Day 2 (2A, 2B, 2C)',
 on conflict (name) do nothing;
 
 notify pgrst, 'reload schema';
+-- =====================================================================================
+-- v53: TIERED CLASSIFICATION (detection → family → material) — additive, safe to re-run
+-- Confirmations and AI predictions keep their flat label (deepest tier reached) and gain
+-- explicit tier columns, so a user can confirm "Anomaly → Metallic" without naming a material.
+-- =====================================================================================
+
+-- Family of a flat label (mirrors FAMILY_MATERIALS / FAMILY_GENERIC in ipa-core.js)
+create or replace function public.ipa_family_of(p_label text) returns text
+language sql immutable set search_path = public as $$
+  select case
+    when p_label in ('Steel','Galvanized Steel','Ilmenite','Rutile','Copper','Lead','Zinc','Silver','Silver Ore','Gold','Bronze','Metallic IP') then 'Metallic'
+    when p_label in ('Class 3 Gas Oil','Alaska Crude Oil','ITB Rebel Crude','Group 5 Oil','Mineral Oil','Asphalt','Hydrocarbon IP') then 'Hydrocarbon'
+    when p_label = 'Resistive (non-IP)' then 'Non-IP'
+    when p_label in ('Strong Anomaly','Mixed') then 'Unknown'
+    else null end;
+$$;
+
+-- 1. Tier columns on confirmations ------------------------------------------------------
+alter table public.training_confirmations
+  add column if not exists detection       text,
+  add column if not exists family          text,
+  add column if not exists confirmed_depth smallint;   -- 1 detection, 2 family, 3 material
+
+update public.training_confirmations
+   set detection = case when material in ('Weak/Inconclusive','Artifact','No anomaly') then material else 'Anomaly' end,
+       family = public.ipa_family_of(material),
+       confirmed_depth = case
+         when material in ('Weak/Inconclusive','Artifact','No anomaly','Strong Anomaly','Mixed') then 1
+         when material in ('Metallic IP','Hydrocarbon IP','Resistive (non-IP)') then 2
+         else 3 end
+ where detection is null;
+create index if not exists tc_family_idx on public.training_confirmations (family);
+
+-- 2. Tier columns on AI predictions ---------------------------------------------------
+alter table public.ai_predictions
+  add column if not exists ai_detection        text,
+  add column if not exists ai_family           text,
+  add column if not exists ai_material         text,
+  add column if not exists ai_stop_tier        text,
+  add column if not exists confirmed_detection text,
+  add column if not exists confirmed_family    text;
+
+-- Link trigger now copies the confirmed tiers too
+create or replace function public.tc_link_prediction_fn() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.ai_prediction_id is not null then
+    update public.ai_predictions
+       set confirmation_id = new.id, confirmed_material = new.material, confirmed_at = now(),
+           confirmed_detection = new.detection, confirmed_family = new.family
+     where id = new.ai_prediction_id;
+  end if;
+  return new;
+end $$;
+revoke all on function public.tc_link_prediction_fn() from public, anon, authenticated;
+
+-- 3. Example retrieval with tiers (balanced per deepest label, as before) ---------------
+create or replace function public.nearest_confirmations_v2(
+  p_xmt int, p_dp1 real, p_dp3 real, p_dplast real, p_mag real, p_slope real,
+  p_k_per_class int default 3, p_max int default 30)
+returns table (id uuid, material text, detection text, family text, confirmed_depth smallint, label_source text,
+               xmt_hz int, dp_fund_mrad real, dp_mid_mrad real, dp_high_mrad real,
+               mag_pct real, max_snr real, phase_slope real, dist double precision)
+language sql stable security invoker set search_path = public as $$
+  with pool as (
+    select * from public.training_confirmations t
+     where not coalesce(t.excluded,false) and coalesce(t.cohort,'current') = 'current'
+       and t.material is not null and (p_xmt is null or t.xmt_hz = p_xmt)),
+  sc as (
+    select coalesce(nullif(stddev_samp(dp_fund_mrad),0),1) s1, coalesce(nullif(stddev_samp(dp_mid_mrad),0),1) s2,
+           coalesce(nullif(stddev_samp(dp_high_mrad),0),1) s3, coalesce(nullif(stddev_samp(mag_pct),0),1) s4,
+           coalesce(nullif(stddev_samp(phase_slope),0),1) s5 from pool),
+  d as (
+    select p.*, sqrt(
+        power((coalesce(p.dp_fund_mrad,0)-coalesce(p_dp1,0))/sc.s1,2) + power((coalesce(p.dp_mid_mrad,0)-coalesce(p_dp3,0))/sc.s2,2)
+      + power((coalesce(p.dp_high_mrad,0)-coalesce(p_dplast,0))/sc.s3,2) + power((coalesce(p.mag_pct,0)-coalesce(p_mag,0))/sc.s4,2)
+      + power((coalesce(p.phase_slope,0)-coalesce(p_slope,0))/sc.s5,2)) as dist
+    from pool p cross join sc),
+  r as (select d.*, row_number() over (partition by d.material order by d.dist) rn from d)
+  select r.id, r.material, coalesce(r.detection, case when r.material in ('Weak/Inconclusive','Artifact','No anomaly') then r.material else 'Anomaly' end),
+         coalesce(r.family, public.ipa_family_of(r.material)), r.confirmed_depth, r.label_source,
+         r.xmt_hz, r.dp_fund_mrad, r.dp_mid_mrad, r.dp_high_mrad, r.mag_pct, r.max_snr, r.phase_slope, r.dist
+    from r where r.rn <= p_k_per_class order by r.dist limit p_max;
+$$;
+grant execute on function public.nearest_confirmations_v2(int,real,real,real,real,real,int,int) to authenticated;
+
+-- 4. Counts per family and material (for the prompt and the Metrics tab) ----------------
+create or replace function public.training_tier_counts(p_xmt int default null)
+returns table (detection text, family text, material text, n bigint)
+language sql stable security invoker set search_path = public as $$
+  select coalesce(detection, case when material in ('Weak/Inconclusive','Artifact','No anomaly') then material else 'Anomaly' end),
+         coalesce(family, public.ipa_family_of(material)), material, count(*)
+    from public.training_confirmations
+   where not coalesce(excluded,false) and coalesce(cohort,'current') = 'current' and material is not null
+     and (p_xmt is null or xmt_hz = p_xmt)
+   group by 1,2,3 order by 4 desc;
+$$;
+grant execute on function public.training_tier_counts(int) to authenticated;
+grant execute on function public.ipa_family_of(text) to authenticated;

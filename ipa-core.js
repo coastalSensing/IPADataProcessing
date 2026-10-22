@@ -47,6 +47,53 @@
   };
   function family(cls) { return FAMILY[cls] || 'other'; }
 
+  // ── v53: tiered classification (detection → family → material) ─────────────
+  // Families are material classes. Specific materials sit inside one family; a confirmation or an AI call can
+  // stop at any tier ("Anomaly → Metallic → material unknown"). The flat label kept for older code and the
+  // training table is the deepest tier reached (labelOfTiers).
+  var TIER_DETECTION = ['Anomaly', 'Weak/Inconclusive', 'Artifact', 'No anomaly'];
+  var TIER_FAMILIES = ['Metallic', 'Hydrocarbon', 'Non-IP', 'Unknown'];
+  var FAMILY_MATERIALS = {
+    'Metallic': ['Steel', 'Galvanized Steel', 'Ilmenite', 'Rutile', 'Copper', 'Lead', 'Zinc', 'Silver', 'Silver Ore', 'Gold', 'Bronze'],
+    'Hydrocarbon': ['Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil', 'Asphalt'],
+    'Non-IP': [], 'Unknown': []
+  };
+  var FAMILY_GENERIC = { 'Metallic': 'Metallic IP', 'Hydrocarbon': 'Hydrocarbon IP', 'Non-IP': 'Resistive (non-IP)', 'Unknown': 'Strong Anomaly' };
+  function tierFamilyOf(material) {
+    for (var f in FAMILY_MATERIALS) if (FAMILY_MATERIALS[f].indexOf(material) >= 0) return f;
+    return null;
+  }
+  // Flat label (rules, lab, older AI, older confirmations) → tiers. depth = 1 detection, 2 family, 3 material.
+  function tiersOf(label) {
+    var L = String(label || '');
+    if (!L) return { detection: null, family: null, material: null, depth: 0 };
+    if (L === 'Weak/Inconclusive' || L === 'Artifact' || L === 'No anomaly') return { detection: L, family: null, material: null, depth: 1 };
+    if (L === 'Strong Anomaly' || L === 'Mixed') return { detection: 'Anomaly', family: 'Unknown', material: null, depth: 1 };
+    for (var f in FAMILY_GENERIC) if (FAMILY_GENERIC[f] === L && f !== 'Unknown') return { detection: 'Anomaly', family: f, material: null, depth: 2 };
+    var fam = tierFamilyOf(L);
+    if (fam) return { detection: 'Anomaly', family: fam, material: L, depth: 3 };
+    return { detection: 'Anomaly', family: 'Unknown', material: null, depth: 1 };
+  }
+  // Tiers → the deepest flat label (always one of MAT_OPTIONS or 'No anomaly').
+  function labelOfTiers(t) {
+    if (!t || !t.detection) return null;
+    if (t.detection !== 'Anomaly') return t.detection;
+    if (t.material && tierFamilyOf(t.material) && (!t.family || t.family === tierFamilyOf(t.material))) return t.material;
+    return FAMILY_GENERIC[t.family || 'Unknown'] || 'Strong Anomaly';
+  }
+  // Nearest logged known target (with a material) for an event, on the target's own drop date.
+  function knownTargetFor(lat, lon, date, targets, maxM) {
+    if (!finite(lat) || !finite(lon) || !targets) return null;
+    maxM = maxM || 15; var best = null;
+    targets.forEach(function (T) {
+      if (!T.material || !tierFamilyOf(T.material)) return;
+      if (T.date && date && T.date !== date) return;
+      var d = distToTarget(lat, lon, T);
+      if (d <= maxM && (!best || d < best.dist)) best = { target: T, dist: d };
+    });
+    return best;
+  }
+
   var DEFAULT_PROC = {
     mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
@@ -1297,6 +1344,8 @@
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
+    tiersOf: tiersOf, labelOfTiers: labelOfTiers, tierFamilyOf: tierFamilyOf, knownTargetFor: knownTargetFor,
+    TIER_DETECTION: TIER_DETECTION, TIER_FAMILIES: TIER_FAMILIES, FAMILY_MATERIALS: FAMILY_MATERIALS, FAMILY_GENERIC: FAMILY_GENERIC,
     analyzeField: analyzeField, correctFile: correctFile, retimePositions: retimePositions, restoreRawPositions: restoreRawPositions, buildFixTable: buildFixTable, localSecOf: localSecOf, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,

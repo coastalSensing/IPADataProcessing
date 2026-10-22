@@ -303,6 +303,53 @@ canvas{display:block;width:100%;}
   };
   function family(cls) { return FAMILY[cls] || 'other'; }
 
+  // ── v53: tiered classification (detection → family → material) ─────────────
+  // Families are material classes. Specific materials sit inside one family; a confirmation or an AI call can
+  // stop at any tier ("Anomaly → Metallic → material unknown"). The flat label kept for older code and the
+  // training table is the deepest tier reached (labelOfTiers).
+  var TIER_DETECTION = ['Anomaly', 'Weak/Inconclusive', 'Artifact', 'No anomaly'];
+  var TIER_FAMILIES = ['Metallic', 'Hydrocarbon', 'Non-IP', 'Unknown'];
+  var FAMILY_MATERIALS = {
+    'Metallic': ['Steel', 'Galvanized Steel', 'Ilmenite', 'Rutile', 'Copper', 'Lead', 'Zinc', 'Silver', 'Silver Ore', 'Gold', 'Bronze'],
+    'Hydrocarbon': ['Class 3 Gas Oil', 'Alaska Crude Oil', 'ITB Rebel Crude', 'Group 5 Oil', 'Mineral Oil', 'Asphalt'],
+    'Non-IP': [], 'Unknown': []
+  };
+  var FAMILY_GENERIC = { 'Metallic': 'Metallic IP', 'Hydrocarbon': 'Hydrocarbon IP', 'Non-IP': 'Resistive (non-IP)', 'Unknown': 'Strong Anomaly' };
+  function tierFamilyOf(material) {
+    for (var f in FAMILY_MATERIALS) if (FAMILY_MATERIALS[f].indexOf(material) >= 0) return f;
+    return null;
+  }
+  // Flat label (rules, lab, older AI, older confirmations) → tiers. depth = 1 detection, 2 family, 3 material.
+  function tiersOf(label) {
+    var L = String(label || '');
+    if (!L) return { detection: null, family: null, material: null, depth: 0 };
+    if (L === 'Weak/Inconclusive' || L === 'Artifact' || L === 'No anomaly') return { detection: L, family: null, material: null, depth: 1 };
+    if (L === 'Strong Anomaly' || L === 'Mixed') return { detection: 'Anomaly', family: 'Unknown', material: null, depth: 1 };
+    for (var f in FAMILY_GENERIC) if (FAMILY_GENERIC[f] === L && f !== 'Unknown') return { detection: 'Anomaly', family: f, material: null, depth: 2 };
+    var fam = tierFamilyOf(L);
+    if (fam) return { detection: 'Anomaly', family: fam, material: L, depth: 3 };
+    return { detection: 'Anomaly', family: 'Unknown', material: null, depth: 1 };
+  }
+  // Tiers → the deepest flat label (always one of MAT_OPTIONS or 'No anomaly').
+  function labelOfTiers(t) {
+    if (!t || !t.detection) return null;
+    if (t.detection !== 'Anomaly') return t.detection;
+    if (t.material && tierFamilyOf(t.material) && (!t.family || t.family === tierFamilyOf(t.material))) return t.material;
+    return FAMILY_GENERIC[t.family || 'Unknown'] || 'Strong Anomaly';
+  }
+  // Nearest logged known target (with a material) for an event, on the target's own drop date.
+  function knownTargetFor(lat, lon, date, targets, maxM) {
+    if (!finite(lat) || !finite(lon) || !targets) return null;
+    maxM = maxM || 15; var best = null;
+    targets.forEach(function (T) {
+      if (!T.material || !tierFamilyOf(T.material)) return;
+      if (T.date && date && T.date !== date) return;
+      var d = distToTarget(lat, lon, T);
+      if (d <= maxM && (!best || d < best.dist)) best = { target: T, dist: d };
+    });
+    return best;
+  }
+
   var DEFAULT_PROC = {
     mode: 'robust',        // 'robust' | 'legacy' (fundamental 3σ, fixed background)
     detrendWin: 61,        // packets in running-median background window
@@ -1553,6 +1600,8 @@ canvas{display:block;width:100%;}
     computeLabStats: computeLabStats, labSignatureFromGroup: labSignatureFromGroup, wrapMrad: wrapMrad,
     computeBG: computeBG, bgAt: bgAt, detectAnomalies: detectAnomalies, computeKinematics: computeKinematics,
     pointAtCum: pointAtCum, laybackDist: laybackDist, classifyRules: classifyRules, labMatch: labMatch, fuseClass: fuseClass,
+    tiersOf: tiersOf, labelOfTiers: labelOfTiers, tierFamilyOf: tierFamilyOf, knownTargetFor: knownTargetFor,
+    TIER_DETECTION: TIER_DETECTION, TIER_FAMILIES: TIER_FAMILIES, FAMILY_MATERIALS: FAMILY_MATERIALS, FAMILY_GENERIC: FAMILY_GENERIC,
     analyzeField: analyzeField, correctFile: correctFile, retimePositions: retimePositions, restoreRawPositions: restoreRawPositions, buildFixTable: buildFixTable, localSecOf: localSecOf, activeChannels: activeChannels, oddHarmonics: oddHarmonics, channelPackets: channelPackets,
     SUMMARY_VER: SUMMARY_VER, summarizeField: summarizeField, expandSummary: expandSummary, liteAnalysis: liteAnalysis,
     waypointDayCode: waypointDayCode, buildTargets: buildTargets, distToTarget: distToTarget, dayMismatch: dayMismatch, placeOf: placeOf, PLACES: PLACES,
@@ -1573,7 +1622,7 @@ canvas{display:block;width:100%;}
 <script type="text/babel">
 
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
-const APP_VERSION='v52';
+const APP_VERSION='v53';
 const APP_BUILD='__BUILD__';  // replaced with the git commit SHA by the Pages deploy workflow
 const BUILD_LABEL=APP_BUILD.indexOf('__')===0?'local':APP_BUILD;
 const MAT_COLORS=IPA.MAT_COLORS, MAT_OPTIONS=IPA.MAT_OPTIONS, getHarms=IPA.getHarms;
@@ -1609,6 +1658,8 @@ function loadTrainingFromDB(){
       var meta=parseNotesMeta(r.notes),cohort=rowCohort(r,meta);
       return{
       material:r.material,run:r.run_name,ts:r.confirmed_at,id:r.id,cohort:cohort,
+      tiers:r.detection?{detection:r.detection,family:r.family||null,material:r.confirmed_depth===3?r.material:null,depth:r.confirmed_depth||IPA.tiersOf(r.material).depth}:IPA.tiersOf(r.material),
+      labelSource:r.label_source||null,
       featureBasis:r.feature_basis||meta.basis||(cohort==='legacy'?'raw_v26':'deviation'),
       aiUsed:r.ai_used!==undefined&&r.ai_used!==null?!!r.ai_used:(meta.ai_used!==undefined?!!meta.ai_used:!!r.ai_class),
       excluded:!!r.excluded,appVersion:r.app_version||meta.app||null,
@@ -1627,9 +1678,14 @@ function saveTrainingToDB(entry,harms){
     lat:entry.lat,lon:entry.lon,cog_deg:entry.cog,sog_ms:entry.sog,proc_mode:entry.procMode,app_version:APP_VERSION,
     cohort:'current',feature_basis:'deviation',ai_used:!!entry.aiUsed,excluded:false,ai_prediction_id:entry.aiPredictionId||null,
     label_source:entry.labelSource||'expert_review',data_file_id:entry.dataFileId||null,survey_id:entry.surveyId||null});
-  return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true};})
+  // v53 tiers; dropped automatically if the v53 SQL has not been run yet
+  var t=entry.tiers||IPA.tiersOf(entry.material);
+  var tiered=Object.assign({},ext,{detection:t.detection,family:t.family||null,confirmed_depth:t.depth||null});
+  return q(supabase.from('training_confirmations').insert(tiered).select()).then(function(d){return{data:d,extended:true,tiered:true};})
     .catch(function(e){if(!isSchemaErr(e))throw e;
-      return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false};});});
+      return q(supabase.from('training_confirmations').insert(ext).select()).then(function(d){return{data:d,extended:true,tiered:false};})
+        .catch(function(e2){if(!isSchemaErr(e2))throw e2;
+          return q(supabase.from('training_confirmations').insert(legacy).select()).then(function(d){return{data:d,extended:false,tiered:false};});});});
 }
 function setTrainingExcludedDB(ids,excluded){return q(supabase.from('training_confirmations').update({excluded:excluded}).in('id',ids).select('id'));}
 // Which confirmations are allowed to influence new classifications
@@ -1772,7 +1828,13 @@ async function classifyWithClaude(ev,harms,bg,run,xmt,model){
     try{var j=await res.error.context.json();if(j&&j.error)msg=j.error;}catch(e){}
     throw new Error(msg);
   }
-  return res.data;
+  var d=res.data||{};
+  if(!d.detection&&d.classification){  // pre-v53 function: derive tiers from the flat label
+    var t=IPA.tiersOf(d.classification),c=d.confidence_pct||0;
+    d=Object.assign({},d,{detection:t.detection,detection_conf:c,family:t.family||'n/a',family_conf:t.family?c:0,material:t.material||(t.family?'Unknown':'n/a'),material_conf:t.material?c:0,
+      stop_tier:t.depth===3?'material':t.depth===2?'family':'detection',tiersDerived:true});
+  }
+  return d;
 }
 
 // ── Canvas drawing ─────────────────────────────────────────────────────────────
@@ -1887,6 +1949,9 @@ function App(){
   var [aiErr,setAiErr]=useState('');
   var [aiLoading,setAiLoading]=useState(null);
   var [confMat,setConfMat]=useState('');
+  // v53 tiered confirmation: detection → family → material, each confirmable on its own
+  var [confTier,setConfTier]=useState({det:'',fam:'',mat:'',src:'',note:'',touched:false});
+  var [seedMsg,setSeedMsg]=useState('');
   var [drag,setDrag]=useState(false);
   var [mainTab,setMainTab]=useState('analysis');
   var [chartCh,setChartCh]=useState(1);
@@ -2685,24 +2750,31 @@ function App(){
   };
 
   // ── Training confirmations ────────────────────────────────────────────────
+  function confTiersObj(){
+    var c=confTier;if(!c.det)return null;
+    var anom=c.det==='Anomaly',fam=anom?(c.fam||'Unknown'):null,mat=anom&&fam&&c.mat&&IPA.tierFamilyOf(c.mat)===fam?c.mat:null;
+    var t={detection:c.det,family:fam,material:mat,depth:mat?3:(anom&&fam&&fam!=='Unknown'?2:1)};
+    t.label=IPA.labelOfTiers(t);return t;
+  }
   var saveTraining=function(fi,ei){
-    if(!confMat)return;
+    var tiers=confTiersObj();if(!tiers)return;
     var fa=fileAnalyses[fi];if(!fa||!fa.events[ei])return;
     var ev=fa.events[ei],harms=fa.harms,ar=aiResults[fi+'-'+ei];
     var fh=files[fi]&&files[fi].hash,libRow=fh?library.find(function(r){return r.sha256===fh;}):null;
-    var entry={material:confMat,run:files[fi].run,ts:ev.ts,
+    var entry={material:tiers.label,tiers:tiers,run:files[fi].run,ts:ev.ts,
       fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
       aiConf:ar?ar.confidence_pct:null,rulesCls:ev.cls,aiCls:ar&&ar.classification!=='Error'?ar.classification:null,
       labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
       aiPredictionId:ar&&ar.prediction_id||null,dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,
       cohort:'current',featureBasis:'deviation',aiUsed:!!(ar&&ar.classification!=='Error'),excluded:false,
-      labelSource:'expert_review',dataFileId:libRow?libRow.id:null,surveyId:libRow?libRow.survey_id||null:null};
+      labelSource:confTier.src==='known'&&!confTier.touched?'field_waypoint':'expert_review',dataFileId:libRow?libRow.id:null,surveyId:libRow?libRow.survey_id||null:null};
     setTraining(function(p){return p.concat([entry]);});
-    setConfMat('');setDbStatus('loading');
+    setConfMat('');setConfTier(function(c){return Object.assign({},c,{saved:tiers.label});});setDbStatus('loading');
     saveTrainingToDB(entry,harms).then(function(res){
       var d=res.data;
       if(d&&d[0])setTraining(function(p){var u=p.slice();var k=u.lastIndexOf(entry);if(k>=0)u[k]=Object.assign({},u[k],{id:d[0].id});return u;});
       setDbStatus('ok');if(!res.extended)setDbNote('Saved without prediction columns — run supabase_schema.sql so accuracy metrics persist.');
+      else if(!res.tiered)setDbNote('Saved without tier columns — run the v53 section of supabase_schema.sql so family-only confirmations keep their tiers.');
     }).catch(function(e){console.warn('Supabase save failed:',e.message);setDbStatus('error');setDbNote(e.message);});
   };
 
@@ -2821,6 +2893,53 @@ function App(){
   var activeEv=(af&&!af.isLab&&selEv!==null&&selEv<af.events.length)?af.events[selEv]:null;
   var aiKey=(activeIdx!==null&&selEv!==null)?activeIdx+'-'+selEv:null;
   var aiRes=aiKey?aiResults[aiKey]:null;
+  function fileDateOf(f){return f&&f.packets&&f.packets.length?IPA.dateOf(f.packets[0]):null;}
+  // Known target under an event (same drop date, ≤ detection radius), used to pre-fill the truth
+  var activeKnown=useMemo(function(){
+    if(!activeEv||activeIdx===null)return null;
+    return IPA.knownTargetFor(activeEv.latC,activeEv.lonC,fileDateOf(files[activeIdx]),targets,proc.detRadiusM||15);
+  },[activeEv,activeIdx,files,targets,proc.detRadiusM]);
+  // Pre-fill the three confirm controls: known target > Claude > rules (user edits override)
+  useEffect(function(){
+    if(!activeEv){setConfTier({det:'',fam:'',mat:'',src:'',note:'',touched:false});return;}
+    var t,src,note;
+    if(activeKnown&&activeEv.cls!=='Weak/Inconclusive'&&activeEv.cls!=='Artifact'){var T=activeKnown.target;t=IPA.tiersOf(T.material);src='known';note='known target '+T.label+' ('+T.material+', '+activeKnown.dist.toFixed(1)+' m)';}
+    else if(aiRes&&aiRes.classification!=='Error'&&aiRes.detection){t={detection:aiRes.detection,family:aiRes.family&&aiRes.family!=='n/a'?aiRes.family:null,material:aiRes.material&&aiRes.material!=='Unknown'&&aiRes.material!=='n/a'?aiRes.material:null};src='ai';note='Claude';}
+    else{t=IPA.tiersOf(activeEv.fusedCls||activeEv.cls);src='rules';note='rules';}
+    setConfTier({det:t.detection||'',fam:t.family||'',mat:t.material||'',src:src,note:note,touched:false});
+  },[aiKey,activeEv,activeKnown,aiRes]);
+  // Seed confirmations from logged known targets: every non-weak event within the detection radius of a
+  // known target on its drop date, not already confirmed. Labelled field_waypoint so they can be filtered.
+  function knownTargetCandidates(){
+    var have={};training.forEach(function(t){have[(t.run||'')+'|'+(t.evTs||'')]=1;});
+    var out=[];
+    (fileAnalyses||[]).forEach(function(fa,fi){if(!fa||fa.isLab||!files[fi]||files[fi].type!=='field')return;var d=fileDateOf(files[fi]);
+      fa.events.forEach(function(ev,ei){if(ev.isArtifact||ev.cls==='Weak/Inconclusive'||ev.cls==='Artifact')return;
+        if(!(ev.mf>=proc.mfMin))return;
+        var k=IPA.knownTargetFor(ev.latC,ev.lonC,d,targets,proc.detRadiusM||15);if(!k)return;
+        if(have[files[fi].run+'|'+ev.ts])return;
+        out.push({fi:fi,ei:ei,ev:ev,target:k.target,dist:k.dist});});});
+    return out;
+  }
+  function seedKnownTargets(){
+    var c=knownTargetCandidates();
+    if(!c.length){setSeedMsg('No unconfirmed detections at known targets in the loaded lines.');return;}
+    var by={};c.forEach(function(x){by[x.target.label]=(by[x.target.label]||0)+1;});
+    if(!window.confirm('Save '+c.length+' confirmations from logged known targets?\n\n'+Object.keys(by).sort().map(function(k){return k+': '+by[k];}).join(', ')+'\n\nEach is labelled "field_waypoint" with the target\'s family and material, and can be excluded later in Metrics.'))return;
+    var i=0,ok=0,bad=0;setSeedMsg('Saving 0 / '+c.length+'…');
+    (function next(){
+      if(i>=c.length){setSeedMsg('Saved '+ok+' known-target confirmation'+(ok===1?'':'s')+(bad?' · '+bad+' failed (see console)':'')+'.');return;}
+      var x=c[i++],fa=fileAnalyses[x.fi],ev=x.ev,harms=fa.harms,t=IPA.tiersOf(x.target.material);
+      var fh=files[x.fi].hash,libRow=fh?library.find(function(r){return r.sha256===fh;}):null;
+      var entry={material:x.target.material,tiers:t,run:files[x.fi].run,ts:ev.ts,evTs:ev.ts,
+        fv:{dp1:ev.dpDev[harms[0]]||0,dp3:ev.dpDev[harms[2]]||0,dp_last:ev.dpDev[harms[5]]||0,magPct:ev.magPct,maxSNR:ev.maxSNRall,slope:ev.phaseSlope},
+        aiConf:null,rulesCls:ev.cls,aiCls:null,labCls:ev.labBest?ev.labBest.material:null,labCos:ev.labBest?ev.labBest.cos:null,fusedCls:ev.fusedCls,predConf:ev.fusedConf,
+        aiPredictionId:null,dpDev:ev.dpDev,lat:ev.latC,lon:ev.lonC,cog:ev.cog,sog:ev.sog,procMode:proc.mode,cohort:'current',featureBasis:'deviation',aiUsed:false,excluded:false,
+        labelSource:'field_waypoint',dataFileId:libRow?libRow.id:null,surveyId:libRow?libRow.survey_id||null:null};
+      saveTrainingToDB(entry,harms).then(function(res){ok++;var dd=res.data;setTraining(function(p){return p.concat([Object.assign({},entry,{id:dd&&dd[0]&&dd[0].id})]);});})
+        .catch(function(e){bad++;console.warn('[seed]',e.message);}).then(function(){setSeedMsg('Saving '+i+' / '+c.length+'…');setTimeout(next,0);});
+    })();
+  }
 
   if(authUser===null){
     return <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--font-mono)'}}><div style={{color:'var(--dim2)',fontSize:12}}>Checking session...</div></div>;
@@ -3797,6 +3916,15 @@ function App(){
                   <Tile label="AI reviewed" value={cohortCounts.ai} sub="AI result at confirm time"/>
                   <Tile label="Excluded" value={cohortCounts.excluded} color={cohortCounts.excluded?'var(--neg)':undefined} sub="manually, shared"/>
                 </div>
+                <div className="row" style={{marginBottom:10,alignItems:'center'}}>
+                  <button className="btn btn-sm" onClick={seedKnownTargets} disabled={!authUser} title="Saves a confirmation for every non-weak detection (mf ≥ mfMin) within the detection radius of a logged known target on its drop date, in the lines currently loaded">Confirm detections at known targets ({knownTargetCandidates().length})</button>
+                  {seedMsg && <span style={{fontSize:11,color:'var(--dim2)',marginLeft:8}}>{seedMsg}</span>}
+                </div>
+                {training.length>0 && (function(){
+                  var fams={};training.forEach(function(t){if(t.excluded)return;var tr=t.tiers||IPA.tiersOf(t.material),k=tr.detection==='Anomaly'?(tr.family||'Unknown'):tr.detection;var r=fams[k]=fams[k]||{n:0,mat:0,src:{}};r.n++;if(tr.depth===3)r.mat++;var s=t.labelSource||'expert_review';r.src[s]=(r.src[s]||0)+1;});
+                  return (<table className="mt" style={{marginBottom:10}}><thead><tr><th>Detection / family</th><th className="num">Confirmed</th><th className="num">to material</th><th>Source</th></tr></thead>
+                    <tbody>{Object.keys(fams).sort().map(function(k){var r=fams[k];return <tr key={k}><td>{k}</td><td className="num">{r.n}</td><td className="num">{r.mat}</td><td style={{fontSize:10}}>{Object.keys(r.src).map(function(s){return (s==='field_waypoint'?'known target':s==='expert_review'?'user':s)+' '+r.src[s];}).join(' · ')}</td></tr>;})}</tbody></table>);
+                })()}
                 {training.length>0 && (function(){
                   var mats={};training.forEach(function(t){var m=mats[t.material]=mats[t.material]||{current:0,legacy:0,use:0};m[t.cohort]++;if(eligibleTraining.indexOf(t)>=0)m.use++;});
                   return (
@@ -3922,6 +4050,10 @@ function App(){
                     <span className="ai-cls-val" style={{color:MAT_COLORS[aiRes.classification]||'var(--text)'}}>{aiRes.classification}</span>
                     <span className="ai-conf-val">{aiRes.confidence_pct}% · {aiRes.confidence_label}</span>
                   </div>
+                  {aiRes.detection && <div style={{fontSize:10,fontFamily:'var(--font-mono)',color:'var(--dim3)',margin:'2px 0 6px'}}>
+                    {[['detection',aiRes.detection,aiRes.detection_conf],['family',aiRes.family,aiRes.family_conf],['material',aiRes.material,aiRes.material_conf]].filter(function(r){return r[1]&&r[1]!=='n/a';}).map(function(r,k){
+                      var reached=r[1]!=='Unknown';return <span key={k}>{k?' → ':''}<b style={{color:reached?'var(--text)':'var(--dim)'}}>{r[1]}</b>{reached?' '+r[2]+'%':''}</span>;})}
+                    {aiRes.tiersDerived?<span style={{color:'var(--dim)'}}> (from flat label)</span>:null}</div>}
                   {aiRes.key_indicators && <div style={{fontSize:11,color:'var(--accent)',marginBottom:5,fontStyle:'italic'}}>{aiRes.key_indicators}</div>}
                   {aiRes.reasoning && <div style={{fontSize:11,color:'var(--dim3)',lineHeight:1.6,marginBottom:5}}>{aiRes.reasoning}</div>}
                   {aiRes.caution && <div style={{fontSize:10,color:'#b07800',lineHeight:1.5,borderTop:'1px solid var(--border)',paddingTop:5}}>⚠ {aiRes.caution}</div>}
@@ -3930,15 +4062,26 @@ function App(){
               <button className="btn btn-ai" style={{width:'100%',marginTop:6}} onClick={function(){doAI(activeIdx,selEv);}} disabled={!aiReady||!!aiLoading}>
                 {aiLoading===aiKey?'Analyzing...':aiRes?'↻ Re-run Claude AI':'⚡ Analyze with Claude AI'}</button>
               <div className="sep" style={{height:1,width:'100%',background:'var(--border)',margin:'10px 0'}}/>
-              <div className="ai-section-title">Confirm Material (ground truth)</div>
-              <div className="confirm-row" style={{marginTop:5}}>
-                <select className="confirm-sel" value={confMat} onChange={function(e){setConfMat(e.target.value);}}>
-                  <option value="">— material —</option>
-                  {CONFIRM_OPTIONS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
-                </select>
-                <button className="confirm-btn" onClick={function(){saveTraining(activeIdx,selEv);}} disabled={!confMat}>✓</button>
-              </div>
-              <div style={{fontSize:9,color:'var(--dim)',marginTop:3}}>Use “No anomaly” for false alarms so they count in accuracy.</div>
+              <div className="ai-section-title">Confirm (ground truth) · detection → family → material</div>
+              {(function(){var c=confTier,anom=c.det==='Anomaly',famOk=anom&&c.fam&&c.fam!=='Unknown',mats=famOk?(IPA.FAMILY_MATERIALS[c.fam]||[]):[];
+                function set(k,v){setConfTier(function(p){var n=Object.assign({},p,{touched:true,saved:''});n[k]=v;if(k==='det'&&v!=='Anomaly'){n.fam='';n.mat='';}if(k==='fam'&&IPA.tierFamilyOf(n.mat)!==v)n.mat='';return n;});}
+                var t=confTiersObj();
+                return (<div>
+                  <div className="confirm-row" style={{marginTop:5,gap:4}}>
+                    <select className="confirm-sel" value={c.det} onChange={function(e){set('det',e.target.value);}} title="Tier 1: is there a real response?">
+                      <option value="">— detection —</option>{IPA.TIER_DETECTION.map(function(m){return <option key={m} value={m}>{m}</option>;})}</select>
+                    <select className="confirm-sel" value={anom?c.fam:''} disabled={!anom} onChange={function(e){set('fam',e.target.value);}} title="Tier 2: material family">
+                      <option value="">— family —</option>{IPA.TIER_FAMILIES.map(function(m){return <option key={m} value={m}>{m}</option>;})}</select>
+                    <select className="confirm-sel" value={famOk?c.mat:''} disabled={!famOk||!mats.length} onChange={function(e){set('mat',e.target.value);}} title="Tier 3: specific material (leave blank if unsure)">
+                      <option value="">{famOk&&mats.length?'material unknown':'— material —'}</option>{mats.map(function(m){return <option key={m} value={m}>{m}</option>;})}</select>
+                    <button className="confirm-btn" onClick={function(){saveTraining(activeIdx,selEv);}} disabled={!c.det}>✓</button>
+                  </div>
+                  <div style={{fontSize:9,color:'var(--dim)',marginTop:3,lineHeight:1.5}}>
+                    {c.note?<span>Pre-filled from {c.note}{c.touched?' (edited)':''}. </span>:null}
+                    {t?<span>Saves as <b style={{color:MAT_COLORS[t.label]||'var(--text)'}}>{t.label}</b> (confirmed to {['','detection','family','material'][t.depth]}). </span>:null}
+                    {c.saved?<span style={{color:'var(--pos)'}}>✓ saved. </span>:null}
+                    Stop at the deepest tier you are sure of; “No anomaly” marks false alarms.</div>
+                </div>);})()}
             </div>)}
           {training.length>0 && (
             <div style={{background:'var(--panel2)',border:'1px solid var(--border2)',borderRadius:3,padding:'6px 9px',fontSize:10,color:'var(--dim3)',fontFamily:'var(--font-mono)',marginTop:8}}>
